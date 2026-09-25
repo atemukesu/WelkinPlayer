@@ -172,6 +172,12 @@ watch(
   scrollbar-width: none;
   --lyric-ease: cubic-bezier(0.22, 1, 0.36, 1);
   --lyric-duration: 560ms;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, #000 5%, #000 95%, transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0%, #000 5%, #000 95%, transparent 100%);
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-size: 100% 100%;
+  mask-size: 100% 100%;
 }
 
 .lyrics-scroll::-webkit-scrollbar {
