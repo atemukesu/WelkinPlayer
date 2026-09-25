@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { VList } from "virtua/vue";
 import { Check, ImagePlus, Music2, Search, Trash2, X } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { usePlayerStore } from "../stores/player";
+import type { Track } from "../stores/player";
 import { useProfileStore } from "../stores/profile";
 import type { Playlist } from "../lib/profile";
 import { initial } from "../lib/format";
@@ -28,6 +30,40 @@ const pickerTracks = computed(() => {
   const value = trackQuery.value.trim().toLocaleLowerCase();
   return player.tracks.filter((track) => track.path && (!value || `${track.title} ${track.artist}`.toLocaleLowerCase().includes(value)));
 });
+
+const GAP = 12;
+const SCROLLBAR = 8;
+const pickerEl = ref<HTMLElement | null>(null);
+const pickerWidth = ref(0);
+let pickerObserver: ResizeObserver | undefined;
+
+function measurePicker() { pickerWidth.value = pickerEl.value?.clientWidth ?? 0; }
+watch(pickerEl, (el) => {
+  pickerObserver?.disconnect();
+  pickerObserver = undefined;
+  if (!el) return;
+  measurePicker();
+  if (typeof ResizeObserver !== "undefined") {
+    pickerObserver = new ResizeObserver(measurePicker);
+    pickerObserver.observe(el);
+  }
+});
+onBeforeUnmount(() => pickerObserver?.disconnect());
+
+const pickerColumns = computed(() => Math.max(3, Math.min(4, Math.round(pickerWidth.value / 150))));
+const pickerColWidth = computed(() => {
+  const cols = pickerColumns.value;
+  return Math.max(72, (Math.max(0, pickerWidth.value - SCROLLBAR) - GAP * (cols - 1)) / cols);
+});
+const pickerRows = computed(() => Math.ceil(pickerTracks.value.length / pickerColumns.value));
+const pickerRowIndexes = computed(() => Array.from({ length: pickerRows.value }, (_, index) => index));
+const pickerRowHeight = computed(() => Math.round(pickerColWidth.value + 34));
+function pickerTrack(row: number, col: number): Track {
+  return pickerTracks.value[row * pickerColumns.value + col];
+}
+function pickerInRange(row: number, col: number): boolean {
+  return row * pickerColumns.value + col < pickerTracks.value.length;
+}
 
 function onFile(event: Event) {
   const input = event.target as HTMLInputElement;
@@ -93,15 +129,24 @@ function save() {
           <p class="text-[12px] text-dim">{{ t("playlistEditor.pickTrack") }}</p>
           <label class="flex h-10 items-center gap-2 border border-line bg-surface px-3"><Search :size="15" class="text-dim" /><input v-model="trackQuery" class="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-dim" :placeholder="t('library.search')" /></label>
           <p v-if="pickerTracks.length === 0" class="py-8 text-center text-sm text-muted">{{ t("playlistEditor.noTracks") }}</p>
-          <div v-else class="grid max-h-72 grid-cols-3 gap-3 overflow-y-auto pr-1 sm:grid-cols-4">
-            <button v-for="track in pickerTracks" :key="track.id" type="button" class="group grid gap-2 text-left" @click="chooseTrack(track.path as string)">
-              <span class="relative grid aspect-square place-items-center overflow-hidden text-2xl font-black text-white/90 ring-offset-2 ring-offset-surface transition-all" :class="coverTrack === track.path ? 'ring-2 ring-accent' : 'group-hover:ring-2 group-hover:ring-line-strong'" :style="{ backgroundColor: track.color }">
-                <img v-if="track.cover" :src="track.cover" alt="" class="h-full w-full object-cover" />
-                <template v-else>{{ initial(track) }}</template>
-                <span v-if="coverTrack === track.path" class="absolute bottom-0 right-0 grid h-6 w-6 place-items-center bg-accent text-accent-fg"><Check :size="14" /></span>
-              </span>
-              <span class="truncate text-[11px] font-semibold">{{ track.title }}</span>
-            </button>
+          <div v-else ref="pickerEl" class="h-72">
+            <VList :data="pickerRowIndexes" :item-size="pickerRowHeight" class="h-full">
+              <template #default="{ item: row }">
+                <div class="grid gap-3 px-2 pb-3" :style="{ gridTemplateColumns: `repeat(${pickerColumns}, minmax(0, 1fr))` }">
+                  <template v-for="col in pickerColumns" :key="col">
+                    <button v-if="pickerInRange(row, col - 1)" type="button" class="group grid gap-2 text-left" @click="chooseTrack(pickerTrack(row, col - 1).path as string)">
+                      <span class="relative grid aspect-square place-items-center overflow-hidden text-2xl font-black text-white/90 ring-offset-2 ring-offset-surface transition-all" :class="coverTrack === pickerTrack(row, col - 1).path ? 'ring-2 ring-accent' : 'group-hover:ring-2 group-hover:ring-line-strong'" :style="{ backgroundColor: pickerTrack(row, col - 1).color }">
+                        <img v-if="pickerTrack(row, col - 1).cover" :src="pickerTrack(row, col - 1).cover" alt="" loading="lazy" decoding="async" class="h-full w-full object-cover" />
+                        <template v-else>{{ initial(pickerTrack(row, col - 1)) }}</template>
+                        <span v-if="coverTrack === pickerTrack(row, col - 1).path" class="absolute bottom-0 right-0 grid h-6 w-6 place-items-center bg-accent text-accent-fg"><Check :size="14" /></span>
+                      </span>
+                      <span class="truncate text-[11px] font-semibold">{{ pickerTrack(row, col - 1).title }}</span>
+                    </button>
+                    <span v-else></span>
+                  </template>
+                </div>
+              </template>
+            </VList>
           </div>
         </div>
       </div>

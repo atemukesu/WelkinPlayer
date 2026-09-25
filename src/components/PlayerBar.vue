@@ -49,6 +49,7 @@ function onSeek(event: Event) {
             v-if="player.currentTrack?.cover"
             :src="player.currentTrack.cover"
             alt=""
+            decoding="async"
             class="h-full w-full object-cover"
           />
           <template v-else>{{ player.currentTrack ? initial(player.currentTrack) : "" }}</template>

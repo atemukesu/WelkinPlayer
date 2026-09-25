@@ -38,8 +38,8 @@ function downloadMetadata(track: Track) { emit("downloadMetadata", track); }
 </script>
 
 <template>
-  <div class="mx-auto w-full max-w-6xl px-6 py-6 lg:px-8 lg:py-8">
-    <header class="border-b border-line pb-6">
+  <div class="mx-auto flex h-full w-full max-w-6xl flex-col px-6 py-6 lg:px-8 lg:py-8">
+    <header class="shrink-0 border-b border-line pb-6">
       <div class="flex flex-wrap items-center gap-6">
         <span class="ak-frame grid h-32 w-32 shrink-0 place-items-center border border-line bg-accent/10 text-accent"><Heart :size="46" :stroke-width="2" /></span>
         <div class="min-w-0">
@@ -56,7 +56,7 @@ function downloadMetadata(track: Track) { emit("downloadMetadata", track); }
       </div>
     </header>
 
-    <div class="mt-8">
+    <div class="mt-8 min-h-0 flex-1">
       <TrackList :tracks="tracks" empty-key="favorites.empty" :selectable="selectMode" :selected="selected" @play="play" @menu="openContextMenu" @details="emit('details', $event)" @toggle="toggleSelect" />
     </div>
 

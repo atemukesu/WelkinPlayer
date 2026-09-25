@@ -50,8 +50,8 @@ function downloadMetadata(track: Track) { emit("downloadMetadata", track); }
 </script>
 
 <template>
-  <div class="mx-auto w-full max-w-6xl px-6 py-6 lg:px-8 lg:py-8">
-    <header class="border-b border-line pb-6">
+  <div class="mx-auto flex h-full w-full max-w-6xl flex-col px-6 py-6 lg:px-8 lg:py-8">
+    <header class="shrink-0 border-b border-line pb-6">
       <div class="flex flex-wrap items-center gap-6">
         <template v-if="activePlaylist">
           <PlaylistCover :playlist="activePlaylist" class="ak-frame h-32 w-32 shrink-0 border border-line text-5xl" :icon-size="40" />
@@ -80,13 +80,13 @@ function downloadMetadata(track: Track) { emit("downloadMetadata", track); }
       </div>
     </header>
 
-    <div v-if="enriching" class="mb-3 mt-8 flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.2em] text-accent"><span class="ak-pulse" style="width: 14px; height: 9px"></span>{{ t("library.enriching", { done: enrichDone, total: enrichTotal }) }}</div>
+    <div v-if="enriching" class="mb-3 mt-8 flex shrink-0 items-center gap-2 font-mono text-[11px] uppercase tracking-[0.2em] text-accent"><span class="ak-pulse" style="width: 14px; height: 9px"></span>{{ t("library.enriching", { done: enrichDone, total: enrichTotal }) }}</div>
 
-    <div v-if="player.tracks.length === 0" class="ak-frame grid place-items-center gap-4 border border-dashed border-line bg-surface/50 px-6 py-20 text-center">
+    <div v-if="player.tracks.length === 0" class="ak-frame grid shrink-0 place-items-center gap-4 border border-dashed border-line bg-surface/50 px-6 py-20 text-center">
       <template v-if="loading"><span class="ak-pulse"></span><p class="text-sm font-semibold uppercase tracking-[0.2em] text-muted">{{ t("library.loading") }}</p></template>
       <template v-else><p class="max-w-md text-sm text-muted">{{ t("library.emptyDesc") }}</p></template>
     </div>
-    <TrackList v-else :tracks="tracks" empty-key="library.playlists.noTracks" :removable="!!activePlaylist" :selectable="selectMode" :selected="selected" @play="play" @menu="openContextMenu" @details="emit('details', $event)" @remove="remove" @toggle="toggleSelect" />
+    <div v-else class="min-h-0 flex-1"><TrackList :tracks="tracks" empty-key="library.playlists.noTracks" :removable="!!activePlaylist" :selectable="selectMode" :selected="selected" @play="play" @menu="openContextMenu" @details="emit('details', $event)" @remove="remove" @toggle="toggleSelect" /></div>
 
     <TrackContextMenu v-if="contextTrack" :track="contextTrack" :x="contextPosition.x" :y="contextPosition.y" :selected-paths="[...selected]" :playlist-id="activePlaylist?.id ?? null" :downloading="downloadingTrackId === contextTrack.id" @close="contextTrack = null" @download-metadata="downloadMetadata" />
   </div>

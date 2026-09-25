@@ -1,5 +1,27 @@
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { defineStore } from "pinia";
+
+const VOLUME_STORAGE_KEY = "welkin-volume";
+const MUTED_STORAGE_KEY = "welkin-muted";
+const DEFAULT_VOLUME = 72;
+const SAVE_INTERVAL_STORAGE_KEY = "welkin-save-interval";
+export const DEFAULT_SAVE_INTERVAL = 15;
+export const MIN_SAVE_INTERVAL = 5;
+export const MAX_SAVE_INTERVAL = 60;
+
+/** Restore the locally saved output volume, falling back to the default. */
+function readStoredVolume(): number {
+  const stored = Number(localStorage.getItem(VOLUME_STORAGE_KEY));
+  return Number.isFinite(stored) && stored >= 0 && stored <= 100 ? stored : DEFAULT_VOLUME;
+}
+
+/** Restore the locally saved progress-save interval (seconds). */
+function readStoredSaveInterval(): number {
+  const stored = Number(localStorage.getItem(SAVE_INTERVAL_STORAGE_KEY));
+  return Number.isFinite(stored) && stored >= MIN_SAVE_INTERVAL && stored <= MAX_SAVE_INTERVAL
+    ? Math.round(stored)
+    : DEFAULT_SAVE_INTERVAL;
+}
 
 export interface Track {
   id: number;
@@ -10,8 +32,14 @@ export interface Track {
   color: string;
   /** Remote WebDAV href, used to fetch metadata, covers and the audio stream. */
   path?: string;
-  /** Cached cover thumbnail as a data URL, once resolved. */
+  /** Remote last-modified timestamp, used to bust the cover image cache. */
+  modified?: string | null;
+  /** Cover thumbnail URL (asset protocol), once resolved. */
   cover?: string;
+  /** Whether metadata has already been loaded from cache or the network. */
+  metaLoaded?: boolean;
+  /** Whether the on-disk cache has already been consulted for this track. */
+  assetsHydrated?: boolean;
 }
 
 function formatClock(seconds: number): string {
@@ -32,8 +60,33 @@ export const usePlayerStore = defineStore("player", () => {
   const position = ref(0);
   /** Track length in seconds, once the media element reports it. */
   const duration = ref(0);
-  const volume = ref(72);
-  const muted = ref(false);
+  const volume = ref(readStoredVolume());
+  const muted = ref(localStorage.getItem(MUTED_STORAGE_KEY) === "1");
+  /** Seconds between periodic progress saves while audio is playing. */
+  const saveInterval = ref(readStoredSaveInterval());
+
+  // Persist the output volume/mute locally so each launch starts where the
+  // previous one left off (mirrors the theme/accent localStorage pattern).
+  // The watcher also clamps, so no code path can ever store a value outside 0-100.
+  watch(volume, (value) => {
+    const clamped = Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : DEFAULT_VOLUME;
+    if (clamped !== value) {
+      volume.value = clamped;
+      return;
+    }
+    localStorage.setItem(VOLUME_STORAGE_KEY, String(clamped));
+  });
+  watch(muted, (value) => localStorage.setItem(MUTED_STORAGE_KEY, value ? "1" : "0"));
+  watch(saveInterval, (value) => {
+    const clamped = Number.isFinite(value)
+      ? Math.min(MAX_SAVE_INTERVAL, Math.max(MIN_SAVE_INTERVAL, value))
+      : DEFAULT_SAVE_INTERVAL;
+    if (clamped !== value) {
+      saveInterval.value = clamped;
+      return;
+    }
+    localStorage.setItem(SAVE_INTERVAL_STORAGE_KEY, String(clamped));
+  });
 
   const currentIndex = computed(() =>
     currentTrack.value ? tracks.value.findIndex((track) => track.id === currentTrack.value?.id) + 1 : 0,
@@ -59,7 +112,18 @@ export const usePlayerStore = defineStore("player", () => {
 
   /** Replace the whole library, e.g. after loading a remote WebDAV listing. */
   function setTracks(nextTracks: Track[]) {
+    const previousPath = currentTrack.value?.path;
     tracks.value = [...nextTracks];
+    // Keep the current selection (and its restored position/playing state)
+    // when it still exists in the new listing; only fall back to the first
+    // track for a genuinely fresh library.
+    const preserved = previousPath
+      ? nextTracks.find((track) => track.path === previousPath)
+      : undefined;
+    if (preserved) {
+      currentTrack.value = preserved;
+      return;
+    }
     currentTrack.value = nextTracks[0] ?? null;
     resetProgress();
     isPlaying.value = false;
@@ -72,6 +136,22 @@ export const usePlayerStore = defineStore("player", () => {
     Object.assign(track, patch);
     if (currentTrack.value && currentTrack.value.id === id) {
       currentTrack.value = { ...currentTrack.value, ...patch };
+    }
+  }
+
+  /**
+   * Merge many partial updates in a single pass. Hydrating a 10k-track library
+   * otherwise costs O(n²) `find` calls plus one reactive write per track.
+   */
+  function updateTracks(patches: Array<{ id: number; patch: Partial<Track> }>) {
+    if (patches.length === 0) return;
+    const byId = new Map(tracks.value.map((track) => [track.id, track]));
+    for (const { id, patch } of patches) {
+      const track = byId.get(id);
+      if (track) Object.assign(track, patch);
+      if (currentTrack.value && currentTrack.value.id === id) {
+        currentTrack.value = { ...currentTrack.value, ...patch };
+      }
     }
   }
 
@@ -100,7 +180,7 @@ export const usePlayerStore = defineStore("player", () => {
   }
 
   function setVolume(value: number) {
-    volume.value = Math.min(100, Math.max(0, value));
+    volume.value = Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : volume.value;
   }
 
   function toggleMute() {
@@ -129,6 +209,7 @@ export const usePlayerStore = defineStore("player", () => {
     duration,
     volume,
     muted,
+    saveInterval,
     currentIndex,
     hasTrack,
     elapsedTime,
@@ -136,6 +217,7 @@ export const usePlayerStore = defineStore("player", () => {
     selectTrack,
     setTracks,
     updateTrack,
+    updateTracks,
     togglePlayback,
     setPlaying,
     setPosition,

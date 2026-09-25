@@ -1,3 +1,4 @@
+import { convertFileSrc } from "@tauri-apps/api/core";
 import type { Track } from "../stores/player";
 
 /** Shape of the `RemoteEntry` struct returned by the Rust `list_webdav_audio` command. */
@@ -39,6 +40,7 @@ export function trackFromEntry(entry: RemoteEntry, index: number): Track {
     duration: "--:--",
     color: colorFor(entry.path || entry.name),
     path: entry.path,
+    modified: entry.modified,
   };
 }
 
@@ -49,6 +51,24 @@ export interface TrackMetadata {
   album: string | null;
   durationSecs: number | null;
   coverHash: string | null;
+}
+
+/** Mirrors the Rust `CachedTrack` struct returned by `load_cached_tracks`. */
+export interface CachedTrack {
+  path: string;
+  metadata: TrackMetadata | null;
+  coverPath: string | null;
+}
+
+/**
+ * Turn a cached cover thumbnail path into an asset-protocol URL the webview can
+ * load directly. A version (the remote mtime) busts the browser cache when the
+ * underlying file changes.
+ */
+export function coverUrl(coverPath: string | null | undefined, version?: string | null): string | undefined {
+  if (!coverPath) return undefined;
+  const url = convertFileSrc(coverPath);
+  return version ? `${url}?v=${encodeURIComponent(version)}` : url;
 }
 
 /** Format whole seconds as `m:ss`. */

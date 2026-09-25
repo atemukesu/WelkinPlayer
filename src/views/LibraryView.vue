@@ -120,7 +120,7 @@ function removePlaylist(id: string) {
           </div>
           <div v-if="heroTrack" class="flex items-center gap-4">
             <span class="ak-frame grid h-28 w-28 shrink-0 place-items-center overflow-hidden text-4xl font-black text-white/90" :style="{ backgroundColor: heroTrack.color }">
-              <img v-if="heroTrack.cover" :src="heroTrack.cover" alt="" class="h-full w-full object-cover" />
+              <img v-if="heroTrack.cover" :src="heroTrack.cover" alt="" decoding="async" class="h-full w-full object-cover" />
               <template v-else>{{ initial(heroTrack) }}</template>
             </span>
             <div class="hidden max-w-[200px] sm:block">

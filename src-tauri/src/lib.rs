@@ -15,6 +15,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .setup(|app| {
+            // Let the webview load cached cover thumbnails as plain asset URLs.
+            commands::media::allow_cache_dir(app.handle());
             match proxy::start(app.handle().clone()) {
                 Ok(stream_proxy) => {
                     log::info!(
@@ -45,6 +47,8 @@ pub fn run() {
             commands::media::get_cached_metadata,
             commands::media::get_cover,
             commands::media::get_cached_cover,
+            commands::media::load_cached_tracks,
+            commands::media::cover_path,
             commands::media::get_cache_dir,
             commands::media::set_cache_dir,
             commands::media::load_library_cache,

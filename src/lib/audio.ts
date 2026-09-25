@@ -1,4 +1,5 @@
-import { watch } from "vue";
+import { effectScope, watch } from "vue";
+import type { EffectScope } from "vue";
 import { i18n } from "../i18n";
 import { invoke } from "../api";
 import { usePlayerStore } from "../stores/player";
@@ -16,7 +17,10 @@ import type { StreamEndpoint } from "./remote";
  * native progressive playback and Range-based seeking.
  */
 let audio: HTMLAudioElement | null = null;
-let initialized = false;
+/** In-flight/complete initialisation, so repeated calls never build a second element. */
+let initPromise: Promise<void> | null = null;
+/** Collects the store watchers so they can be stopped on teardown. */
+let scope: EffectScope | null = null;
 /** Position (seconds) to apply once the current source reports its metadata. */
 let pendingSeek: number | null = null;
 
@@ -55,7 +59,7 @@ function syncBuffered() {
   if (!audio) return;
   const player = usePlayerStore();
   if (player.duration <= 0 || audio.buffered.length === 0) {
-    player.bufferedProgress = 0;
+    player.setBufferedProgress(0);
     return;
   }
 
@@ -69,7 +73,7 @@ function syncBuffered() {
     }
     if (start <= audio.currentTime) bufferedEnd = end;
   }
-  player.bufferedProgress = (bufferedEnd / player.duration) * 100;
+  player.setBufferedProgress((bufferedEnd / player.duration) * 100);
 }
 
 function setSource(path: string) {
@@ -86,10 +90,21 @@ function setSource(path: string) {
   if (player.isPlaying) play();
 }
 
-export async function initAudio() {
-  if (initialized) return;
-  initialized = true;
+/**
+ * Create the single media element and wire it to the store. Safe to call
+ * repeatedly: the first call wins and later calls await the same promise, so
+ * only one `<audio>` (and one set of watchers) ever exists.
+ */
+export function initAudio(): Promise<void> {
+  initPromise ??= bootstrapAudio().catch((error) => {
+    // Don't cache a failed initialisation — allow a later retry.
+    initPromise = null;
+    throw error;
+  });
+  return initPromise;
+}
 
+async function bootstrapAudio(): Promise<void> {
   const player = usePlayerStore();
 
   try {
@@ -126,45 +141,64 @@ export async function initAudio() {
     fail(describeMediaError(audio));
   });
 
-  watch(
-    () => player.currentTrack?.path,
-    (path) => {
-      if (!audio) return;
-      if (!path) {
-        audio.removeAttribute("src");
-        audio.load();
-        return;
-      }
-      setSource(path);
-    },
-  );
+  scope = effectScope();
+  scope.run(() => {
+    watch(
+      () => player.currentTrack?.path,
+      (path) => {
+        if (!audio) return;
+        if (!path) {
+          audio.removeAttribute("src");
+          audio.load();
+          return;
+        }
+        setSource(path);
+      },
+    );
 
-  watch(
-    () => player.isPlaying,
-    (playing) => {
-      if (!audio || !player.currentTrack?.path) return;
-      if (playing) play();
-      else audio.pause();
-    },
-  );
+    watch(
+      () => player.isPlaying,
+      (playing) => {
+        if (!audio || !player.currentTrack?.path) return;
+        if (playing) play();
+        else audio.pause();
+      },
+    );
 
-  watch(
-    () => player.volume,
-    (volume) => {
-      if (audio) audio.volume = Math.min(1, Math.max(0, volume / 100));
-    },
-  );
+    watch(
+      () => player.volume,
+      (volume) => {
+        if (audio) audio.volume = Math.min(1, Math.max(0, volume / 100));
+      },
+    );
 
-  watch(
-    () => player.muted,
-    (muted) => {
-      if (audio) audio.muted = muted;
-    },
-  );
+    watch(
+      () => player.muted,
+      (muted) => {
+        if (audio) audio.muted = muted;
+      },
+    );
+  });
 
   const initialPath = player.currentTrack?.path;
   if (initialPath) setSource(initialPath);
 }
+
+/** Tear the element and its watchers down. Mainly guards against HMR leaks. */
+function disposeAudio() {
+  scope?.stop();
+  scope = null;
+  if (audio) {
+    audio.pause();
+    audio.removeAttribute("src");
+    audio.load();
+    audio = null;
+  }
+  initPromise = null;
+  pendingSeek = null;
+}
+
+if (import.meta.hot) import.meta.hot.dispose(disposeAudio);
 
 /** Current playback time of the audio element, in seconds. */
 export function currentTime(): number {

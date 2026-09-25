@@ -29,6 +29,9 @@ importers:
       pinia:
         specifier: ^4.0.3
         version: 4.0.3(@vue/devtools-api@8.2.1)(typescript@6.0.3)(vue@3.5.43(typescript@6.0.3))
+      virtua:
+        specifier: ^0.52.7
+        version: 0.52.7(vue@3.5.43(typescript@6.0.3))
       vue:
         specifier: ^3.5.13
         version: 3.5.43(typescript@6.0.3)
@@ -731,6 +734,32 @@ packages:
     engines: {node: '>=14.17'}
     hasBin: true
 
+  virtua@0.52.7:
+    resolution: {integrity: sha512-3xdhgKCbetu7Gez+DJfjmE+1zI7tsCN+07ZpUBhABDyqqT5r+fji6c0vmQCZlxI8o022d/LdIm2E/9T/LE9rPA==}
+    peerDependencies:
+      '@angular/common': '>=20.0.0'
+      '@angular/core': '>=20.0.0'
+      react: '>=16.14.0'
+      react-dom: '>=16.14.0'
+      solid-js: '>=1.0'
+      svelte: '>=5.0'
+      vue: '>=3.2'
+    peerDependenciesMeta:
+      '@angular/common':
+        optional: true
+      '@angular/core':
+        optional: true
+      react:
+        optional: true
+      react-dom:
+        optional: true
+      solid-js:
+        optional: true
+      svelte:
+        optional: true
+      vue:
+        optional: true
+
   vite@8.3.0:
     resolution: {integrity: sha512-lhZBVvEHefgE+HQZC9O7EBJgCU/nVzFNl7vkS4RE0APtWLP02/8QVIkQtzBxPquh7lq5/78NHipTj7ODQ6XuyQ==}
     engines: {node: ^20.19.0 || >=22.12.0}
@@ -1326,6 +1355,10 @@ snapshots:
       picomatch: 4.0.7
 
   typescript@6.0.3: {}
+
+  virtua@0.52.7(vue@3.5.43(typescript@6.0.3)):
+    optionalDependencies:
+      vue: 3.5.43(typescript@6.0.3)
 
   vite@8.3.0(jiti@2.7.0):
     dependencies:

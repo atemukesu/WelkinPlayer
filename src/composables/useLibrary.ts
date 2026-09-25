@@ -2,8 +2,8 @@ import { ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { invoke, toAppError } from "../api";
 import { pushToast } from "../lib/toast";
-import { formatDuration, trackFromEntry } from "../lib/remote";
-import type { RemoteEntry, TrackMetadata } from "../lib/remote";
+import { formatDuration, coverUrl, trackFromEntry } from "../lib/remote";
+import type { RemoteEntry, TrackMetadata, CachedTrack } from "../lib/remote";
 import { usePlayerStore } from "../stores/player";
 import type { Track } from "../stores/player";
 
@@ -47,25 +47,57 @@ export function useLibrary() {
   function showTracks(entries: RemoteEntry[], cached: Track[], invalidate?: Set<string>): Track[] {
     const tracks = reconcileTracks(entries, cached, invalidate);
     player.setTracks(tracks);
-    void enrichTracks(tracks);
+    // Render fully from the on-disk cache first (single IPC batch), then only
+    // hit the network for whatever is still missing.
+    void (async () => { await hydrateCachedAssets(tracks); await enrichTracks(tracks); })();
     return tracks;
   }
 
+  /** Apply cached metadata + cover URLs to the whole list in one batch. */
+  async function hydrateCachedAssets(tracks: Track[]) {
+    const targets = tracks.filter((track) => track.path && !track.assetsHydrated);
+    const paths = targets.map((track) => track.path).filter((path): path is string => !!path);
+    if (paths.length === 0) return;
+    let cached: CachedTrack[];
+    try { cached = await invoke<CachedTrack[]>("load_cached_tracks", { paths }); }
+    catch (error) { console.warn("[welkin] cached track load failed", error); return; }
+    const byPath = new Map(cached.map((entry) => [entry.path, entry]));
+    const patches: Array<{ id: number; patch: Partial<Track> }> = [];
+    for (const track of targets) {
+      if (!track.path) continue;
+      const entry = byPath.get(track.path);
+      const patch: Partial<Track> = { assetsHydrated: true };
+      const meta = entry?.metadata;
+      if (meta) {
+        if (meta.title) patch.title = meta.title;
+        if (meta.artist) patch.artist = meta.artist;
+        if (meta.album) patch.album = meta.album;
+        if (meta.durationSecs) patch.duration = formatDuration(meta.durationSecs);
+        patch.metaLoaded = true;
+      }
+      const url = coverUrl(entry?.coverPath, track.modified);
+      if (url) patch.cover = url;
+      patches.push({ id: track.id, patch });
+    }
+    player.updateTracks(patches);
+  }
+
   async function applyMetadata(track: Track, meta: TrackMetadata) {
-    const patch: Partial<Track> = {};
+    const patch: Partial<Track> = { metaLoaded: true };
     if (meta.title) patch.title = meta.title;
     if (meta.artist) patch.artist = meta.artist;
     if (meta.album) patch.album = meta.album;
     if (meta.durationSecs) patch.duration = formatDuration(meta.durationSecs);
     player.updateTrack(track.id, patch);
     if (meta.coverHash) {
-      const cover = await invoke<string | null>("get_cover", { hash: meta.coverHash });
-      if (cover) player.updateTrack(track.id, { cover });
+      const path = await invoke<string | null>("cover_path", { hash: meta.coverHash });
+      const url = coverUrl(path, track.modified);
+      if (url) player.updateTrack(track.id, { cover: url });
     }
   }
 
   async function enrichTracks(tracks: Track[]) {
-    const queue = tracks.filter((track) => track.path);
+    const queue = tracks.filter((track) => track.path && !track.metaLoaded);
     if (queue.length === 0) return;
     enriching.value = true;
     enrichDone.value = 0;
@@ -74,8 +106,7 @@ export function useLibrary() {
       for (let track = queue.shift(); track; track = queue.shift()) {
         if (!track.path) continue;
         try {
-          const cached = await invoke<TrackMetadata | null>("get_cached_metadata", { path: track.path });
-          await applyMetadata(track, cached ?? await invoke<TrackMetadata>("read_track_metadata", { path: track.path }));
+          await applyMetadata(track, await invoke<TrackMetadata>("read_track_metadata", { path: track.path }));
         } catch (error) {
           console.warn(`[welkin] metadata failed for ${track.path}`, error);
         } finally { enrichDone.value += 1; }
@@ -100,7 +131,7 @@ export function useLibrary() {
     } catch { /* No cache available yet. */ } finally { loadingLibrary.value = false; }
   }
 
-  async function loadRemoteLibrary() {
+  async function loadRemoteLibrary(options?: { silent?: boolean }) {
     loadingLibrary.value = true;
     try {
       let current = player.tracks;
@@ -108,18 +139,21 @@ export function useLibrary() {
         const cached = await invoke<RemoteEntry[]>("load_library_cache").catch(() => []);
         if (cached.length > 0) current = showTracks(cached, []);
       }
-      let entries: RemoteEntry[];
-      try { entries = await invoke<RemoteEntry[]>("list_webdav_audio", { path: null }); }
+      // Compare the fresh WebDAV listing against the local cache: unchanged
+      // tracks keep their cached metadata/covers, changed ones are invalidated.
+      let result: RefreshResult;
+      try { result = await invoke<RefreshResult>("refresh_webdav_library"); }
       catch (error) {
-        pushToast(player.tracks.length === 0 ? "error" : "info", player.tracks.length === 0 ? friendlyError(error) : t("library.usingCache"));
+        if (player.tracks.length === 0) pushToast("error", friendlyError(error));
+        else if (!options?.silent) pushToast("info", t("library.usingCache"));
         return;
       }
-      if (entries.length === 0) {
-        pushToast("info", player.tracks.length === 0 ? t("settings.webdav.libraryEmpty") : t("library.usingCache"));
+      if (result.entries.length === 0) {
+        if (player.tracks.length === 0) pushToast("info", t("settings.webdav.libraryEmpty"));
+        else if (!options?.silent) pushToast("info", t("library.usingCache"));
         return;
       }
-      showTracks(entries, current);
-      void invoke("save_library_cache", { entries }).catch(() => {});
+      showTracks(result.entries, current, new Set(result.changedPaths));
     } catch (error) { pushToast("error", friendlyError(error)); }
     finally { loadingLibrary.value = false; }
   }

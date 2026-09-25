@@ -17,7 +17,7 @@ const { t } = useI18n();
     @contextmenu.prevent="emit('menu', $event, track)"
   >
     <div class="relative aspect-square w-full overflow-hidden" :style="{ backgroundColor: track.color }">
-      <img v-if="track.cover" :src="track.cover" alt="" class="absolute inset-0 h-full w-full object-cover" />
+      <img v-if="track.cover" :src="track.cover" alt="" loading="lazy" decoding="async" class="absolute inset-0 h-full w-full object-cover" />
       <span v-else class="absolute inset-0 grid place-items-center text-5xl font-black text-white/90">{{ initial(track) }}</span>
       <button v-if="!selectable" class="ak-clip-tr absolute bottom-0 right-0 grid h-10 w-10 place-items-center bg-fg text-bg opacity-0 transition-opacity group-hover:opacity-100" :title="t('controls.play')" @click.stop="emit('play', track)">
         <Play :size="16" />

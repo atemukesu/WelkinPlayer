@@ -46,7 +46,7 @@ const editingPlaylist = ref<string | null>(null);
 const playbackRestored = ref(false);
 let applyingProfile = false;
 let restoringPlayback = false;
-let lastSavedPosition = 0;
+let lastPositionSavedAt = 0;
 
 watch(view, (next) => { if (next !== "player") baseView.value = next; });
 watchEffect(() => { document.documentElement.classList.toggle("dark", theme.value === "dark"); document.documentElement.dataset.accent = accent.value; localStorage.setItem("welkin-theme", theme.value); localStorage.setItem("welkin-accent", accent.value); });
@@ -81,18 +81,34 @@ watch([() => profile.ready, () => player.tracks.length], () => {
   window.setTimeout(() => { restoringPlayback = false; }, 1200);
 });
 
-// Persist the playback position periodically and on track changes.
-watch(() => player.currentTrack?.path, (path) => {
-  if (!booted.value || restoringPlayback || !path) return;
-  lastSavedPosition = 0;
-  profile.recordPlayback(path, 0);
-});
-watch(() => player.position, (position) => {
+// Persist the playback position: on track changes, on pause/seek/hide/exit, and
+// as a low-frequency safety net while audio keeps playing.
+function savePlaybackPosition(force = false) {
   const path = player.currentTrack?.path;
   if (!booted.value || restoringPlayback || !path) return;
-  if (Math.abs(position - lastSavedPosition) < 5) return;
-  lastSavedPosition = position;
-  profile.recordPlayback(path, position);
+  lastPositionSavedAt = Date.now();
+  profile.recordPlayback(path, player.position);
+  if (force) void profile.flush();
+}
+function savePlaybackPositionOnLeave() { savePlaybackPosition(true); }
+function onVisibilityChange() { if (document.visibilityState === "hidden") savePlaybackPosition(true); }
+
+watch(() => player.currentTrack?.path, (path) => {
+  if (!booted.value || restoringPlayback || !path) return;
+  lastPositionSavedAt = Date.now();
+  profile.recordPlayback(path, 0);
+});
+watch(() => player.position, (position, previous) => {
+  if (!booted.value || restoringPlayback) return;
+  // A large jump between two timeupdate samples means the user seeked; save it
+  // right away instead of waiting for the periodic safety net.
+  const jumped = typeof previous === "number" && Math.abs(position - previous) > 2;
+  if (!jumped && Date.now() - lastPositionSavedAt < player.saveInterval * 1000) return;
+  savePlaybackPosition();
+});
+watch(() => player.isPlaying, (playing) => {
+  if (!booted.value || restoringPlayback || playing) return;
+  savePlaybackPosition(true);
 });
 
 function readAccent(): Accent { const value = localStorage.getItem("welkin-accent"); return (accents.some((item) => item.id === value) ? value : "amber") as Accent; }
@@ -125,7 +141,7 @@ async function bootstrap() {
   applyProfile();
   booted.value = true;
   void loadCachedLibrary();
-  if (!firstRun && webdav.password) void loadRemoteLibrary();
+  if (!firstRun && webdav.password) void loadRemoteLibrary({ silent: true });
 }
 
 function onWizardFinish() {
@@ -170,8 +186,8 @@ function onGlobalKeydown(event: KeyboardEvent) {
   player.togglePlayback();
 }
 
-onMounted(() => { window.addEventListener("hashchange", syncViewFromHash); window.addEventListener("keydown", onGlobalKeydown); void initAudio(); void invoke<string>("ping").catch((error) => console.warn("[welkin] ping failed", describeError(error))); void bootstrap(); });
-onUnmounted(() => { window.removeEventListener("hashchange", syncViewFromHash); window.removeEventListener("keydown", onGlobalKeydown); void profile.flush(); });
+onMounted(() => { window.addEventListener("hashchange", syncViewFromHash); window.addEventListener("keydown", onGlobalKeydown); window.addEventListener("beforeunload", savePlaybackPositionOnLeave); window.addEventListener("pagehide", savePlaybackPositionOnLeave); document.addEventListener("visibilitychange", onVisibilityChange); void initAudio(); void invoke<string>("ping").catch((error) => console.warn("[welkin] ping failed", describeError(error))); void bootstrap(); });
+onUnmounted(() => { savePlaybackPosition(true); window.removeEventListener("hashchange", syncViewFromHash); window.removeEventListener("keydown", onGlobalKeydown); window.removeEventListener("beforeunload", savePlaybackPositionOnLeave); window.removeEventListener("pagehide", savePlaybackPositionOnLeave); document.removeEventListener("visibilitychange", onVisibilityChange); void profile.flush(); });
 </script>
 
 <template>

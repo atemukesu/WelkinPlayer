@@ -115,7 +115,7 @@ watch(
     <div class="relative z-10 grid min-h-0 flex-1 gap-6 overflow-hidden px-5 py-4 md:grid-cols-[minmax(220px,0.34fr)_minmax(0,0.66fr)] md:gap-12 md:px-10 md:py-8 lg:grid-cols-[minmax(280px,0.32fr)_minmax(0,0.68fr)] lg:gap-16 lg:px-16">
       <div class="hidden min-h-0 flex-col justify-center md:flex">
         <div class="ak-frame mx-auto aspect-square w-full max-w-[420px] overflow-hidden" :style="{ backgroundColor: player.currentTrack.color }">
-          <img v-if="player.currentTrack.cover" :src="player.currentTrack.cover" alt="" class="h-full w-full object-cover" />
+          <img v-if="player.currentTrack.cover" :src="player.currentTrack.cover" alt="" decoding="async" class="h-full w-full object-cover" />
           <span v-else class="grid h-full w-full place-items-center text-8xl font-black text-white/90">{{ initial(player.currentTrack) }}</span>
         </div>
         <div class="mx-auto mt-6 w-full max-w-[420px]">

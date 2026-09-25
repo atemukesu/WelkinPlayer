@@ -218,6 +218,11 @@ const messages = {
         title: "外观",
         desc: "自定义界面主题、主题色与语言。",
       },
+      playback: {
+        title: "播放",
+        desc: "控制播放进度的保存节奏。暂停、拖动、切换曲目或退出时会立即保存，该间隔仅作为播放中的兜底。",
+        interval: "进度保存间隔",
+      },
       cache: {
         title: "本地缓存",
         desc: "音频元数据与封面缩略图缓存到下方目录，再次进入资料库时直接读取，不再请求网络。",
@@ -527,6 +532,11 @@ const messages = {
       appearance: {
         title: "Appearance",
         desc: "Customize the interface theme, accent color, and language.",
+      },
+      playback: {
+        title: "Playback",
+        desc: "Controls how playback progress is saved. Pausing, seeking, changing tracks or quitting saves immediately; this interval is only a safety net while playing.",
+        interval: "Progress save interval",
       },
       cache: {
         title: "Local cache",

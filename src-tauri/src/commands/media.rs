@@ -50,7 +50,7 @@ fn default_cache_dir(app: &AppHandle) -> Result<PathBuf, AppError> {
 }
 
 /// Configured cache directory, falling back to the app cache dir.
-fn resolve_cache_dir(app: &AppHandle) -> PathBuf {
+pub(crate) fn resolve_cache_dir(app: &AppHandle) -> PathBuf {
     let configured = app
         .store(SETTINGS_FILE)
         .ok()
@@ -61,6 +61,16 @@ fn resolve_cache_dir(app: &AppHandle) -> PathBuf {
     match configured {
         Some(dir) => PathBuf::from(dir),
         None => default_cache_dir(app).unwrap_or_else(|_| PathBuf::from("welkin-cache")),
+    }
+}
+
+/// Grant the asset protocol read access to the cache directory (covers are
+/// served to the webview as plain URLs instead of base64 data URLs). Call this
+/// at startup and whenever the cache directory changes.
+pub(crate) fn allow_cache_dir(app: &AppHandle) {
+    let dir = resolve_cache_dir(app);
+    if let Err(error) = app.asset_protocol_scope().allow_directory(&dir, true) {
+        log::warn!("failed to allow asset scope for {}: {error}", dir.display());
     }
 }
 
@@ -179,6 +189,7 @@ pub fn set_cache_dir(app: AppHandle, dir: String) -> Result<String, AppError> {
     }
     store.save()?;
 
+    allow_cache_dir(&app);
     Ok(resolve_cache_dir(&app).to_string_lossy().to_string())
 }
 
@@ -461,4 +472,61 @@ pub fn get_cover(app: AppHandle, hash: String) -> Result<Option<String>, AppErro
 pub fn get_cached_cover(app: AppHandle, path: String) -> Result<Option<String>, AppError> {
     let dir = resolve_cache_dir(&app);
     read_cover_file(&cover_file(&dir, &cover_hash(&path)))
+}
+
+fn cover_path_for(dir: &Path, hash: &str) -> Option<String> {
+    let file = cover_file(dir, hash);
+    file.is_file().then(|| file.to_string_lossy().to_string())
+}
+
+/// One track's on-disk cached assets, keyed by remote path.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CachedTrack {
+    /// Remote path the assets belong to.
+    pub path: String,
+    /// Cached text metadata, when present.
+    pub metadata: Option<TrackMetadata>,
+    /// Absolute path to the cached cover thumbnail, when present.
+    pub cover_path: Option<String>,
+}
+
+/// Batch cache-only lookup: text metadata and cover path for many tracks in a
+/// single IPC call, so the library can render fully from cache before any
+/// network request is made.
+#[tauri::command]
+pub async fn load_cached_tracks(
+    app: AppHandle,
+    paths: Vec<String>,
+) -> Result<Vec<CachedTrack>, AppError> {
+    let dir = resolve_cache_dir(&app);
+    // Reading one JSON file per track must not run on the main thread once a
+    // library holds thousands of entries.
+    tauri::async_runtime::spawn_blocking(move || {
+        paths
+            .into_iter()
+            .map(|path| {
+                let hash = cover_hash(&path);
+                CachedTrack {
+                    metadata: read_meta(&dir, &hash),
+                    cover_path: cover_path_for(&dir, &hash),
+                    path,
+                }
+            })
+            .collect::<Vec<_>>()
+    })
+    .await
+    .map_err(|error| AppError::Other(format!("cached track task failed: {error}")))
+}
+
+/// Absolute path of a cached cover thumbnail, or `None` when not cached.
+#[tauri::command]
+pub fn cover_path(app: AppHandle, hash: String) -> Result<Option<String>, AppError> {
+    if hash.is_empty() || !hash.chars().all(|character| character.is_ascii_hexdigit()) {
+        return Err(AppError::invalid_argument(
+            "hash",
+            "must be a hexadecimal cache id",
+        ));
+    }
+    Ok(cover_path_for(&resolve_cache_dir(&app), &hash))
 }

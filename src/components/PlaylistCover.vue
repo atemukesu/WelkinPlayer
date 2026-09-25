@@ -15,8 +15,8 @@ const foreground = computed(() => track.value ? "text-white/90" : "text-accent-f
 
 <template>
   <span class="relative grid shrink-0 place-items-center overflow-hidden" :class="hasImage ? '' : foreground" :style="hasImage ? {} : { backgroundColor: background }">
-    <img v-if="playlist.cover" :src="playlist.cover" alt="" class="h-full w-full object-cover" />
-    <img v-else-if="track?.cover" :src="track.cover" alt="" class="h-full w-full object-cover" />
+    <img v-if="playlist.cover" :src="playlist.cover" alt="" decoding="async" class="h-full w-full object-cover" />
+    <img v-else-if="track?.cover" :src="track.cover" alt="" loading="lazy" decoding="async" class="h-full w-full object-cover" />
     <span v-else-if="track" class="font-black leading-none" :style="{ fontSize: `${iconSize * 1.35}px` }">{{ initial(track) }}</span>
     <ListMusic v-else :size="iconSize" :stroke-width="1.8" />
   </span>
