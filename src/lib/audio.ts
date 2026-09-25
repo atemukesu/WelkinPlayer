@@ -17,6 +17,8 @@ import type { StreamEndpoint } from "./remote";
  */
 let audio: HTMLAudioElement | null = null;
 let initialized = false;
+/** Position (seconds) to apply once the current source reports its metadata. */
+let pendingSeek: number | null = null;
 
 function t(key: string): string {
   return i18n.global.t(key);
@@ -102,7 +104,16 @@ export async function initAudio() {
   audio.volume = Math.min(1, Math.max(0, player.volume / 100));
   audio.muted = player.muted;
 
-  audio.addEventListener("loadedmetadata", () => { player.setDuration(audio?.duration ?? 0); syncBuffered(); });
+  audio.addEventListener("loadedmetadata", () => {
+    player.setDuration(audio?.duration ?? 0);
+    syncBuffered();
+    if (pendingSeek !== null && audio) {
+      const limit = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : pendingSeek;
+      audio.currentTime = Math.min(pendingSeek, limit);
+      player.setPosition(audio.currentTime);
+      pendingSeek = null;
+    }
+  });
   audio.addEventListener("durationchange", () => { player.setDuration(audio?.duration ?? 0); syncBuffered(); });
   audio.addEventListener("timeupdate", () => { player.setPosition(audio?.currentTime ?? 0); syncBuffered(); });
   audio.addEventListener("progress", syncBuffered);
@@ -167,6 +178,23 @@ export function seekPercent(value: number) {
   const seconds = (Math.min(100, Math.max(0, value)) / 100) * player.duration;
   audio.currentTime = seconds;
   player.setPosition(seconds);
+}
+
+/** Seek to an absolute number of seconds (applied once metadata is ready). */
+export function seekTo(seconds: number) {
+  const player = usePlayerStore();
+  if (!Number.isFinite(seconds) || seconds <= 0) return;
+  if (!audio) {
+    pendingSeek = seconds;
+    return;
+  }
+  const duration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0;
+  if (duration > 0) {
+    audio.currentTime = Math.min(seconds, duration);
+    player.setPosition(audio.currentTime);
+  } else {
+    pendingSeek = seconds;
+  }
 }
 
 /** Seek by a relative number of seconds (clamped to the track bounds). */

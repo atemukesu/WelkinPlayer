@@ -33,6 +33,8 @@ pub struct LoadedProfile {
     pub source: String,
     /// Non-fatal reason the remote copy could not be used, if any.
     pub remote_error: Option<String>,
+    /// Whether the server was reachable but has no profile document yet.
+    pub remote_missing: bool,
 }
 
 /// Result of persisting a profile.
@@ -75,9 +77,24 @@ fn client(app: &AppHandle) -> Result<Option<WebDavClient>, AppError> {
     Ok(Some(client))
 }
 
-/// Load the profile, preferring the authoritative remote copy.
+/// Read the local cache instantly, without touching the network. Used at
+/// startup so the UI can render before the authoritative remote copy arrives.
 #[tauri::command]
-pub async fn load_profile(app: AppHandle) -> Result<LoadedProfile, AppError> {
+pub fn load_local_profile(app: AppHandle) -> Result<LoadedProfile, AppError> {
+    let local = local_get(&app);
+    let source = if local.is_some() { "local" } else { "none" };
+    Ok(LoadedProfile {
+        content: local,
+        source: source.to_string(),
+        remote_error: None,
+        remote_missing: false,
+    })
+}
+
+/// Fetch the authoritative remote profile, falling back to the local cache when
+/// the server is unreachable or has no document yet.
+#[tauri::command]
+pub async fn load_remote_profile(app: AppHandle) -> Result<LoadedProfile, AppError> {
     let local = local_get(&app);
 
     let client = match client(&app) {
@@ -88,6 +105,7 @@ pub async fn load_profile(app: AppHandle) -> Result<LoadedProfile, AppError> {
                 content: local,
                 source: "local".to_string(),
                 remote_error: Some(error.to_string()),
+                remote_missing: false,
             });
         }
     };
@@ -98,6 +116,7 @@ pub async fn load_profile(app: AppHandle) -> Result<LoadedProfile, AppError> {
             source: source.to_string(),
             content: local,
             remote_error: None,
+            remote_missing: false,
         });
     };
 
@@ -109,6 +128,7 @@ pub async fn load_profile(app: AppHandle) -> Result<LoadedProfile, AppError> {
                     content: local,
                     source: "local".to_string(),
                     remote_error: Some("远程配置过大，已忽略".to_string()),
+                    remote_missing: false,
                 });
             }
             let text = String::from_utf8(bytes.to_vec())
@@ -119,9 +139,10 @@ pub async fn load_profile(app: AppHandle) -> Result<LoadedProfile, AppError> {
                     source: source.to_string(),
                     content: local,
                     remote_error: None,
+                    remote_missing: true,
                 });
             }
-            // Keep the local fallback in sync with the authoritative copy.
+            // Keep the local cache in sync with the authoritative copy.
             if let Err(error) = local_set(&app, &text) {
                 log::warn!("failed to cache profile locally: {error}");
             }
@@ -129,6 +150,7 @@ pub async fn load_profile(app: AppHandle) -> Result<LoadedProfile, AppError> {
                 content: Some(text),
                 source: "remote".to_string(),
                 remote_error: None,
+                remote_missing: false,
             })
         }
         Err(AppError::WebdavNotFound(_)) => {
@@ -137,6 +159,7 @@ pub async fn load_profile(app: AppHandle) -> Result<LoadedProfile, AppError> {
                 source: source.to_string(),
                 content: local,
                 remote_error: None,
+                remote_missing: true,
             })
         }
         Err(error) => {
@@ -145,6 +168,7 @@ pub async fn load_profile(app: AppHandle) -> Result<LoadedProfile, AppError> {
                 content: local,
                 source: "local".to_string(),
                 remote_error: Some(error.to_string()),
+                remote_missing: false,
             })
         }
     }

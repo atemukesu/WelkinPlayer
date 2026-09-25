@@ -44,6 +44,10 @@ export interface Profile {
   favorites: string[];
   /** Most recently played remote track paths, newest first. */
   recent: string[];
+  /** Remote path of the track that was playing last. */
+  lastTrack?: string;
+  /** Playback position (seconds) of {@link lastTrack}. */
+  lastPosition?: number;
   playlists: Playlist[];
   /** Last local modification time (ms). */
   updatedAt: number;
@@ -148,6 +152,8 @@ export function parseProfile(raw: string | null | undefined, fallback: Profile):
     playCounts,
     favorites,
     recent,
+    lastTrack: typeof data.lastTrack === "string" ? data.lastTrack : undefined,
+    lastPosition: typeof data.lastPosition === "number" && Number.isFinite(data.lastPosition) ? Math.max(0, data.lastPosition) : undefined,
     playlists,
     updatedAt: typeof data.updatedAt === "number" ? data.updatedAt : 0,
   };

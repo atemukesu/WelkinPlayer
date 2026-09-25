@@ -16,6 +16,7 @@ interface LoadedProfile {
   content: string | null;
   source: ProfileSource;
   remoteError: string | null;
+  remoteMissing: boolean;
 }
 
 interface SaveProfileResult {
@@ -36,9 +37,12 @@ export const useProfileStore = defineStore("profile", () => {
   const saving = ref(false);
   const lastSavedAt = ref<number | null>(null);
   const lastSaveWarning = ref<string | null>(null);
+  /** Bumped whenever the profile is (re)applied, so views can re-sync. */
+  const revision = ref(0);
 
   let saveTimer = 0;
   let pending = false;
+  let hadLocalCopy = false;
 
   const nickname = computed(() => profile.value.nickname.trim());
   const playlists = computed(() => profile.value.playlists);
@@ -50,16 +54,21 @@ export const useProfileStore = defineStore("profile", () => {
     profile.value.updatedAt = Date.now();
   }
 
-  /** Load the profile; returns `true` when the first-run wizard should show. */
+  /**
+   * Load the local cache immediately (no network), then fetch the
+   * authoritative remote copy in the background. Returns `true` when the
+   * first-run wizard should show.
+   */
   async function hydrate(seed?: Partial<Profile["appearance"] & Profile["lyrics"]>): Promise<boolean> {
     if (ready.value) return firstRun.value;
     const fallback = createDefaultProfile(seed);
     try {
-      const loaded = await invoke<LoadedProfile>("load_profile");
-      source.value = loaded.source;
-      remoteError.value = loaded.remoteError;
-      profile.value = parseProfile(loaded.content, fallback);
-      firstRun.value = loaded.content === null || !profile.value.initialized;
+      const local = await invoke<LoadedProfile>("load_local_profile");
+      hadLocalCopy = local.content !== null;
+      source.value = local.source;
+      profile.value = parseProfile(local.content, fallback);
+      firstRun.value = local.content === null || !profile.value.initialized;
+      revision.value += 1;
     } catch (error) {
       remoteError.value = error instanceof Error ? error.message : String(error);
       profile.value = fallback;
@@ -67,7 +76,32 @@ export const useProfileStore = defineStore("profile", () => {
     } finally {
       ready.value = true;
     }
+    void syncRemote();
     return firstRun.value;
+  }
+
+  /** Fetch the authoritative remote copy and replace the cache when available. */
+  async function syncRemote(): Promise<void> {
+    try {
+      const remote = await invoke<LoadedProfile>("load_remote_profile");
+      remoteError.value = remote.remoteError;
+      if (remote.source === "remote" && remote.content !== null) {
+        profile.value = parseProfile(remote.content, profile.value);
+        source.value = "remote";
+        firstRun.value = !profile.value.initialized;
+        revision.value += 1;
+        return;
+      }
+      // Server reachable but has no document: seed it with the local cache so
+      // the cloud becomes authoritative from here on.
+      if (remote.remoteMissing && hadLocalCopy) {
+        scheduleSave();
+        return;
+      }
+      source.value = remote.source;
+    } catch (error) {
+      remoteError.value = error instanceof Error ? error.message : String(error);
+    }
   }
 
   async function flush(): Promise<void> {
@@ -127,6 +161,14 @@ export const useProfileStore = defineStore("profile", () => {
     if (!path) return;
     profile.value.playCounts[path] = (profile.value.playCounts[path] ?? 0) + 1;
     profile.value.recent = [path, ...profile.value.recent.filter((item) => item !== path)].slice(0, RECENT_LIMIT);
+    scheduleSave();
+  }
+
+  /** Remember the last playing track and its position, for resume. */
+  function recordPlayback(path: string | undefined, position: number) {
+    if (!path) return;
+    profile.value.lastTrack = path;
+    profile.value.lastPosition = Math.max(0, Math.round(position));
     scheduleSave();
   }
 
@@ -195,12 +237,14 @@ export const useProfileStore = defineStore("profile", () => {
     saving,
     lastSavedAt,
     lastSaveWarning,
+    revision,
     nickname,
     playlists,
     favorites,
     recent,
     hasRemoteCopy,
     hydrate,
+    syncRemote,
     flush,
     scheduleSave,
     setNickname,
@@ -208,6 +252,7 @@ export const useProfileStore = defineStore("profile", () => {
     setLyrics,
     completeSetup,
     recordPlay,
+    recordPlayback,
     isFavorite,
     toggleFavorite,
     createPlaylist,

@@ -2,7 +2,7 @@
 import { nextTick, onMounted, onUnmounted, ref, watch, watchEffect } from "vue";
 import { useI18n } from "vue-i18n";
 import { describeError, invoke } from "./api";
-import { initAudio } from "./lib/audio";
+import { initAudio, seekTo } from "./lib/audio";
 import { accents } from "./lib/app";
 import type { Accent, Theme, View } from "./lib/app";
 import { useLibrary } from "./composables/useLibrary";
@@ -43,7 +43,10 @@ const downloadingTrackId = ref<number | null>(null);
 const booted = ref(false);
 const playlistFilter = ref<string | null>(null);
 const editingPlaylist = ref<string | null>(null);
+const playbackRestored = ref(false);
 let applyingProfile = false;
+let restoringPlayback = false;
+let lastSavedPosition = 0;
 
 watch(view, (next) => { if (next !== "player") baseView.value = next; });
 watchEffect(() => { document.documentElement.classList.toggle("dark", theme.value === "dark"); document.documentElement.dataset.accent = accent.value; localStorage.setItem("welkin-theme", theme.value); localStorage.setItem("welkin-accent", accent.value); });
@@ -60,6 +63,37 @@ watch(
   },
 );
 watch(() => player.currentTrack?.path, (path) => { if (booted.value && path && player.isPlaying) profile.recordPlay(path); });
+watch(() => profile.revision, () => { if (booted.value) applyProfile(); });
+
+// Resume the last track/position once both the profile and library are ready.
+watch([() => profile.ready, () => player.tracks.length], () => {
+  if (playbackRestored.value || !profile.ready || player.tracks.length === 0) return;
+  playbackRestored.value = true;
+  const path = profile.profile.lastTrack;
+  if (!path) return;
+  const track = player.tracks.find((item) => item.path === path);
+  if (!track) return;
+  restoringPlayback = true;
+  player.currentTrack = track;
+  player.isPlaying = false;
+  const position = profile.profile.lastPosition ?? 0;
+  if (position > 0) void nextTick(() => seekTo(position));
+  window.setTimeout(() => { restoringPlayback = false; }, 1200);
+});
+
+// Persist the playback position periodically and on track changes.
+watch(() => player.currentTrack?.path, (path) => {
+  if (!booted.value || restoringPlayback || !path) return;
+  lastSavedPosition = 0;
+  profile.recordPlayback(path, 0);
+});
+watch(() => player.position, (position) => {
+  const path = player.currentTrack?.path;
+  if (!booted.value || restoringPlayback || !path) return;
+  if (Math.abs(position - lastSavedPosition) < 5) return;
+  lastSavedPosition = position;
+  profile.recordPlayback(path, position);
+});
 
 function readAccent(): Accent { const value = localStorage.getItem("welkin-accent"); return (accents.some((item) => item.id === value) ? value : "amber") as Accent; }
 function getViewFromHash(): View { const route = window.location.hash.slice(1); return route === "settings" || route === "player" || route === "tracks" || route === "favorites" || route === "playlist-new" ? route : "library"; }
