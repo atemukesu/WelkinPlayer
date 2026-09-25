@@ -83,17 +83,22 @@ export function useLibrary() {
   }
 
   async function applyMetadata(track: Track, meta: TrackMetadata) {
-    const patch: Partial<Track> = { metaLoaded: true };
+    const patch: Partial<Track> = {};
     if (meta.title) patch.title = meta.title;
     if (meta.artist) patch.artist = meta.artist;
     if (meta.album) patch.album = meta.album;
     if (meta.durationSecs) patch.duration = formatDuration(meta.durationSecs);
-    player.updateTrack(track.id, patch);
+    if (Object.keys(patch).length > 0) player.updateTrack(track.id, patch);
+
+    // `metaLoaded` is committed together with the cover so the UI can tell a
+    // track that is still resolving apart from one that genuinely has no cover.
+    const resolved: Partial<Track> = { metaLoaded: true };
     if (meta.coverHash) {
       const path = await invoke<string | null>("cover_path", { hash: meta.coverHash });
       const url = coverUrl(path, track.modified);
-      if (url) player.updateTrack(track.id, { cover: url });
+      if (url) resolved.cover = url;
     }
+    player.updateTrack(track.id, resolved);
   }
 
   async function enrichTracks(tracks: Track[]) {
@@ -109,6 +114,7 @@ export function useLibrary() {
           await applyMetadata(track, await invoke<TrackMetadata>("read_track_metadata", { path: track.path }));
         } catch (error) {
           console.warn(`[welkin] metadata failed for ${track.path}`, error);
+          player.updateTrack(track.id, { metaLoaded: true });
         } finally { enrichDone.value += 1; }
       }
     };

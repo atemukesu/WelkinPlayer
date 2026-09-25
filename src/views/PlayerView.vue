@@ -116,7 +116,7 @@ watch(
       <div class="hidden min-h-0 flex-col justify-center md:flex">
         <div class="ak-frame mx-auto aspect-square w-full max-w-[420px] overflow-hidden" :style="{ backgroundColor: player.currentTrack.color }">
           <img v-if="player.currentTrack.cover" :src="player.currentTrack.cover" alt="" decoding="async" class="h-full w-full object-cover" />
-          <span v-else class="grid h-full w-full place-items-center text-8xl font-black text-white/90">{{ initial(player.currentTrack) }}</span>
+          <span v-else-if="player.currentTrack.metaLoaded" class="grid h-full w-full place-items-center text-8xl font-black text-white/90">{{ initial(player.currentTrack) }}</span>
         </div>
         <div class="mx-auto mt-6 w-full max-w-[420px]">
           <h1 class="mt-3 text-2xl font-black leading-none tracking-tight lg:text-3xl">{{ player.currentTrack.title }}</h1>

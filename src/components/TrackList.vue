@@ -10,7 +10,7 @@ import { trackViewMode } from "../lib/ui";
 import TrackCard from "./TrackCard.vue";
 
 const props = withDefaults(defineProps<{ tracks: Track[]; emptyKey: string; removable?: boolean; selectable?: boolean; selected?: Set<string> }>(), { removable: false, selectable: false });
-const emit = defineEmits<{ play: [track: Track]; menu: [event: MouseEvent, track: Track]; details: [track: Track]; remove: [track: Track]; toggle: [track: Track] }>();
+const emit = defineEmits<{ play: [track: Track]; menu: [event: MouseEvent, track: Track]; details: [track: Track]; remove: [track: Track]; "update:selected": [value: Set<string>] }>();
 const { t } = useI18n();
 const player = usePlayerStore();
 const currentId = computed(() => player.currentTrack?.id);
@@ -45,17 +45,55 @@ const gridRowHeight = computed(() => Math.round(colWidth.value + 88));
 function gridTrack(row: number, col: number): Track { return props.tracks[row * columns.value + col]; }
 function gridInRange(row: number, col: number): boolean { return row * columns.value + col < props.tracks.length; }
 
+const selection = computed(() => props.selected ?? new Set<string>());
+const selectableTracks = computed(() => props.tracks.filter((track) => track.path));
+const allSelected = computed(() => selectableTracks.value.length > 0 && selectableTracks.value.every((track) => selection.value.has(track.path as string)));
+const selectedCount = computed(() => props.tracks.filter(isSelected).length);
+let anchorPath: string | null = null;
+
 function isSelected(track: Track): boolean {
-  return !!track.path && !!props.selected?.has(track.path);
+  return !!track.path && selection.value.has(track.path);
 }
-function activate(track: Track) {
-  if (props.selectable) emit("toggle", track);
-  else emit("play", track);
+function commit(next: Set<string>) { emit("update:selected", next); }
+function toggleAll() {
+  if (allSelected.value) commit(new Set());
+  else commit(new Set(selectableTracks.value.map((track) => track.path as string)));
+}
+function selectRange(track: Track) {
+  const paths = selectableTracks.value.map((item) => item.path as string);
+  const to = paths.indexOf(track.path as string);
+  if (to < 0) return;
+  const from = anchorPath ? paths.indexOf(anchorPath) : to;
+  if (from < 0) { commit(new Set([track.path as string])); return; }
+  commit(new Set(paths.slice(Math.min(from, to), Math.max(from, to) + 1)));
+}
+function selectOnly(track: Track) {
+  if (track.path) commit(new Set([track.path]));
+}
+function toggleOne(track: Track) {
+  if (!track.path) return;
+  const next = new Set(selection.value);
+  if (next.has(track.path)) next.delete(track.path);
+  else next.add(track.path);
+  commit(next);
+}
+function activate(track: Track, event?: MouseEvent) {
+  if (!props.selectable) { emit("play", track); return; }
+  if (!track.path) return;
+  if (event?.shiftKey) { selectRange(track); return; }
+  anchorPath = track.path;
+  if (event?.ctrlKey || event?.metaKey) selectOnly(track);
+  else toggleOne(track);
 }
 </script>
 
 <template>
-  <div ref="rootEl" class="h-full">
+  <div ref="rootEl" class="flex h-full flex-col">
+    <div v-if="selectable" class="flex shrink-0 items-center gap-3 border-b border-line px-3 py-2">
+      <button type="button" class="grid h-5 w-5 place-items-center border-2 transition-colors" :class="allSelected ? 'border-accent bg-accent text-accent-fg' : 'border-line-strong text-transparent hover:border-accent'" :title="allSelected ? t('library.deselectAll') : t('library.selectAll')" @click="toggleAll"><Check :size="12" :stroke-width="3" /></button>
+      <span class="text-[11px] font-semibold uppercase tracking-[0.2em] text-dim">{{ selectedCount ? t("library.selected", { count: selectedCount }) : t("library.selectAll") }}</span>
+    </div>
+    <div class="min-h-0 flex-1">
     <template v-if="trackViewMode === 'grid'">
       <VList v-if="tracks.length" :data="gridRowIndexes" :item-size="gridRowHeight" class="h-full">
         <template #default="{ item: row }">
@@ -72,7 +110,7 @@ function activate(track: Track) {
                 @play="emit('play', $event)"
                 @menu="(event: MouseEvent, track: Track) => emit('menu', event, track)"
                 @remove="emit('remove', $event)"
-                @toggle="emit('toggle', $event)"
+                @toggle="activate"
               />
               <span v-else></span>
             </template>
@@ -93,7 +131,7 @@ function activate(track: Track) {
               :key="track.id"
               class="grid w-full cursor-pointer grid-cols-[36px_44px_minmax(0,1fr)_44px_40px] items-center gap-4 border-t border-line px-3 py-2 text-left md:grid-cols-[36px_44px_minmax(0,1fr)_140px_56px_44px_44px]"
               :class="selectable ? (isSelected(track) ? 'bg-accent/10' : 'ak-hover') : (track.id === currentId ? 'ak-select relative z-10 border-transparent' : 'ak-hover')"
-              @click="activate(track)"
+              @click="activate(track, $event)"
               @keydown.enter="activate(track)"
               @keydown.space.prevent="activate(track)"
               @contextmenu.prevent="emit('menu', $event, track)"
@@ -114,5 +152,6 @@ function activate(track: Track) {
         <p v-else class="shrink-0 py-10 text-center text-sm text-muted">{{ t(emptyKey) }}</p>
       </div>
     </template>
+    </div>
   </div>
 </template>

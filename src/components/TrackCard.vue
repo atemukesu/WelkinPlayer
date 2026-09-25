@@ -5,7 +5,7 @@ import type { Track } from "../stores/player";
 import { initial } from "../lib/format";
 
 withDefaults(defineProps<{ track: Track; active?: boolean; playing?: boolean; removable?: boolean; selectable?: boolean; selected?: boolean }>(), { removable: false, selectable: false, selected: false });
-const emit = defineEmits<{ play: [track: Track]; menu: [event: MouseEvent, track: Track]; remove: [track: Track]; toggle: [track: Track] }>();
+const emit = defineEmits<{ play: [track: Track]; menu: [event: MouseEvent, track: Track]; remove: [track: Track]; toggle: [track: Track, event: MouseEvent] }>();
 const { t } = useI18n();
 </script>
 
@@ -13,7 +13,7 @@ const { t } = useI18n();
   <article
     class="group relative cursor-pointer border bg-surface p-3 transition-all hover:-translate-y-0.5"
     :class="[selected ? 'border-accent ring-1 ring-accent' : 'border-line hover:border-accent', active ? 'border-accent' : '']"
-    @click="selectable ? emit('toggle', track) : emit('play', track)"
+    @click="selectable ? emit('toggle', track, $event) : emit('play', track)"
     @contextmenu.prevent="emit('menu', $event, track)"
   >
     <div class="relative aspect-square w-full overflow-hidden" :style="{ backgroundColor: track.color }">

@@ -10,6 +10,7 @@ import type { Playlist } from "../lib/profile";
 import { initial } from "../lib/format";
 import PlaylistCover from "../components/PlaylistCover.vue";
 import CoverCropper from "../components/CoverCropper.vue";
+import TrackList from "../components/TrackList.vue";
 
 const props = withDefaults(defineProps<{ playlistId?: string | null }>(), { playlistId: null });
 const emit = defineEmits<{ done: [id: string]; cancel: [] }>();
@@ -24,11 +25,23 @@ const coverTrack = ref<string | undefined>(editing.value?.coverTrack);
 const mode = ref<"upload" | "icon">(coverTrack.value ? "icon" : "upload");
 const cropSrc = ref<string | null>(null);
 const trackQuery = ref("");
+const listQuery = ref("");
+const selected = ref<Set<string>>(new Set(editing.value?.tracks ?? []));
 
-const preview = computed<Playlist>(() => ({ id: "preview", name: name.value || t("playlistEditor.untitled"), tracks: [], cover: cover.value, coverTrack: coverTrack.value }));
+const selectedPaths = computed(() => {
+  const known = player.tracks.filter((track) => track.path && selected.value.has(track.path)).map((track) => track.path as string);
+  const knownSet = new Set(known);
+  return [...known, ...[...selected.value].filter((path) => !knownSet.has(path))];
+});
+const preview = computed<Playlist>(() => ({ id: "preview", name: name.value || t("playlistEditor.untitled"), tracks: selectedPaths.value, cover: cover.value, coverTrack: coverTrack.value }));
 const pickerTracks = computed(() => {
   const value = trackQuery.value.trim().toLocaleLowerCase();
   return player.tracks.filter((track) => track.path && (!value || `${track.title} ${track.artist}`.toLocaleLowerCase().includes(value)));
+});
+const listTracks = computed(() => {
+  const value = listQuery.value.trim().toLocaleLowerCase();
+  const source = player.tracks.filter((track) => track.path);
+  return value ? source.filter((track) => `${track.title} ${track.artist} ${track.album}`.toLocaleLowerCase().includes(value)) : source;
 });
 
 const GAP = 12;
@@ -82,11 +95,11 @@ function save() {
   const trimmed = name.value.trim();
   if (!trimmed) return;
   if (editing.value) {
-    profile.updatePlaylist(editing.value.id, { name: trimmed, cover: cover.value, coverTrack: coverTrack.value });
+    profile.updatePlaylist(editing.value.id, { name: trimmed, cover: cover.value, coverTrack: coverTrack.value, tracks: selectedPaths.value });
     emit("done", editing.value.id);
   } else {
     const playlist = profile.createPlaylist(trimmed);
-    profile.updatePlaylist(playlist.id, { cover: cover.value, coverTrack: coverTrack.value });
+    profile.updatePlaylist(playlist.id, { cover: cover.value, coverTrack: coverTrack.value, tracks: selectedPaths.value });
     emit("done", playlist.id);
   }
 }
@@ -151,6 +164,17 @@ function save() {
         </div>
       </div>
     </div>
+
+    <section class="mt-10">
+      <div class="flex items-center justify-between border-b border-line pb-3">
+        <h2 class="text-sm font-bold uppercase tracking-[0.2em]">{{ t("playlistEditor.tracks") }}</h2>
+        <span class="font-mono text-[11px] uppercase tracking-[0.2em] text-dim">{{ t("library.selected", { count: selected.size }) }}</span>
+      </div>
+      <label class="mt-4 flex h-10 items-center gap-2 border border-line bg-surface px-3"><Search :size="15" class="text-dim" /><input v-model="listQuery" class="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-dim" :placeholder="t('library.search')" /></label>
+      <div class="mt-4 h-80 min-h-0">
+        <TrackList v-model:selected="selected" :tracks="listTracks" empty-key="playlistEditor.noTracks" selectable />
+      </div>
+    </section>
 
     <footer class="mt-10 flex justify-end gap-3 border-t border-line pt-6">
       <button type="button" class="ak-clip-tr h-11 border border-line px-5 text-[13px] font-semibold" @click="emit('cancel')"><span class="flex items-center gap-2"><X :size="15" />{{ t("playlistEditor.cancel") }}</span></button>

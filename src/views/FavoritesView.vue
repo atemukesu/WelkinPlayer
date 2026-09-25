@@ -24,15 +24,13 @@ function toggleSelectMode() {
   selectMode.value = !selectMode.value;
   if (!selectMode.value) selected.value = new Set();
 }
-function toggleSelect(track: Track) {
-  if (!track.path) return;
-  const next = new Set(selected.value);
-  if (next.has(track.path)) next.delete(track.path);
-  else next.add(track.path);
-  selected.value = next;
-}
 function play(track: Track) { player.playInQueue(tracks.value, track); }
-function playFirst() { const first = tracks.value.find((track) => track.path); if (first) player.playInQueue(tracks.value, first); }
+function playFirst() {
+  const pool = tracks.value.filter((track) => track.path);
+  if (pool.length === 0) return;
+  const first = player.shuffle ? pool[Math.floor(Math.random() * pool.length)] : pool[0];
+  player.playInQueue(tracks.value, first);
+}
 function openContextMenu(event: MouseEvent, track: Track) { const width = 224; const height = 240; contextTrack.value = track; contextPosition.value = { x: Math.min(event.clientX, window.innerWidth - width - 8), y: Math.min(event.clientY, window.innerHeight - height - 8) }; }
 function downloadMetadata(track: Track) { emit("downloadMetadata", track); }
 </script>
@@ -57,7 +55,7 @@ function downloadMetadata(track: Track) { emit("downloadMetadata", track); }
     </header>
 
     <div class="mt-8 min-h-0 flex-1">
-      <TrackList :tracks="tracks" empty-key="favorites.empty" :selectable="selectMode" :selected="selected" @play="play" @menu="openContextMenu" @details="emit('details', $event)" @toggle="toggleSelect" />
+      <TrackList v-model:selected="selected" :tracks="tracks" empty-key="favorites.empty" :selectable="selectMode" @play="play" @menu="openContextMenu" @details="emit('details', $event)" />
     </div>
 
     <TrackContextMenu v-if="contextTrack" :track="contextTrack" :x="contextPosition.x" :y="contextPosition.y" :selected-paths="[...selected]" :downloading="downloadingTrackId === contextTrack.id" @close="contextTrack = null" @download-metadata="downloadMetadata" @details="emit('details', $event)" />

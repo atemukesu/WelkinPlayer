@@ -202,11 +202,12 @@ export const useProfileStore = defineStore("profile", () => {
     scheduleSave();
   }
 
-  /** Update mutable playlist fields (name and/or cover). */
-  function updatePlaylist(id: string, patch: Partial<Pick<Playlist, "name" | "cover" | "coverTrack">>) {
+  /** Update mutable playlist fields (name, cover and/or tracks). */
+  function updatePlaylist(id: string, patch: Partial<Pick<Playlist, "name" | "cover" | "coverTrack" | "tracks">>) {
     const playlist = profile.value.playlists.find((item) => item.id === id);
     if (!playlist) return;
     if (patch.name !== undefined) playlist.name = patch.name.trim() || playlist.name;
+    if (patch.tracks !== undefined) playlist.tracks = [...patch.tracks];
     if ("cover" in patch) playlist.cover = patch.cover;
     if ("coverTrack" in patch) playlist.coverTrack = patch.coverTrack;
     scheduleSave();
