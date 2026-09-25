@@ -42,7 +42,7 @@ function playFromQueue(index: number) {
           <img v-if="player.currentTrack.cover" :src="player.currentTrack.cover" alt="" decoding="async" class="h-full w-full object-cover" />
           <template v-else>{{ initial(player.currentTrack) }}</template>
         </span>
-        <span class="min-w-0">
+        <span class="min-w-0 flex-1">
           <strong class="block truncate text-[13px] font-semibold text-accent">{{ player.currentTrack.title }}</strong>
           <small class="block truncate text-[12px] text-muted">{{ player.currentTrack.artist }}</small>
         </span>
@@ -62,7 +62,7 @@ function playFromQueue(index: number) {
           class="flex w-full items-center gap-3 px-5 py-2 text-left transition-colors hover:bg-fg/5"
           @click="playFromQueue(player.queueIndex + 1 + i)"
         >
-          <span class="w-6 text-right font-mono text-[11px] tabular-nums text-dim">{{ pad(i + 1) }}</span>
+          <span class="w-6 shrink-0 text-right font-mono text-[11px] tabular-nums text-dim">{{ pad(i + 1) }}</span>
           <span
             class="grid h-9 w-9 shrink-0 place-items-center overflow-hidden text-sm font-black text-white/90"
             :style="{ backgroundColor: track.color }"
@@ -70,7 +70,7 @@ function playFromQueue(index: number) {
             <img v-if="track.cover" :src="track.cover" alt="" loading="lazy" decoding="async" class="h-full w-full object-cover" />
             <template v-else>{{ initial(track) }}</template>
           </span>
-          <span class="min-w-0">
+          <span class="min-w-0 flex-1">
             <strong class="block truncate text-[12px] font-semibold">{{ track.title }}</strong>
             <small class="block truncate text-[11px] text-muted">{{ track.artist }}</small>
           </span>
