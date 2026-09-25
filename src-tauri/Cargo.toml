@@ -1,0 +1,59 @@
+[package]
+name = "welkinplayer"
+version = "0.1.0"
+description = "A Tauri App"
+authors = ["you"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "welkinplayer_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tauri-plugin-store = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+log = "0.4"
+# WebDAV client. rustls avoids a system TLS/OpenSSL dependency on every OS.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking"] }
+quick-xml = "0.37"
+percent-encoding = "2"
+# Tiny loopback HTTP server for streaming audio to the webview (true chunked
+# proxying with Range support, keeping WebDAV credentials in Rust).
+tiny_http = "0.12"
+# Audio metadata parsing reads only the file head (HTTP Range), never the whole file.
+lofty = "0.22"
+# Decode embedded cover art and re-encode a small JPEG thumbnail for the cache.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
+base64 = "0.22"
+
+# Password storage uses the platform-native keychain. Each backend is enabled
+# only for its own target so we never compile another OS's dependencies.
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+
+
+# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

@@ -1,0 +1,54 @@
+mod commands;
+mod dav;
+mod error;
+mod logging;
+mod metadata;
+mod proxy;
+
+use tauri::Manager;
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    logging::init();
+
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_store::Builder::new().build())
+        .setup(|app| {
+            match proxy::start(app.handle().clone()) {
+                Ok(stream_proxy) => {
+                    log::info!(
+                        "streaming proxy listening on 127.0.0.1:{}",
+                        stream_proxy.port
+                    );
+                    app.manage(stream_proxy);
+                }
+                Err(error) => log::error!("failed to start streaming proxy: {error}"),
+            }
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            commands::ping,
+            commands::echo,
+            commands::webdav::load_webdav_password,
+            commands::webdav::save_webdav_password,
+            commands::webdav::test_webdav_connection,
+            commands::webdav::list_webdav_audio,
+            commands::profile::load_profile,
+            commands::profile::save_profile,
+            commands::profile::test_webdav_write,
+            commands::media::read_track_metadata,
+            commands::media::download_track_metadata,
+            commands::media::read_track_lyrics,
+            commands::media::get_cached_metadata,
+            commands::media::get_cover,
+            commands::media::get_cached_cover,
+            commands::media::get_cache_dir,
+            commands::media::set_cache_dir,
+            commands::media::load_library_cache,
+            commands::media::save_library_cache,
+            proxy::stream_endpoint
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
