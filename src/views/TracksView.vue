@@ -42,8 +42,8 @@ function toggleSelect(track: Track) {
   selected.value = next;
 }
 
-function play(track: Track) { player.selectTrack(track); }
-function playFirst() { const first = tracks.value.find((track) => track.path); if (first) player.selectTrack(first); }
+function play(track: Track) { player.playInQueue(sourceTracks.value, track); }
+function playFirst() { const first = tracks.value.find((track) => track.path); if (first) player.playInQueue(sourceTracks.value, first); }
 function remove(track: Track) { if (activePlaylist.value && track.path) profile.removeFromPlaylist(activePlaylist.value.id, track.path); }
 function openContextMenu(event: MouseEvent, track: Track) { const width = 224; const height = 240; contextTrack.value = track; contextPosition.value = { x: Math.min(event.clientX, window.innerWidth - width - 8), y: Math.min(event.clientY, window.innerHeight - height - 8) }; }
 function downloadMetadata(track: Track) { emit("downloadMetadata", track); }
@@ -88,6 +88,6 @@ function downloadMetadata(track: Track) { emit("downloadMetadata", track); }
     </div>
     <div v-else class="min-h-0 flex-1"><TrackList :tracks="tracks" empty-key="library.playlists.noTracks" :removable="!!activePlaylist" :selectable="selectMode" :selected="selected" @play="play" @menu="openContextMenu" @details="emit('details', $event)" @remove="remove" @toggle="toggleSelect" /></div>
 
-    <TrackContextMenu v-if="contextTrack" :track="contextTrack" :x="contextPosition.x" :y="contextPosition.y" :selected-paths="[...selected]" :playlist-id="activePlaylist?.id ?? null" :downloading="downloadingTrackId === contextTrack.id" @close="contextTrack = null" @download-metadata="downloadMetadata" />
+    <TrackContextMenu v-if="contextTrack" :track="contextTrack" :x="contextPosition.x" :y="contextPosition.y" :selected-paths="[...selected]" :playlist-id="activePlaylist?.id ?? null" :downloading="downloadingTrackId === contextTrack.id" @close="contextTrack = null" @download-metadata="downloadMetadata" @details="emit('details', $event)" />
   </div>
 </template>

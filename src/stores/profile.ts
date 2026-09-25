@@ -228,6 +228,25 @@ export const useProfileStore = defineStore("profile", () => {
     scheduleSave();
   }
 
+  function moveTrackInPlaylist(id: string, path: string, direction: "up" | "down") {
+    const playlist = profile.value.playlists.find((item) => item.id === id);
+    if (!playlist) return;
+    const index = playlist.tracks.indexOf(path);
+    if (index < 0) return;
+    const target = direction === "up" ? index - 1 : index + 1;
+    if (target < 0 || target >= playlist.tracks.length) return;
+    const next = [...playlist.tracks];
+    [next[index], next[target]] = [next[target], next[index]];
+    playlist.tracks = next;
+    scheduleSave();
+  }
+
+  function getTrackIndexInPlaylist(id: string, path: string): { index: number; total: number } {
+    const playlist = profile.value.playlists.find((item) => item.id === id);
+    if (!playlist) return { index: -1, total: 0 };
+    return { index: playlist.tracks.indexOf(path), total: playlist.tracks.length };
+  }
+
   return {
     profile,
     ready,
@@ -261,6 +280,8 @@ export const useProfileStore = defineStore("profile", () => {
     deletePlaylist,
     addToPlaylist,
     removeFromPlaylist,
+    moveTrackInPlaylist,
+    getTrackIndexInPlaylist,
   };
 });
 

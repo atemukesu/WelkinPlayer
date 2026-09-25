@@ -73,10 +73,11 @@ function pickRandom(list: Track[], count: number): Track[] {
 function refreshRecommended() { recommended.value = pickRandom(player.tracks, RECOMMEND_LIMIT); }
 watch(() => player.tracks, refreshRecommended, { immediate: true });
 
-function play(track: Track) { player.selectTrack(track); }
+function play(track: Track) { player.playInQueue(player.tracks, track); }
 function shuffleAll() {
   const pool = player.tracks.filter((track) => track.path);
   if (pool.length === 0) return;
+  if (!player.shuffle) player.toggleShuffle();
   play(pool[Math.floor(Math.random() * pool.length)]);
 }
 function openContextMenu(event: MouseEvent, track: Track) { const width = 224; const height = 240; contextTrack.value = track; contextPosition.value = { x: Math.min(event.clientX, window.innerWidth - width - 8), y: Math.min(event.clientY, window.innerHeight - height - 8) }; }
@@ -205,6 +206,6 @@ function removePlaylist(id: string) {
       </section>
     </template>
 
-    <TrackContextMenu v-if="contextTrack" :track="contextTrack" :x="contextPosition.x" :y="contextPosition.y" :downloading="downloadingTrackId === contextTrack.id" @close="contextTrack = null" @download-metadata="downloadMetadata" />
+    <TrackContextMenu v-if="contextTrack" :track="contextTrack" :x="contextPosition.x" :y="contextPosition.y" :downloading="downloadingTrackId === contextTrack.id" @close="contextTrack = null" @download-metadata="downloadMetadata" @details="emit('details', $event)" />
   </div>
 </template>

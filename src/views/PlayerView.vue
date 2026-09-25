@@ -10,7 +10,7 @@ import PlayerBar from "../components/PlayerBar.vue";
 import type { View } from "../lib/app";
 
 defineProps<{ returnView: View }>();
-const emit = defineEmits<{ navigate: [view: View] }>();
+const emit = defineEmits<{ navigate: [view: View]; queue: [] }>();
 const { t } = useI18n();
 const player = usePlayerStore();
 const lyrics = useLyricsStore();
@@ -145,7 +145,7 @@ watch(
         </div>
       </div>
     </div>
-    <PlayerBar @open="emit('navigate', returnView)" />
+    <PlayerBar @open="emit('navigate', returnView)" @queue="emit('queue')" />
   </div>
 </template>
 

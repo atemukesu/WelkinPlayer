@@ -412,6 +412,17 @@ html[data-accent="blue"] {
     transform: translateY(100%);
   }
 
+  .queue-panel-enter-active,
+  .queue-panel-leave-active {
+    transition: transform 300ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 300ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+
+  .queue-panel-enter-from,
+  .queue-panel-leave-to {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+
   ::-webkit-scrollbar {
     width: 8px;
     height: 8px;

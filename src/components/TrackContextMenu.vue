@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { ChevronRight, Download, Heart, HeartOff, ListPlus, ListX, Pencil } from "@lucide/vue";
+import { ArrowDown, ArrowUp, ChevronRight, Download, Heart, HeartOff, Info, ListPlus, ListX, Pencil } from "@lucide/vue";
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import type { Track } from "../stores/player";
 import { useProfileStore } from "../stores/profile";
 
 const props = withDefaults(defineProps<{ track: Track; x: number; y: number; downloading: boolean; selectedPaths?: string[]; playlistId?: string | null }>(), { selectedPaths: () => [], playlistId: null });
-const emit = defineEmits<{ close: []; downloadMetadata: [track: Track] }>();
+const emit = defineEmits<{ close: []; downloadMetadata: [track: Track]; details: [track: Track] }>();
 const { t } = useI18n();
 const profile = useProfileStore();
 const visible = ref(true);
@@ -17,9 +17,17 @@ const isSelection = computed(() => props.selectedPaths.length > 0);
 const allFavorite = computed(() => paths.value.length > 0 && paths.value.every((path) => profile.isFavorite(path)));
 const favorite = computed(() => !isSelection.value && profile.isFavorite(props.track.path));
 
+const playlistPos = computed(() => {
+  if (!props.playlistId || !props.track.path || isSelection.value) return null;
+  return profile.getTrackIndexInPlaylist(props.playlistId, props.track.path);
+});
+const canMoveUp = computed(() => playlistPos.value !== null && playlistPos.value.index > 0);
+const canMoveDown = computed(() => playlistPos.value !== null && playlistPos.value.index < playlistPos.value.total - 1);
+
 function close() { visible.value = false; }
 function closeOnEscape(event: KeyboardEvent) { if (event.key === "Escape") close(); }
 function downloadMetadata() { emit("downloadMetadata", props.track); close(); }
+function viewDetails() { emit("details", props.track); close(); }
 function toggleFavorite() {
   const desired = !allFavorite.value;
   for (const path of paths.value) {
@@ -36,6 +44,11 @@ function removeFromPlaylist() {
   for (const path of paths.value) profile.removeFromPlaylist(props.playlistId, path);
   close();
 }
+function moveTrack(direction: "up" | "down") {
+  if (!props.playlistId || !props.track.path) return;
+  profile.moveTrackInPlaylist(props.playlistId, props.track.path, direction);
+  close();
+}
 onMounted(() => window.addEventListener("keydown", closeOnEscape));
 onBeforeUnmount(() => window.removeEventListener("keydown", closeOnEscape));
 </script>
@@ -49,7 +62,10 @@ onBeforeUnmount(() => window.removeEventListener("keydown", closeOnEscape));
           <button v-if="paths.length" type="button" role="menuitem" class="track-menu__item" @click="toggleFavorite"><HeartOff v-if="isSelection ? allFavorite : favorite" :size="16" /><Heart v-else :size="16" />{{ (isSelection ? allFavorite : favorite) ? t("library.menu.unfavorite") : t("library.menu.favorite") }}</button>
           <button type="button" role="menuitem" class="track-menu__item" @click="showPlaylists = !showPlaylists"><ListPlus :size="16" /><span class="flex-1">{{ t("library.menu.addToPlaylist") }}</span><ChevronRight :size="14" class="transition-transform" :class="showPlaylists ? 'rotate-90' : ''" /></button>
           <div v-if="showPlaylists" class="track-menu__submenu"><p v-if="profile.playlists.length === 0" class="px-3 py-2 text-[11px] text-black/50">{{ t("library.menu.noPlaylists") }}</p><button v-for="playlist in profile.playlists" :key="playlist.id" type="button" class="track-menu__subitem" @click="addToPlaylist(playlist.id)"><span class="truncate">{{ playlist.name }}</span><span class="ml-auto font-mono text-[10px] text-black/40">{{ playlist.tracks.length }}</span></button></div>
+          <button v-if="playlistId && !isSelection && canMoveUp" type="button" role="menuitem" class="track-menu__item" @click="moveTrack('up')"><ArrowUp :size="16" />{{ t("library.menu.moveUp") }}</button>
+          <button v-if="playlistId && !isSelection && canMoveDown" type="button" role="menuitem" class="track-menu__item" @click="moveTrack('down')"><ArrowDown :size="16" />{{ t("library.menu.moveDown") }}</button>
           <button v-if="playlistId" type="button" role="menuitem" class="track-menu__item" @click="removeFromPlaylist"><ListX :size="16" />{{ t("library.menu.removeFromPlaylist") }}</button>
+          <button v-if="!isSelection" type="button" role="menuitem" class="track-menu__item" @click="viewDetails"><Info :size="16" />{{ t("library.menu.properties") }}</button>
           <button v-if="!isSelection" type="button" role="menuitem" class="track-menu__item" @click="close"><Pencil :size="16" />{{ t("library.menu.edit") }}</button>
           <div class="track-menu__divider"></div>
           <button type="button" role="menuitem" class="track-menu__item track-menu__item--last" :disabled="downloading || !track.path" @click="downloadMetadata"><Download :size="16" /><span>{{ downloading ? t("library.menu.downloadingMetadata") : t("library.menu.downloadMetadata") }}</span></button>

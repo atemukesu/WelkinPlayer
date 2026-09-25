@@ -82,11 +82,13 @@ function setSource(path: string) {
   if (!url) return;
 
   const player = usePlayerStore();
+  // A new source must never inherit a seek that was queued for the previous track.
+  pendingSeek = null;
   audio.src = url;
   audio.load();
   player.setPosition(0);
   player.setDuration(0);
-  player.bufferedProgress = 0;
+  player.setBufferedProgress(0);
   if (player.isPlaying) play();
 }
 
@@ -148,11 +150,29 @@ async function bootstrapAudio(): Promise<void> {
       (path) => {
         if (!audio) return;
         if (!path) {
+          pendingSeek = null;
           audio.removeAttribute("src");
           audio.load();
           return;
         }
         setSource(path);
+      },
+    );
+
+    // Re-selecting the same track (repeat-one, clicking the current row) bumps
+    // the nonce without changing the path, so restart the element explicitly.
+    watch(
+      () => player.playbackNonce,
+      () => {
+        if (!audio || !player.currentTrack?.path) return;
+        pendingSeek = null;
+        audio.currentTime = 0;
+        // The same element keeps its duration, but the store was rewound; make
+        // sure the duration/progress baseline is still valid so the bar moves.
+        player.setDuration(Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0);
+        player.setPosition(0);
+        syncBuffered();
+        if (player.isPlaying) play();
       },
     );
 

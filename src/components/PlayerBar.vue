@@ -1,12 +1,13 @@
 <script setup lang="ts">
+import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 import {
-  AudioLines,
   ListMusic,
   Maximize2,
   Pause,
   Play,
   Repeat,
+  Repeat1,
   Shuffle,
   SkipBack,
   SkipForward,
@@ -17,10 +18,13 @@ import { usePlayerStore } from "../stores/player";
 import { initial, percent } from "../lib/format";
 import { seekPercent } from "../lib/audio";
 
-const emit = defineEmits<{ open: [] }>();
+const emit = defineEmits<{ open: []; queue: [] }>();
 
 const { t } = useI18n();
 const player = usePlayerStore();
+
+const repeatTitle = computed(() => player.repeat === "one" ? t("controls.repeatOne") : player.repeat === "all" ? t("controls.repeatAll") : t("controls.repeatOff"));
+const shuffleTitle = computed(() => player.shuffle ? t("controls.shuffleOn") : t("controls.shuffleOff"));
 
 function onSeek(event: Event) {
   seekPercent(Number((event.target as HTMLInputElement).value));
@@ -61,7 +65,7 @@ function onSeek(event: Event) {
       </button>
 
       <div class="absolute left-1/2 hidden -translate-x-1/2 items-center gap-2 md:flex">
-        <button class="grid h-9 w-9 place-items-center text-muted transition-colors hover:text-fg">
+        <button class="grid h-9 w-9 place-items-center" :class="player.shuffle ? 'text-accent' : 'text-muted'" :title="shuffleTitle" @click="player.toggleShuffle()">
           <Shuffle :size="16" :stroke-width="1.8" />
         </button>
         <button class="grid h-10 w-10 place-items-center text-fg transition-colors hover:text-accent" @click="player.previous()">
@@ -78,8 +82,9 @@ function onSeek(event: Event) {
         <button class="grid h-10 w-10 place-items-center text-fg transition-colors hover:text-accent" @click="player.next()">
           <SkipForward :size="18" :stroke-width="2" />
         </button>
-        <button class="grid h-9 w-9 place-items-center text-muted transition-colors hover:text-fg">
-          <Repeat :size="16" :stroke-width="1.8" />
+        <button class="grid h-9 w-9 place-items-center" :class="player.repeat !== 'off' ? 'text-accent' : 'text-muted'" :title="repeatTitle" @click="player.cycleRepeat()">
+          <Repeat1 v-if="player.repeat === 'one'" :size="16" :stroke-width="1.8" />
+          <Repeat v-else :size="16" :stroke-width="1.8" />
         </button>
       </div>
 
@@ -91,15 +96,9 @@ function onSeek(event: Event) {
           class="hidden text-muted transition-colors hover:text-fg sm:block"
           :title="t('controls.queue')"
           :aria-label="t('controls.queue')"
+          @click="emit('queue')"
         >
           <ListMusic :size="17" :stroke-width="1.8" />
-        </button>
-        <button
-          class="hidden text-muted transition-colors hover:text-fg sm:block"
-          :title="t('controls.lyrics')"
-          :aria-label="t('controls.lyrics')"
-        >
-          <AudioLines :size="17" :stroke-width="1.8" />
         </button>
         <div class="hidden items-center gap-2 md:flex">
           <button

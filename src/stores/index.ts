@@ -1,5 +1,5 @@
 export { usePlayerStore } from "./player";
-export type { Track } from "./player";
+export type { Track, RepeatMode } from "./player";
 export { useWebdavStore } from "./webdav";
 export type { WebdavStatus } from "./webdav";
 export { useLyricsStore } from "./lyrics";

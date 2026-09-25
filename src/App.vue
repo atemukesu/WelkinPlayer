@@ -14,6 +14,7 @@ import { useProfileStore } from "./stores/profile";
 import { useLyricsStore } from "./stores/lyrics";
 import AppNavigation from "./components/AppNavigation.vue";
 import NowPlayingPanel from "./components/NowPlayingPanel.vue";
+import QueuePanel from "./components/QueuePanel.vue";
 import PlayerBar from "./components/PlayerBar.vue";
 import SetupWizard from "./components/SetupWizard.vue";
 import ToastStack from "./components/ToastStack.vue";
@@ -36,6 +37,7 @@ const theme = ref<Theme>(localStorage.getItem("welkin-theme") === "dark" ? "dark
 const accent = ref<Accent>(readAccent());
 const panelWidth = ref(readPanelWidth());
 const panelCollapsed = ref(localStorage.getItem("welkin-panel-collapsed") === "1");
+const panelCollapsedBeforeQueue = ref(false);
 const sidebarCollapsed = ref(localStorage.getItem("welkin-sidebar-collapsed") === "1");
 const panelResizing = ref(false);
 const testing = ref(false);
@@ -44,6 +46,7 @@ const booted = ref(false);
 const playlistFilter = ref<string | null>(null);
 const editingPlaylist = ref<string | null>(null);
 const playbackRestored = ref(false);
+const showQueue = ref(false);
 let applyingProfile = false;
 let restoringPlayback = false;
 let lastPositionSavedAt = 0;
@@ -121,6 +124,22 @@ function createPlaylist() { playlistFilter.value = null; editingPlaylist.value =
 function editPlaylist(id: string) { playlistFilter.value = null; editingPlaylist.value = id; setView("playlist-new"); }
 function onPlaylistSaved(id: string) { playlistFilter.value = id; setView("tracks"); }
 function onPlaylistEditorCancel() { navigate("library"); }
+function toggleQueue() {
+  if (showQueue.value) closeQueue();
+  else openQueue();
+}
+function openQueue() {
+  panelCollapsedBeforeQueue.value = panelCollapsed.value;
+  panelCollapsed.value = true;
+  localStorage.setItem("welkin-panel-collapsed", "1");
+  showQueue.value = true;
+}
+function closeQueue() {
+  if (!showQueue.value) return;
+  showQueue.value = false;
+  panelCollapsed.value = panelCollapsedBeforeQueue.value;
+  localStorage.setItem("welkin-panel-collapsed", panelCollapsed.value ? "1" : "0");
+}
 
 function applyProfile() {
   applyingProfile = true;
@@ -169,8 +188,19 @@ async function downloadMetadata(track: Track) {
     pushToast("error", t("library.menu.metadataFailed", { value: friendlyError(error) }));
   } finally { downloadingTrackId.value = null; }
 }
-function openDetails(track: Track) { player.selectTrack(track); panelCollapsed.value = false; localStorage.setItem("welkin-panel-collapsed", "0"); }
-function togglePanel() { panelCollapsed.value = !panelCollapsed.value; localStorage.setItem("welkin-panel-collapsed", panelCollapsed.value ? "1" : "0"); }
+function openDetails(track: Track) {
+  if (player.currentTrack?.id !== track.id) player.playInQueue(player.tracks, track);
+  closeQueue();
+  panelCollapsed.value = false;
+  localStorage.setItem("welkin-panel-collapsed", "0");
+}
+function togglePanel() {
+  panelCollapsed.value = !panelCollapsed.value;
+  localStorage.setItem("welkin-panel-collapsed", panelCollapsed.value ? "1" : "0");
+  if (!panelCollapsed.value && showQueue.value) {
+    showQueue.value = false;
+  }
+}
 function toggleSidebar() { sidebarCollapsed.value = !sidebarCollapsed.value; localStorage.setItem("welkin-sidebar-collapsed", sidebarCollapsed.value ? "1" : "0"); }
 function startResize(event: PointerEvent) { const startX = event.clientX; const startWidth = panelWidth.value; const target = event.currentTarget as HTMLElement; panelResizing.value = true; target.setPointerCapture(event.pointerId); const onMove = (moveEvent: PointerEvent) => { const max = Math.min(640, Math.max(280, window.innerWidth - 420)); panelWidth.value = Math.min(max, Math.max(280, startWidth + startX - moveEvent.clientX)); }; const onUp = () => { panelResizing.value = false; target.removeEventListener("pointermove", onMove); target.removeEventListener("pointerup", onUp); target.removeEventListener("pointercancel", onUp); localStorage.setItem("welkin-panel-width", String(Math.round(panelWidth.value))); }; target.addEventListener("pointermove", onMove); target.addEventListener("pointerup", onUp); target.addEventListener("pointercancel", onUp); }
 function readPanelWidth() { const stored = Number(localStorage.getItem("welkin-panel-width")); return Number.isFinite(stored) && stored >= 280 && stored <= 640 ? stored : 380; }
@@ -191,7 +221,9 @@ onUnmounted(() => { savePlaybackPosition(true); window.removeEventListener("hash
 </script>
 
 <template>
-  <Transition name="slide"><PlayerView v-if="view === 'player' && player.currentTrack" :return-view="baseView" @navigate="navigate" /></Transition>
+  <Transition name="slide"><PlayerView v-if="view === 'player' && player.currentTrack" :return-view="baseView" @navigate="navigate" @queue="toggleQueue" /></Transition>
   <SetupWizard v-if="booted && profile.firstRun" v-model:theme="theme" v-model:accent="accent" @finish="onWizardFinish" />
-  <div class="flex h-screen flex-col overflow-hidden bg-bg text-fg" :class="booted ? '' : 'opacity-0'"><AppNavigation placement="header" :active-view="baseView" @navigate="navigate" /><div class="flex min-h-0 flex-1"><AppNavigation placement="sidebar" :active-view="baseView" :collapsed="sidebarCollapsed" :active-playlist-id="playlistFilter" @navigate="navigate" @toggle="toggleSidebar" @create-playlist="createPlaylist" @open-playlist="openUserPlaylist" /><main class="min-w-0 flex-1 overflow-y-auto"><Transition name="page" mode="out-in"><LibraryView v-if="baseView === 'library'" key="library" :loading="loadingLibrary" :enriching="enriching" :enrich-done="enrichDone" :enrich-total="enrichTotal" :downloading-track-id="downloadingTrackId" @settings="navigate('settings')" @navigate="navigate" @open-playlist="openUserPlaylist" @edit-playlist="editPlaylist" @details="openDetails" @download-metadata="downloadMetadata" /><TracksView v-else-if="baseView === 'tracks'" key="tracks" :playlist-id="playlistFilter" :loading="loadingLibrary" :enriching="enriching" :refreshing="refreshing" :enrich-done="enrichDone" :enrich-total="enrichTotal" :downloading-track-id="downloadingTrackId" @refresh="refreshLibrary" @edit="editPlaylist" @details="openDetails" @download-metadata="downloadMetadata" /><FavoritesView v-else-if="baseView === 'favorites'" key="favorites" :loading="loadingLibrary" :enriching="enriching" :enrich-done="enrichDone" :enrich-total="enrichTotal" :downloading-track-id="downloadingTrackId" @details="openDetails" @download-metadata="downloadMetadata" /><PlaylistEditorView v-else-if="baseView === 'playlist-new'" key="playlist-new" :playlist-id="editingPlaylist" @done="onPlaylistSaved" @cancel="onPlaylistEditorCancel" /><SettingsView v-else key="settings" :testing="testing" v-model:theme="theme" v-model:accent="accent" @save="saveSettings" @test="testConnection" @friendly-error="showError" /></Transition></main><NowPlayingPanel v-if="baseView === 'library' || baseView === 'tracks' || baseView === 'favorites'" :collapsed="panelCollapsed" :width="panelWidth" :resizing="panelResizing" @toggle="togglePanel" @resize="startResize" /></div><PlayerBar v-if="player.currentTrack" @open="navigate('player')" /><AppNavigation placement="mobile" :active-view="baseView" @navigate="navigate" /><ToastStack /></div>
-</template>
+  <div class="flex h-screen flex-col overflow-hidden bg-bg text-fg" :class="booted ? '' : 'opacity-0'"><AppNavigation placement="header" :active-view="baseView" @navigate="navigate" /><div class="relative flex min-h-0 flex-1"><AppNavigation placement="sidebar" :active-view="baseView" :collapsed="sidebarCollapsed" :active-playlist-id="playlistFilter" @navigate="navigate" @toggle="toggleSidebar" @create-playlist="createPlaylist" @open-playlist="openUserPlaylist" /><main class="min-w-0 flex-1 overflow-y-auto"><Transition name="page" mode="out-in"><LibraryView v-if="baseView === 'library'" key="library" :loading="loadingLibrary" :enriching="enriching" :enrich-done="enrichDone" :enrich-total="enrichTotal" :downloading-track-id="downloadingTrackId" @settings="navigate('settings')" @navigate="navigate" @open-playlist="openUserPlaylist" @edit-playlist="editPlaylist" @details="openDetails" @download-metadata="downloadMetadata" /><TracksView v-else-if="baseView === 'tracks'" key="tracks" :playlist-id="playlistFilter" :loading="loadingLibrary" :enriching="enriching" :refreshing="refreshing" :enrich-done="enrichDone" :enrich-total="enrichTotal" :downloading-track-id="downloadingTrackId" @refresh="refreshLibrary" @edit="editPlaylist" @details="openDetails" @download-metadata="downloadMetadata" /><FavoritesView v-else-if="baseView === 'favorites'" key="favorites" :loading="loadingLibrary" :enriching="enriching" :enrich-done="enrichDone" :enrich-total="enrichTotal" :downloading-track-id="downloadingTrackId" @details="openDetails" @download-metadata="downloadMetadata" /><PlaylistEditorView v-else-if="baseView === 'playlist-new'" key="playlist-new" :playlist-id="editingPlaylist" @done="onPlaylistSaved" @cancel="onPlaylistEditorCancel" /><SettingsView v-else key="settings" :testing="testing" v-model:theme="theme" v-model:accent="accent" @save="saveSettings" @test="testConnection" @friendly-error="showError" /></Transition></main>
+        <NowPlayingPanel v-if="baseView === 'library' || baseView === 'tracks' || baseView === 'favorites'" :collapsed="panelCollapsed" :width="panelWidth" :resizing="panelResizing" @toggle="togglePanel" @resize="startResize" />
+        <Transition name="queue-panel"><div v-if="showQueue" class="absolute inset-y-0 right-0 z-20 w-80 border-l border-line bg-surface"><QueuePanel @close="closeQueue" /></div></Transition>
+      </div><PlayerBar v-if="player.currentTrack" @open="navigate('player')" @queue="toggleQueue" /><AppNavigation placement="mobile" :active-view="baseView" @navigate="navigate" /><ToastStack /></div></template>

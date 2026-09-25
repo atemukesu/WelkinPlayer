@@ -31,8 +31,8 @@ function toggleSelect(track: Track) {
   else next.add(track.path);
   selected.value = next;
 }
-function play(track: Track) { player.selectTrack(track); }
-function playFirst() { const first = tracks.value.find((track) => track.path); if (first) player.selectTrack(first); }
+function play(track: Track) { player.playInQueue(tracks.value, track); }
+function playFirst() { const first = tracks.value.find((track) => track.path); if (first) player.playInQueue(tracks.value, first); }
 function openContextMenu(event: MouseEvent, track: Track) { const width = 224; const height = 240; contextTrack.value = track; contextPosition.value = { x: Math.min(event.clientX, window.innerWidth - width - 8), y: Math.min(event.clientY, window.innerHeight - height - 8) }; }
 function downloadMetadata(track: Track) { emit("downloadMetadata", track); }
 </script>
@@ -60,6 +60,6 @@ function downloadMetadata(track: Track) { emit("downloadMetadata", track); }
       <TrackList :tracks="tracks" empty-key="favorites.empty" :selectable="selectMode" :selected="selected" @play="play" @menu="openContextMenu" @details="emit('details', $event)" @toggle="toggleSelect" />
     </div>
 
-    <TrackContextMenu v-if="contextTrack" :track="contextTrack" :x="contextPosition.x" :y="contextPosition.y" :selected-paths="[...selected]" :downloading="downloadingTrackId === contextTrack.id" @close="contextTrack = null" @download-metadata="downloadMetadata" />
+    <TrackContextMenu v-if="contextTrack" :track="contextTrack" :x="contextPosition.x" :y="contextPosition.y" :selected-paths="[...selected]" :downloading="downloadingTrackId === contextTrack.id" @close="contextTrack = null" @download-metadata="downloadMetadata" @details="emit('details', $event)" />
   </div>
 </template>
