@@ -6,6 +6,7 @@
 //! `tauri::generate_handler!`.
 
 pub mod media;
+pub mod playback;
 pub mod profile;
 pub mod webdav;
 

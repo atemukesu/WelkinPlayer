@@ -164,11 +164,15 @@ export const useProfileStore = defineStore("profile", () => {
     scheduleSave();
   }
 
-  /** Remember the last playing track and its position, for resume. */
-  function recordPlayback(path: string | undefined, position: number) {
-    if (!path) return;
-    profile.value.lastTrack = path;
-    profile.value.lastPosition = Math.max(0, Math.round(position));
+  /**
+   * Drop the legacy playback fields from the profile. They now live in the
+   * dedicated playback store; this runs once after the migration seed.
+   */
+  function clearLegacyPlayback() {
+    if (profile.value.lastTrack === undefined && profile.value.lastPosition === undefined) return;
+    delete profile.value.lastTrack;
+    delete profile.value.lastPosition;
+    touch();
     scheduleSave();
   }
 
@@ -271,7 +275,7 @@ export const useProfileStore = defineStore("profile", () => {
     setLyrics,
     completeSetup,
     recordPlay,
-    recordPlayback,
+    clearLegacyPlayback,
     isFavorite,
     toggleFavorite,
     createPlaylist,

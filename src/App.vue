@@ -11,6 +11,7 @@ import { usePlayerStore } from "./stores/player";
 import type { Track } from "./stores/player";
 import { useWebdavStore } from "./stores/webdav";
 import { useProfileStore } from "./stores/profile";
+import { usePlaybackStore } from "./stores/playback";
 import { useLyricsStore } from "./stores/lyrics";
 import AppNavigation from "./components/AppNavigation.vue";
 import NowPlayingPanel from "./components/NowPlayingPanel.vue";
@@ -29,6 +30,7 @@ const { t, locale } = useI18n();
 const player = usePlayerStore();
 const webdav = useWebdavStore();
 const profile = useProfileStore();
+const playback = usePlaybackStore();
 const lyrics = useLyricsStore();
 const { loadingLibrary, enriching, refreshing, enrichDone, enrichTotal, friendlyError, loadCachedLibrary, loadRemoteLibrary, refreshLibrary, downloadTrackMetadata } = useLibrary();
 const view = ref<View>(getViewFromHash());
@@ -68,18 +70,18 @@ watch(
 watch(() => player.currentTrack?.path, (path) => { if (booted.value && path && player.isPlaying) profile.recordPlay(path); });
 watch(() => profile.revision, () => { if (booted.value) applyProfile(); });
 
-// Resume the last track/position once both the profile and library are ready.
-watch([() => profile.ready, () => player.tracks.length], () => {
-  if (playbackRestored.value || !profile.ready || player.tracks.length === 0) return;
+// Resume the last track/position once the profile, playback state and library are ready.
+watch([() => playback.ready, () => player.tracks.length], () => {
+  if (playbackRestored.value || !playback.ready || player.tracks.length === 0) return;
   playbackRestored.value = true;
-  const path = profile.profile.lastTrack;
+  const path = playback.path;
   if (!path) return;
   const track = player.tracks.find((item) => item.path === path);
   if (!track) return;
   restoringPlayback = true;
   player.currentTrack = track;
   player.isPlaying = false;
-  const position = profile.profile.lastPosition ?? 0;
+  const position = playback.position;
   if (position > 0) void nextTick(() => seekTo(position));
   window.setTimeout(() => { restoringPlayback = false; }, 1200);
 });
@@ -90,8 +92,8 @@ function savePlaybackPosition(force = false) {
   const path = player.currentTrack?.path;
   if (!booted.value || restoringPlayback || !path) return;
   lastPositionSavedAt = Date.now();
-  profile.recordPlayback(path, player.position);
-  if (force) void profile.flush();
+  playback.record(path, player.position);
+  if (force) void playback.flush();
 }
 function savePlaybackPositionOnLeave() { savePlaybackPosition(true); }
 function onVisibilityChange() { if (document.visibilityState === "hidden") savePlaybackPosition(true); }
@@ -99,7 +101,7 @@ function onVisibilityChange() { if (document.visibilityState === "hidden") saveP
 watch(() => player.currentTrack?.path, (path) => {
   if (!booted.value || restoringPlayback || !path) return;
   lastPositionSavedAt = Date.now();
-  profile.recordPlayback(path, 0);
+  playback.record(path, 0);
 });
 watch(() => player.position, (position, previous) => {
   if (!booted.value || restoringPlayback) return;
@@ -158,6 +160,8 @@ async function bootstrap() {
   await webdav.hydrate();
   const firstRun = await profile.hydrate({ theme: theme.value, accent: accent.value, locale: locale.value as "zh-CN" | "en" });
   applyProfile();
+  const seeded = await playback.hydrate({ path: profile.profile.lastTrack, position: profile.profile.lastPosition });
+  if (seeded) profile.clearLegacyPlayback();
   booted.value = true;
   void loadCachedLibrary();
   if (!firstRun && webdav.password) void loadRemoteLibrary({ silent: true });

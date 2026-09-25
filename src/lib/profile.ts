@@ -44,9 +44,15 @@ export interface Profile {
   favorites: string[];
   /** Most recently played remote track paths, newest first. */
   recent: string[];
-  /** Remote path of the track that was playing last. */
+  /**
+   * @deprecated Legacy resume point. Superseded by the playback store
+   * (`playback.json` / `welkin-playback.json`); kept only to migrate existing
+   * documents on first launch.
+   */
   lastTrack?: string;
-  /** Playback position (seconds) of {@link lastTrack}. */
+  /**
+   * @deprecated Legacy playback position (seconds). See {@link lastTrack}.
+   */
   lastPosition?: number;
   playlists: Playlist[];
   /** Last local modification time (ms). */
