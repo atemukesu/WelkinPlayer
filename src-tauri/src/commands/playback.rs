@@ -104,13 +104,15 @@ pub async fn load_remote_playback(app: AppHandle) -> Result<Option<PlaybackState
                 log::warn!("remote playback state too large, ignoring");
                 return Ok(local);
             }
-            let text = String::from_utf8(bytes.to_vec())
-                .map_err(|error| AppError::Other(format!("远程播放进度不是有效的 UTF-8：{error}")))?;
+            let text = String::from_utf8(bytes.to_vec()).map_err(|error| {
+                AppError::Other(format!("远程播放进度不是有效的 UTF-8：{error}"))
+            })?;
             match serde_json::from_str::<PlaybackState>(&text) {
                 Ok(state) => {
                     // Local progress is authoritative when it is at least as
                     // recent; only adopt (and cache) a genuinely newer remote.
-                    if let Some(local) = local.filter(|local| local.updated_at >= state.updated_at) {
+                    if let Some(local) = local.filter(|local| local.updated_at >= state.updated_at)
+                    {
                         return Ok(Some(local));
                     }
                     if let Err(error) = local_set(&app, &state) {

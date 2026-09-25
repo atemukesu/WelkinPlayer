@@ -21,8 +21,18 @@ export interface Playlist {
   id: string;
   name: string;
   tracks: string[];
-  /** Uploaded cover, stored as a compressed square data URL. */
+  /**
+   * @deprecated Legacy uploaded cover embedded as a compressed data URL. New
+   * covers are uploaded as standalone files and referenced by {@link coverFile};
+   * this field is only kept so existing profiles render until they migrate.
+   */
   cover?: string;
+  /**
+   * Remote file name of an uploaded cover (e.g. `welkin-cover-<sha>.jpg`). The
+   * image itself lives on WebDAV and in the local cover cache, never in the
+   * profile document.
+   */
+  coverFile?: string;
   /** Remote track path whose cover/icon is used as the playlist cover. */
   coverTrack?: string;
 }
@@ -134,6 +144,7 @@ export function parseProfile(raw: string | null | undefined, fallback: Profile):
           name: item.name,
           tracks,
           cover: typeof item.cover === "string" ? item.cover : undefined,
+          coverFile: typeof item.coverFile === "string" ? item.coverFile : undefined,
           coverTrack: typeof item.coverTrack === "string" ? item.coverTrack : undefined,
         }];
       })

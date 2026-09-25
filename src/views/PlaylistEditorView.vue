@@ -20,7 +20,9 @@ const profile = useProfileStore();
 
 const editing = computed(() => props.playlistId ? profile.playlists.find((item) => item.id === props.playlistId) ?? null : null);
 const name = ref(editing.value?.name ?? "");
-const cover = ref<string | undefined>(editing.value?.cover);
+const coverFile = ref<string | undefined>(editing.value?.coverFile);
+const legacyCover = ref<string | undefined>(editing.value?.cover);
+const pendingCover = ref<string | null>(null);
 const coverTrack = ref<string | undefined>(editing.value?.coverTrack);
 const mode = ref<"upload" | "icon">(coverTrack.value ? "icon" : "upload");
 const cropSrc = ref<string | null>(null);
@@ -33,7 +35,7 @@ const selectedPaths = computed(() => {
   const knownSet = new Set(known);
   return [...known, ...[...selected.value].filter((path) => !knownSet.has(path))];
 });
-const preview = computed<Playlist>(() => ({ id: "preview", name: name.value || t("playlistEditor.untitled"), tracks: selectedPaths.value, cover: cover.value, coverTrack: coverTrack.value }));
+const preview = computed<Playlist>(() => ({ id: "preview", name: name.value || t("playlistEditor.untitled"), tracks: selectedPaths.value, cover: legacyCover.value, coverFile: coverFile.value, coverTrack: coverTrack.value }));
 const pickerTracks = computed(() => {
   const value = trackQuery.value.trim().toLocaleLowerCase();
   return player.tracks.filter((track) => track.path && (!value || `${track.title} ${track.artist}`.toLocaleLowerCase().includes(value)));
@@ -87,19 +89,26 @@ function onFile(event: Event) {
   reader.readAsDataURL(file);
   input.value = "";
 }
-function applyCrop(value: string) { cover.value = value; coverTrack.value = undefined; cropSrc.value = null; }
-function chooseTrack(path: string) { coverTrack.value = path; cover.value = undefined; }
-function clearCover() { cover.value = undefined; coverTrack.value = undefined; }
+function applyCrop(value: string) { pendingCover.value = value; coverFile.value = undefined; legacyCover.value = undefined; coverTrack.value = undefined; cropSrc.value = null; }
+function chooseTrack(path: string) { coverTrack.value = path; coverFile.value = undefined; legacyCover.value = undefined; pendingCover.value = null; }
+function clearCover() { coverFile.value = undefined; legacyCover.value = undefined; pendingCover.value = null; coverTrack.value = undefined; }
 
-function save() {
+async function save() {
   const trimmed = name.value.trim();
   if (!trimmed) return;
+  let file = coverFile.value ?? null;
+  if (pendingCover.value) {
+    try { file = await profile.uploadCover(pendingCover.value); }
+    catch { return; }
+  }
+  const previous = editing.value?.coverFile;
   if (editing.value) {
-    profile.updatePlaylist(editing.value.id, { name: trimmed, cover: cover.value, coverTrack: coverTrack.value, tracks: selectedPaths.value });
+    profile.updatePlaylist(editing.value.id, { name: trimmed, cover: legacyCover.value, coverFile: file ?? undefined, coverTrack: coverTrack.value, tracks: selectedPaths.value });
+    if (previous && previous !== file) void profile.pruneCover(previous);
     emit("done", editing.value.id);
   } else {
     const playlist = profile.createPlaylist(trimmed);
-    profile.updatePlaylist(playlist.id, { cover: cover.value, coverTrack: coverTrack.value, tracks: selectedPaths.value });
+    profile.updatePlaylist(playlist.id, { cover: legacyCover.value, coverFile: file ?? undefined, coverTrack: coverTrack.value, tracks: selectedPaths.value });
     emit("done", playlist.id);
   }
 }
@@ -114,7 +123,7 @@ function save() {
 
     <div class="mt-8 grid gap-8 lg:grid-cols-[240px_minmax(0,1fr)]">
       <div class="flex flex-col items-center gap-4">
-        <PlaylistCover :playlist="preview" class="ak-frame h-40 w-40 border border-line text-5xl" :icon-size="48" />
+        <PlaylistCover :playlist="preview" :override-src="pendingCover" class="ak-frame h-40 w-40 border border-line text-5xl" :icon-size="48" />
         <label class="grid w-full gap-2 text-[13px] font-semibold text-dim">
           {{ t("playlistEditor.name") }}
           <input v-model="name" maxlength="48" :placeholder="t('playlistEditor.namePlaceholder')" class="h-10 border border-line bg-bg px-3 text-sm text-fg outline-none focus:border-accent" @keydown.enter="save" />
@@ -135,7 +144,7 @@ function save() {
             <span class="text-[12px] text-dim">{{ t("playlistEditor.uploadHint") }}</span>
             <input type="file" accept="image/*" class="hidden" @change="onFile" />
           </label>
-          <button v-if="cover" type="button" class="flex items-center gap-2 justify-self-start text-[12px] font-semibold text-dim transition-colors hover:text-red-500" @click="clearCover"><Trash2 :size="14" />{{ t("playlistEditor.remove") }}</button>
+          <button v-if="coverFile || legacyCover || pendingCover" type="button" class="flex items-center gap-2 justify-self-start text-[12px] font-semibold text-dim transition-colors hover:text-red-500" @click="clearCover"><Trash2 :size="14" />{{ t("playlistEditor.remove") }}</button>
         </div>
 
         <div v-else class="mt-4 grid gap-3">

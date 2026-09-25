@@ -159,7 +159,9 @@ fn read_setting(app: &AppHandle, key: &str) -> Result<String, AppError> {
 }
 
 /// Load the saved URL + username (settings.json) and the password (keychain).
-pub(crate) fn load_saved_credentials(app: &AppHandle) -> Result<Option<SavedCredentials>, AppError> {
+pub(crate) fn load_saved_credentials(
+    app: &AppHandle,
+) -> Result<Option<SavedCredentials>, AppError> {
     let url = read_setting(app, SETTINGS_URL_KEY)?;
     let username = read_setting(app, SETTINGS_USERNAME_KEY)?;
 

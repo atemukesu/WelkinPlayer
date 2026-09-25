@@ -37,6 +37,8 @@ lofty = "0.22"
 # Decode embedded cover art and re-encode a small JPEG thumbnail for the cache.
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
 base64 = "0.22"
+# Content-addressed naming for standalone playlist cover files.
+sha2 = "0.10"
 
 # Password storage uses the platform-native keychain. Each backend is enabled
 # only for its own target so we never compile another OS's dependencies.

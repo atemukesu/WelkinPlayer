@@ -5,6 +5,7 @@
 //! submodules (e.g. [`webdav`]) and are registered in `run()` via
 //! `tauri::generate_handler!`.
 
+pub mod covers;
 pub mod media;
 pub mod playback;
 pub mod profile;

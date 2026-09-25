@@ -83,7 +83,7 @@ fn cover_hash(path: &str) -> String {
     format!("{:016x}", hasher.finish())
 }
 
-fn cover_file(dir: &Path, hash: &str) -> PathBuf {
+pub(crate) fn cover_file(dir: &Path, hash: &str) -> PathBuf {
     dir.join("covers").join(format!("{hash}.jpg"))
 }
 
@@ -105,7 +105,7 @@ fn write_meta(dir: &Path, hash: &str, metadata: &TrackMetadata) -> Result<(), Ap
     Ok(())
 }
 
-fn write_cover(dir: &Path, hash: &str, bytes: &[u8]) -> Result<(), AppError> {
+pub(crate) fn write_cover(dir: &Path, hash: &str, bytes: &[u8]) -> Result<(), AppError> {
     let file = cover_file(dir, hash);
     if let Some(parent) = file.parent() {
         std::fs::create_dir_all(parent)?;
@@ -243,12 +243,7 @@ pub async fn refresh_webdav_library(app: AppHandle) -> Result<RefreshResult, App
 
     let old_meta: std::collections::HashMap<&str, (Option<u64>, Option<&str>)> = old_entries
         .iter()
-        .map(|entry| {
-            (
-                entry.path.as_str(),
-                (entry.size, entry.modified.as_deref()),
-            )
-        })
+        .map(|entry| (entry.path.as_str(), (entry.size, entry.modified.as_deref())))
         .collect();
 
     let mut changed_paths = Vec::new();
@@ -474,7 +469,7 @@ pub fn get_cached_cover(app: AppHandle, path: String) -> Result<Option<String>, 
     read_cover_file(&cover_file(&dir, &cover_hash(&path)))
 }
 
-fn cover_path_for(dir: &Path, hash: &str) -> Option<String> {
+pub(crate) fn cover_path_for(dir: &Path, hash: &str) -> Option<String> {
     let file = cover_file(dir, hash);
     file.is_file().then(|| file.to_string_lossy().to_string())
 }
