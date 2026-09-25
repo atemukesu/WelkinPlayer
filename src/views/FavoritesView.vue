@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { Heart } from "@lucide/vue";
+import { Heart, ListChecks, Play } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { usePlayerStore } from "../stores/player";
 import type { Track } from "../stores/player";
@@ -16,28 +16,50 @@ const player = usePlayerStore();
 const profile = useProfileStore();
 const contextTrack = ref<Track | null>(null);
 const contextPosition = ref({ x: 0, y: 0 });
+const selectMode = ref(false);
+const selected = ref<Set<string>>(new Set());
 const tracks = computed(() => tracksForPaths(profile.favorites, player.tracks));
 
+function toggleSelectMode() {
+  selectMode.value = !selectMode.value;
+  if (!selectMode.value) selected.value = new Set();
+}
+function toggleSelect(track: Track) {
+  if (!track.path) return;
+  const next = new Set(selected.value);
+  if (next.has(track.path)) next.delete(track.path);
+  else next.add(track.path);
+  selected.value = next;
+}
 function play(track: Track) { player.selectTrack(track); }
+function playFirst() { const first = tracks.value.find((track) => track.path); if (first) player.selectTrack(first); }
 function openContextMenu(event: MouseEvent, track: Track) { const width = 224; const height = 240; contextTrack.value = track; contextPosition.value = { x: Math.min(event.clientX, window.innerWidth - width - 8), y: Math.min(event.clientY, window.innerHeight - height - 8) }; }
 function downloadMetadata(track: Track) { emit("downloadMetadata", track); }
 </script>
 
 <template>
   <div class="mx-auto w-full max-w-6xl px-6 py-6 lg:px-8 lg:py-8">
-    <header class="flex items-center gap-4 border-b border-line pb-6">
-      <span class="grid h-12 w-12 shrink-0 place-items-center bg-accent text-accent-fg"><Heart :size="22" :stroke-width="2.2" /></span>
-      <div class="min-w-0">
-        <h1 class="text-4xl font-black leading-none tracking-tight sm:text-5xl">{{ t("nav.favorites") }}</h1>
-        <p class="mt-2 font-mono text-sm uppercase tracking-[0.2em] text-dim">{{ t("library.tracks", { count: tracks.length }) }}</p>
+    <header class="border-b border-line pb-6">
+      <div class="flex flex-wrap items-center gap-6">
+        <span class="ak-frame grid h-32 w-32 shrink-0 place-items-center border border-line bg-accent/10 text-accent"><Heart :size="46" :stroke-width="2" /></span>
+        <div class="min-w-0">
+          <h1 class="truncate text-3xl font-black leading-tight tracking-tight sm:text-4xl">{{ t("nav.favorites") }}</h1>
+          <p class="mt-2 font-mono text-sm uppercase tracking-[0.2em] text-dim">{{ t("library.tracks", { count: tracks.length }) }}</p>
+          <div class="mt-4 flex items-center gap-2">
+            <button type="button" class="ak-clip-tr flex h-10 items-center gap-2 bg-accent px-4 text-[13px] font-bold text-accent-fg transition-transform hover:scale-[1.02] active:scale-95 disabled:opacity-50" :disabled="!tracks.length" @click="playFirst"><Play :size="15" :stroke-width="2.2" />{{ t("library.play") }}</button>
+          </div>
+        </div>
+        <div class="ml-auto flex items-center gap-3">
+          <ViewModeToggle />
+          <button type="button" class="grid h-10 w-10 shrink-0 place-items-center border transition-colors" :class="selectMode ? 'border-accent bg-accent text-accent-fg' : 'border-line text-dim hover:border-accent hover:text-accent'" :title="t('library.selectMode')" @click="toggleSelectMode"><ListChecks :size="16" :stroke-width="2" /></button>
+        </div>
       </div>
-      <ViewModeToggle class="ml-auto shrink-0" />
     </header>
 
     <div class="mt-8">
-      <TrackList :tracks="tracks" empty-key="favorites.empty" @play="play" @menu="openContextMenu" @details="emit('details', $event)" />
+      <TrackList :tracks="tracks" empty-key="favorites.empty" :selectable="selectMode" :selected="selected" @play="play" @menu="openContextMenu" @details="emit('details', $event)" @toggle="toggleSelect" />
     </div>
 
-    <TrackContextMenu v-if="contextTrack" :track="contextTrack" :x="contextPosition.x" :y="contextPosition.y" :downloading="downloadingTrackId === contextTrack.id" @close="contextTrack = null" @download-metadata="downloadMetadata" />
+    <TrackContextMenu v-if="contextTrack" :track="contextTrack" :x="contextPosition.x" :y="contextPosition.y" :selected-paths="[...selected]" :downloading="downloadingTrackId === contextTrack.id" @close="contextTrack = null" @download-metadata="downloadMetadata" />
   </div>
 </template>

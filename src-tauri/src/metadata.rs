@@ -80,10 +80,10 @@ pub fn encode_thumbnail(data: &[u8]) -> Result<Vec<u8>, AppError> {
 
     let image = image::load_from_memory(data)
         .map_err(|error| AppError::Other(format!("cover decode error: {error}")))?;
-    let thumbnail = image.thumbnail(320, 320).to_rgb8();
+    let thumbnail = image.thumbnail(640, 640).to_rgb8();
 
     let mut output = Vec::new();
-    JpegEncoder::new_with_quality(&mut output, 82)
+    JpegEncoder::new_with_quality(&mut output, 86)
         .encode_image(&thumbnail)
         .map_err(|error| AppError::Other(format!("cover encode error: {error}")))?;
     Ok(output)

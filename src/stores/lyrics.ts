@@ -22,6 +22,8 @@ export const useLyricsStore = defineStore("lyrics", () => {
   const error = ref("");
   const lines = ref<LyricLine[]>([]);
   const activeIndex = ref(-1);
+  /** Guards against out-of-order lyric loads when switching tracks quickly. */
+  let loadToken = 0;
 
   const enabled = computed(() => source.value !== "disabled");
   const hasLyrics = computed(() => lines.value.length > 0);
@@ -50,18 +52,41 @@ export const useLyricsStore = defineStore("lyrics", () => {
     reset();
     if (!path || !enabled.value) return;
 
+    const token = ++loadToken;
     status.value = "loading";
+
+    // 1. Show the locally cached lyrics immediately (no network needed).
+    let cached: string | null = null;
+    try {
+      cached = await invoke<string | null>("get_cached_lyrics", { path });
+    } catch { cached = null; }
+    let shown = false;
+    if (cached && token === loadToken) {
+      shown = applyContent(cached);
+    }
+
+    // 2. Ask the remote for the authoritative copy and update only if it differs.
     try {
       const content = await invoke<string>("read_track_lyrics", { path });
-      const parsed = parseLyric(content, { applyOffset: true });
-      if (parsed.lines.length === 0) {
+      if (token !== loadToken) return;
+      if (content && content !== cached) {
+        const applied = applyContent(content);
+        if (!applied && !shown) fail("empty");
+      } else if (!shown) {
         fail("empty");
-        return;
       }
-      load(parsed.lines);
     } catch (error) {
-      fail(toAppError(error).code);
+      if (token !== loadToken) return;
+      if (!shown) fail(toAppError(error).code);
     }
+  }
+
+  /** Parse lyric text and load it; returns false when there are no lines. */
+  function applyContent(content: string): boolean {
+    const parsed = parseLyric(content, { applyOffset: true });
+    if (parsed.lines.length === 0) return false;
+    load(parsed.lines);
+    return true;
   }
 
   function wordProgress(line: LyricLine, wordIndex: number, positionMs: number) {

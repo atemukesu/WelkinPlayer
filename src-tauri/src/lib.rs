@@ -41,6 +41,7 @@ pub fn run() {
             commands::media::read_track_metadata,
             commands::media::download_track_metadata,
             commands::media::read_track_lyrics,
+            commands::media::get_cached_lyrics,
             commands::media::get_cached_metadata,
             commands::media::get_cover,
             commands::media::get_cached_cover,
@@ -48,6 +49,7 @@ pub fn run() {
             commands::media::set_cache_dir,
             commands::media::load_library_cache,
             commands::media::save_library_cache,
+            commands::media::refresh_webdav_library,
             proxy::stream_endpoint
         ])
         .run(tauri::generate_context!())

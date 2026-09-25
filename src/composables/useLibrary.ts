@@ -14,11 +14,19 @@ const ERROR_KEYS: Record<string, string> = {
   STORE: "errors.store", INVALID_ARGUMENT: "errors.invalidArgument",
 };
 
+/** Mirrors the Rust `RefreshResult` struct. */
+interface RefreshResult {
+  entries: RemoteEntry[];
+  changed: boolean;
+  changedPaths: string[];
+}
+
 export function useLibrary() {
   const { t } = useI18n();
   const player = usePlayerStore();
   const loadingLibrary = ref(false);
   const enriching = ref(false);
+  const refreshing = ref(false);
   const enrichDone = ref(0);
   const enrichTotal = ref(0);
 
@@ -28,16 +36,16 @@ export function useLibrary() {
     return key ? t(key) : appError.message;
   }
 
-  function reconcileTracks(entries: RemoteEntry[], cached: Track[]): Track[] {
+  function reconcileTracks(entries: RemoteEntry[], cached: Track[], invalidate?: Set<string>): Track[] {
     const byPath = new Map(cached.map((track) => [track.path, track]));
     return entries.map((entry, index) => {
-      const previous = byPath.get(entry.path);
+      const previous = invalidate?.has(entry.path) ? undefined : byPath.get(entry.path);
       return previous ? { ...previous, id: index + 1 } : trackFromEntry(entry, index);
     });
   }
 
-  function showTracks(entries: RemoteEntry[], cached: Track[]): Track[] {
-    const tracks = reconcileTracks(entries, cached);
+  function showTracks(entries: RemoteEntry[], cached: Track[], invalidate?: Set<string>): Track[] {
+    const tracks = reconcileTracks(entries, cached, invalidate);
     player.setTracks(tracks);
     void enrichTracks(tracks);
     return tracks;
@@ -116,5 +124,19 @@ export function useLibrary() {
     finally { loadingLibrary.value = false; }
   }
 
-  return { loadingLibrary, enriching, enrichDone, enrichTotal, friendlyError, loadCachedLibrary, loadRemoteLibrary, downloadTrackMetadata };
+  /** Force an immediate WebDAV re-list, updating the cache only when it changed. */
+  async function refreshLibrary() {
+    refreshing.value = true;
+    try {
+      const result = await invoke<RefreshResult>("refresh_webdav_library");
+      showTracks(result.entries, player.tracks, new Set(result.changedPaths));
+      pushToast(result.changed ? "success" : "info", result.changed ? t("library.refreshed") : t("library.unchanged"));
+    } catch (error) {
+      pushToast("error", friendlyError(error));
+    } finally {
+      refreshing.value = false;
+    }
+  }
+
+  return { loadingLibrary, enriching, refreshing, enrichDone, enrichTotal, friendlyError, loadCachedLibrary, loadRemoteLibrary, refreshLibrary, downloadTrackMetadata };
 }
