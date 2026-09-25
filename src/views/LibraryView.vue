@@ -45,7 +45,7 @@ const stats = computed<{ key: string; value: number; icon: Component; view?: Vie
   { key: "home.statsTracks", value: player.tracks.length, icon: Library, view: "tracks" },
   { key: "home.statsPlaylists", value: profile.playlists.length, icon: ListMusic },
   { key: "home.statsFavorites", value: profile.favorites.length, icon: Heart, view: "favorites" },
-  { key: "home.statsPlays", value: totalPlays.value, icon: Activity },
+  { key: "home.statsPlays", value: totalPlays.value, icon: Activity, view: "stats" },
 ]);
 
 const topTracks = computed(() => {

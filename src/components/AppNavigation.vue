@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ChevronLeft, ChevronRight, Heart, ListMusic, Music2, Plus } from "@lucide/vue";
+import { Activity, ChevronLeft, ChevronRight, Heart, ListMusic, Music2, Plus } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { navItems } from "../lib/app";
 import type { View } from "../lib/app";
@@ -30,6 +30,7 @@ function isActivePlaylist(id: string): boolean { return props.activePlaylistId =
       <button class="relative mt-3 flex h-11 w-full items-center border border-transparent text-left text-[13px] font-semibold uppercase tracking-[0.2em] transition-colors" :class="[collapsed ? 'justify-center px-0' : 'gap-2 px-3', activeView === 'playlist-new' ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg']" :title="collapsed ? t('library.playlists.new') : undefined" @click="emit('createPlaylist')"><Plus :size="16" :stroke-width="2" /><span class="sidebar-nav-label truncate">{{ t("library.playlists.new") }}</span></button>
       <div class="my-3 border-t border-line"></div>
       <button class="relative flex h-11 w-full items-center border border-transparent text-left text-[13px] font-semibold uppercase tracking-[0.2em] transition-colors" :class="[collapsed ? 'justify-center px-0' : 'gap-2 px-3', activeView === 'tracks' && !activePlaylistId ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg']" :title="collapsed ? t('nav.tracks') : undefined" @click="emit('navigate', 'tracks')"><ListMusic :size="16" :stroke-width="1.8" /><span class="sidebar-nav-label truncate">{{ t("nav.tracks") }}</span></button>
+      <button class="relative mt-1.5 flex h-11 w-full items-center border border-transparent text-left text-[13px] font-semibold uppercase tracking-[0.2em] transition-colors" :class="[collapsed ? 'justify-center px-0' : 'gap-2 px-3', activeView === 'stats' ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg']" :title="collapsed ? t('nav.stats') : undefined" @click="emit('navigate', 'stats')"><Activity :size="16" :stroke-width="1.8" /><span class="sidebar-nav-label truncate">{{ t("nav.stats") }}</span></button>
     </div>
     <button type="button" class="mt-auto grid h-10 place-items-center text-muted transition-colors hover:bg-fg/5 hover:text-fg" :title="t(collapsed ? 'controls.expand' : 'controls.collapse')" @click="emit('toggle')"><ChevronRight v-if="collapsed" :size="18" :stroke-width="1.8" /><ChevronLeft v-else :size="18" :stroke-width="1.8" /></button>
   </aside>

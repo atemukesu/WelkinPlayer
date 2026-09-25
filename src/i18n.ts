@@ -8,6 +8,7 @@ const messages = {
       library: "资料库",
       favorites: "我喜欢",
       tracks: "全部曲目",
+      stats: "播放排名",
       settings: "设置",
       nowPlaying: "正在播放",
     },
@@ -144,6 +145,17 @@ const messages = {
     },
     favorites: {
       empty: "还没有喜欢的歌曲，右键歌曲即可收藏。",
+    },
+    stats: {
+      eyebrow: "统计 / 播放排名",
+      title: "播放排名",
+      subtitle: "按播放次数统计，看看你最常听哪些曲目。",
+      totalPlays: "总播放次数",
+      tracksPlayed: "已播放曲目",
+      libraryTracks: "曲库曲目",
+      unit: "次",
+      empty: "还没有播放记录，快去听歌吧。",
+      playAll: "播放排名",
     },
     playlistEditor: {
       eyebrow: "歌单 / 编辑",
@@ -334,6 +346,7 @@ const messages = {
       library: "Library",
       favorites: "Favorites",
       tracks: "All tracks",
+      stats: "Play ranking",
       settings: "Settings",
       nowPlaying: "Now Playing",
     },
@@ -470,6 +483,17 @@ const messages = {
     },
     favorites: {
       empty: "No favorites yet — right-click a track to add it.",
+    },
+    stats: {
+      eyebrow: "Stats / Ranking",
+      title: "Play ranking",
+      subtitle: "Ranked by play count — your most-listened tracks at a glance.",
+      totalPlays: "Total plays",
+      tracksPlayed: "Tracks played",
+      libraryTracks: "Library tracks",
+      unit: "plays",
+      empty: "No play history yet — start listening!",
+      playAll: "Play ranking",
     },
     playlistEditor: {
       eyebrow: "Playlist / Edit",
