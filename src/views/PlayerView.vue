@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { ChevronDown } from "@lucide/vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { ChevronDown, Maximize2, Minimize2 } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { usePlayerStore } from "../stores/player";
 import { useLyricsStore } from "../stores/lyrics";
 import { currentTime } from "../lib/audio";
@@ -22,6 +23,40 @@ let lastScrolledIndex = -1;
 let frame = 0;
 let lastLyricsSync = 0;
 let manualTimer = 0;
+
+const controlsVisible = ref(true);
+const isFullscreen = ref(false);
+let controlsTimer = 0;
+
+function bumpControls() {
+  controlsVisible.value = true;
+  window.clearTimeout(controlsTimer);
+  controlsTimer = window.setTimeout(() => { controlsVisible.value = false; }, 1000);
+}
+
+const revealClass = computed(() => (controlsVisible.value
+  ? "pointer-events-auto translate-y-0 opacity-100"
+  : "pointer-events-none -translate-y-2 opacity-0"));
+
+async function syncFullscreen() {
+  try {
+    isFullscreen.value = await getCurrentWindow().isFullscreen();
+  } catch {
+    isFullscreen.value = Boolean(document.fullscreenElement);
+  }
+}
+
+async function toggleFullscreen() {
+  try {
+    await getCurrentWindow().setFullscreen(!isFullscreen.value);
+    await syncFullscreen();
+  } catch {
+    if (document.fullscreenElement) await document.exitFullscreen();
+    else await document.documentElement.requestFullscreen();
+  }
+}
+
+const fullscreenTitle = computed(() => (isFullscreen.value ? t("controls.exitFullscreen") : t("controls.fullscreen")));
 
 function syncLyrics() {
   const positionMs = currentTime() * 1000;
@@ -76,10 +111,21 @@ function onWheel(event: WheelEvent) {
 
 onMounted(() => {
   frame = requestAnimationFrame(loop);
+  bumpControls();
+  void syncFullscreen();
+  window.addEventListener("pointermove", bumpControls);
+  window.addEventListener("pointerdown", bumpControls);
+  window.addEventListener("wheel", bumpControls, { passive: true });
+  window.addEventListener("resize", syncFullscreen);
 });
 onBeforeUnmount(() => {
   cancelAnimationFrame(frame);
   window.clearTimeout(manualTimer);
+  window.clearTimeout(controlsTimer);
+  window.removeEventListener("pointermove", bumpControls);
+  window.removeEventListener("pointerdown", bumpControls);
+  window.removeEventListener("wheel", bumpControls);
+  window.removeEventListener("resize", syncFullscreen);
 });
 
 watch(
@@ -108,9 +154,30 @@ watch(
     <div class="pointer-events-none absolute -right-32 top-1/2 h-[150%] w-40 rotate-[18deg] bg-accent/10"></div>
     <div class="pointer-events-none absolute -left-24 bottom-0 h-[60%] w-24 -rotate-[18deg] bg-accent/5"></div>
     <header class="relative z-10 flex h-16 shrink-0 items-center px-5">
-      <button class="flex items-center gap-2 text-[13px] font-semibold uppercase tracking-[0.3em] text-muted transition-colors hover:text-fg" @click="emit('navigate', returnView)">
-        <ChevronDown :size="16" :stroke-width="2" />{{ t("controls.return") }}
-      </button>
+      <div class="ml-auto flex items-center gap-3">
+        <button
+          type="button"
+          class="grid h-10 w-10 place-items-center border border-line text-muted transition-all duration-300 ease-out hover:border-fg hover:text-fg"
+          :class="revealClass"
+          :title="t('controls.return')"
+          :aria-label="t('controls.return')"
+          @click="emit('navigate', returnView)"
+        >
+          <ChevronDown :size="16" :stroke-width="2" />
+        </button>
+        <button
+          type="button"
+          class="grid h-10 w-10 place-items-center border border-line text-muted transition-all duration-300 ease-out hover:border-fg hover:text-fg"
+          :class="revealClass"
+          :title="fullscreenTitle"
+          :aria-label="fullscreenTitle"
+          :aria-pressed="isFullscreen"
+          @click="toggleFullscreen()"
+        >
+          <Minimize2 v-if="isFullscreen" :size="16" :stroke-width="2" />
+          <Maximize2 v-else :size="16" :stroke-width="2" />
+        </button>
+      </div>
     </header>
     <div class="relative z-10 grid min-h-0 flex-1 gap-6 overflow-hidden px-5 py-4 md:grid-cols-[minmax(220px,0.34fr)_minmax(0,0.66fr)] md:gap-12 md:px-10 md:py-8 lg:grid-cols-[minmax(280px,0.32fr)_minmax(0,0.68fr)] lg:gap-16 lg:px-16">
       <div class="hidden min-h-0 flex-col justify-center md:flex">

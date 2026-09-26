@@ -3,7 +3,6 @@ import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   ListMusic,
-  Maximize2,
   Pause,
   Play,
   Repeat,
@@ -128,14 +127,6 @@ function onSeek(event: Event) {
         >
           <Pause v-if="player.isPlaying" :size="18" :stroke-width="2.2" />
           <Play v-else :size="18" :stroke-width="2.2" />
-        </button>
-        <button
-          class="text-muted transition-colors hover:text-fg"
-          :title="t('controls.fullscreen')"
-          :aria-label="t('controls.fullscreen')"
-          @click="emit('open')"
-        >
-          <Maximize2 :size="17" :stroke-width="1.8" />
         </button>
       </div>
     </div>

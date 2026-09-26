@@ -11,8 +11,10 @@ const props = withDefaults(
     fontSize: number;
     color?: string;
     blend?: "normal" | "plus-lighter";
+    /** Vertical position (0–1 from the top) the active line is aligned to. */
+    alignPosition?: number;
   }>(),
-  { color: "var(--fg)", blend: "normal" },
+  { color: "var(--fg)", blend: "normal", alignPosition: 0.5 },
 );
 
 const emit = defineEmits<{ seek: [timeMs: number] }>();
@@ -32,6 +34,7 @@ function onLineClick(event: LyricLineMouseEvent) {
     :current-time="props.currentTime"
     :playing="props.playing"
     align-anchor="center"
+    :align-position="props.alignPosition"
     :word-fade-width="0.5"
     @line-click="onLineClick"
   />

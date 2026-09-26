@@ -100,6 +100,9 @@ export const usePlayerStore = defineStore("player", () => {
   const totalTime = computed(() =>
     duration.value > 0 ? formatClock(duration.value) : currentTrack.value?.duration ?? "--:--",
   );
+  const remainingTime = computed(() =>
+    duration.value > 0 ? formatClock(Math.max(0, duration.value - position.value)) : totalTime.value,
+  );
 
   function resetProgress() {
     position.value = 0;
@@ -339,6 +342,7 @@ export const usePlayerStore = defineStore("player", () => {
     hasTrack,
     elapsedTime,
     totalTime,
+    remainingTime,
     selectTrack,
     playInQueue,
     toggleShuffle,

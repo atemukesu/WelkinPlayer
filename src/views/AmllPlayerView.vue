@@ -2,6 +2,8 @@
 import { computed, onBeforeUnmount, onMounted, ref, toRaw, watch } from "vue";
 import {
   ChevronDown,
+  Maximize2,
+  Minimize2,
   Pause,
   Play,
   Repeat,
@@ -9,10 +11,9 @@ import {
   Shuffle,
   SkipBack,
   SkipForward,
-  Volume2,
-  VolumeX,
 } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import "@applemusic-like-lyrics/core/style.css";
 import AmllBackground from "../components/AmllBackground.vue";
 import AmllLyrics from "../components/AmllLyrics.vue";
@@ -29,6 +30,7 @@ const player = usePlayerStore();
 const lyrics = useLyricsStore();
 
 const positionMs = ref(0);
+const showRemaining = ref(false);
 let frame = 0;
 
 /**
@@ -72,8 +74,82 @@ function loop() {
   frame = requestAnimationFrame(loop);
 }
 
-onMounted(() => { frame = requestAnimationFrame(loop); });
-onBeforeUnmount(() => cancelAnimationFrame(frame));
+const controlsVisible = ref(true);
+let controlsTimer = 0;
+
+/** Reveal the floating close controls on activity, then fade them out when idle. */
+function bumpControls() {
+  controlsVisible.value = true;
+  window.clearTimeout(controlsTimer);
+  controlsTimer = window.setTimeout(() => { controlsVisible.value = false; }, 1000);
+}
+
+const revealClass = computed(() => (controlsVisible.value
+  ? "pointer-events-auto translate-y-0 opacity-100"
+  : "pointer-events-none -translate-y-2 opacity-0"));
+
+const isFullscreen = ref(false);
+
+async function syncFullscreen() {
+  try {
+    isFullscreen.value = await getCurrentWindow().isFullscreen();
+  } catch {
+    isFullscreen.value = Boolean(document.fullscreenElement);
+  }
+}
+
+async function toggleFullscreen() {
+  try {
+    await getCurrentWindow().setFullscreen(!isFullscreen.value);
+    await syncFullscreen();
+  } catch {
+    if (document.fullscreenElement) await document.exitFullscreen();
+    else await document.documentElement.requestFullscreen();
+  }
+}
+
+const fullscreenTitle = computed(() => (isFullscreen.value ? t("controls.exitFullscreen") : t("controls.fullscreen")));
+
+/**
+ * Space must always toggle playback on this page. App.vue's global shortcut
+ * bails out when a button keeps focus, so intercept Space in the capture phase
+ * and stop the previously focused control from being re-triggered.
+ */
+function onKeydown(event: KeyboardEvent) {
+  if (event.code !== "Space" && event.key !== " ") return;
+  bumpControls();
+  if (!props.active) return;
+  const target = event.target as HTMLElement | null;
+  if (target) {
+    const tag = target.tagName;
+    if (tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable) return;
+    if (tag === "INPUT" && (target as HTMLInputElement).type !== "range") return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  if (event.repeat) return;
+  player.togglePlayback();
+}
+
+onMounted(() => {
+  frame = requestAnimationFrame(loop);
+  bumpControls();
+  void syncFullscreen();
+  window.addEventListener("keydown", onKeydown, true);
+  window.addEventListener("pointermove", bumpControls);
+  window.addEventListener("pointerdown", bumpControls);
+  window.addEventListener("wheel", bumpControls, { passive: true });
+  window.addEventListener("resize", syncFullscreen);
+});
+onBeforeUnmount(() => {
+  cancelAnimationFrame(frame);
+  window.clearTimeout(controlsTimer);
+  window.removeEventListener("keydown", onKeydown, true);
+  window.removeEventListener("pointermove", bumpControls);
+  window.removeEventListener("pointerdown", bumpControls);
+  window.removeEventListener("wheel", bumpControls);
+  window.removeEventListener("resize", syncFullscreen);
+});
 
 watch(
   () => player.currentTrack?.path,
@@ -131,33 +207,121 @@ function onLyricSeek(timeMs: number) {
     <div class="pointer-events-none absolute inset-x-0 top-0 h-40 bg-gradient-to-b from-black/40 to-transparent"></div>
     <div class="pointer-events-none absolute inset-x-0 bottom-0 h-56 bg-gradient-to-t from-black/60 to-transparent"></div>
 
-    <header class="absolute inset-x-0 top-0 z-20 flex h-16 items-center gap-4 px-4 sm:px-6">
-      <button
-        type="button"
-        class="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-white/10 text-white backdrop-blur transition hover:bg-white/20"
-        :aria-label="t('controls.return')"
-        @click="emit('navigate', returnView)"
-      >
-        <ChevronDown :size="20" :stroke-width="2" />
-      </button>
+    <header class="pointer-events-none absolute inset-x-0 top-0 z-20 flex h-16 items-center gap-4 px-4 sm:px-6 md:hidden">
+      <div class="flex items-center gap-4 transition-all duration-300 ease-out" :class="revealClass">
+        <button
+          type="button"
+          class="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-white/10 text-white backdrop-blur transition hover:bg-white/20"
+          :aria-label="t('controls.return')"
+          @click="emit('navigate', returnView)"
+        >
+          <ChevronDown :size="20" :stroke-width="2" />
+        </button>
+        <button
+          type="button"
+          class="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-white/10 text-white backdrop-blur transition hover:bg-white/20"
+          :title="fullscreenTitle"
+          :aria-label="fullscreenTitle"
+          :aria-pressed="isFullscreen"
+          @click="toggleFullscreen()"
+        >
+          <Minimize2 v-if="isFullscreen" :size="18" :stroke-width="2" />
+          <Maximize2 v-else :size="18" :stroke-width="2" />
+        </button>
+      </div>
       <span class="flex-1"></span>
       <span class="h-10 w-10 shrink-0"></span>
     </header>
 
-    <div class="relative z-10 grid h-full grid-cols-1 gap-8 px-6 pb-44 pt-24 md:grid-cols-[minmax(240px,0.82fr)_minmax(0,1.18fr)] md:gap-14 md:px-14 lg:px-24">
-      <div class="hidden min-h-0 flex-col items-center justify-center gap-6 md:flex">
-        <div class="aspect-square w-full max-w-[420px] overflow-hidden rounded-2xl shadow-2xl shadow-black/40" :style="{ backgroundColor: player.currentTrack.color }">
-          <img v-if="player.currentTrack.cover" :src="player.currentTrack.cover" alt="" decoding="async" class="h-full w-full object-cover" />
-          <span v-else class="grid h-full w-full place-items-center text-8xl font-black text-white/90">{{ initial(player.currentTrack) }}</span>
+    <div class="relative z-10 grid h-full grid-cols-1 grid-rows-[minmax(0,1fr)_auto] gap-8 px-6 md:grid-cols-[minmax(240px,0.82fr)_minmax(0,1.18fr)] md:grid-rows-1 md:gap-14 md:px-14 lg:px-24">
+      <div class="order-2 flex min-h-0 flex-col items-center justify-center gap-6 pb-6 pt-4 md:order-none md:pb-16 md:pt-24">
+        <div class="relative hidden w-full max-w-[420px] md:block">
+          <div class="absolute -top-20 left-1/2 flex -translate-x-1/2 items-center gap-4 transition-all duration-300 ease-out" :class="revealClass">
+            <button
+              type="button"
+              class="grid h-11 w-11 place-items-center rounded-full bg-white/10 text-white backdrop-blur transition hover:bg-white/20"
+              :aria-label="t('controls.return')"
+              @click="emit('navigate', returnView)"
+            >
+              <ChevronDown :size="20" :stroke-width="2" />
+            </button>
+            <button
+              type="button"
+              class="grid h-11 w-11 place-items-center rounded-full bg-white/10 text-white backdrop-blur transition hover:bg-white/20"
+              :title="fullscreenTitle"
+              :aria-label="fullscreenTitle"
+              :aria-pressed="isFullscreen"
+              @click="toggleFullscreen()"
+            >
+              <Minimize2 v-if="isFullscreen" :size="18" :stroke-width="2" />
+              <Maximize2 v-else :size="18" :stroke-width="2" />
+            </button>
+          </div>
+          <div class="aspect-square w-full overflow-hidden rounded-2xl shadow-2xl shadow-black/40" :style="{ backgroundColor: player.currentTrack.color }">
+            <img v-if="player.currentTrack.cover" :src="player.currentTrack.cover" alt="" decoding="async" class="h-full w-full object-cover" />
+            <span v-else class="grid h-full w-full place-items-center text-8xl font-black text-white/90">{{ initial(player.currentTrack) }}</span>
+          </div>
         </div>
-        <div class="w-full max-w-[420px] text-center md:text-left">
+        <div class="hidden w-full max-w-[420px] text-center md:block md:text-left">
           <h1 class="truncate text-2xl font-bold tracking-tight lg:text-3xl">{{ player.currentTrack.title }}</h1>
           <p class="mt-2 truncate text-lg text-white/75">{{ player.currentTrack.artist }}</p>
-          <p class="mt-1 truncate text-sm text-white/55">{{ player.currentTrack.album }}</p>
+        </div>
+
+        <div class="w-full max-w-[420px]">
+          <div class="flex h-[9px] items-center">
+            <input
+              :value="player.progress"
+              :style="{ '--fill': percent(player.progress), '--buffered': percent(player.bufferedProgress) }"
+              class="ak-slider w-full"
+              type="range"
+              min="0"
+              max="100"
+              aria-label="Playback position"
+              @input="onSeek"
+            />
+          </div>
+          <div class="mt-1.5 flex items-center justify-between font-mono text-xs tabular-nums text-white/60">
+            <span>{{ player.elapsedTime }}</span>
+            <button
+              type="button"
+              class="transition hover:text-white"
+              :aria-pressed="showRemaining"
+              @click="showRemaining = !showRemaining"
+            >
+              <template v-if="showRemaining">-{{ player.remainingTime }}</template>
+              <template v-else>{{ player.totalTime }}</template>
+            </button>
+          </div>
+          <div class="mt-4 flex items-center justify-between gap-3">
+            <button type="button" class="transition" :class="player.shuffle ? 'text-white' : 'text-white/50 hover:text-white'" :title="shuffleTitle" @click="player.toggleShuffle()">
+              <Shuffle :size="20" :stroke-width="2" />
+            </button>
+            <div class="flex items-center gap-3 sm:gap-5">
+              <button type="button" class="grid h-12 w-12 place-items-center rounded-full text-white transition hover:scale-105 hover:bg-white/15 active:scale-95" @click="player.previous()">
+                <SkipBack :size="26" :stroke-width="2" fill="currentColor" />
+              </button>
+              <button
+                type="button"
+                class="grid h-14 w-14 scale-110 place-items-center rounded-full text-white transition hover:scale-[1.16] hover:bg-white/15 active:scale-95"
+                :aria-label="player.isPlaying ? t('controls.pause') : t('controls.play')"
+                @click="player.togglePlayback()"
+              >
+                <Pause v-if="player.isPlaying" :size="24" :stroke-width="1.5" fill="currentColor" />
+                <Play v-else :size="24" :stroke-width="1.5" fill="currentColor" class="translate-x-[1px]" />
+              </button>
+              <button type="button" class="grid h-12 w-12 place-items-center rounded-full text-white transition hover:scale-105 hover:bg-white/15 active:scale-95" @click="player.next()">
+                <SkipForward :size="26" :stroke-width="2" fill="currentColor" />
+              </button>
+            </div>
+            <button type="button" class="transition" :class="player.repeat !== 'off' ? 'text-white' : 'text-white/50 hover:text-white'" :title="repeatTitle" @click="player.cycleRepeat()">
+              <Repeat1 v-if="player.repeat === 'one'" :size="20" :stroke-width="2" />
+              <Repeat v-else :size="20" :stroke-width="2" />
+            </button>
+          </div>
         </div>
       </div>
 
-      <div class="flex min-h-0 flex-col justify-center">
+      <div class="order-1 flex min-h-0 flex-col justify-center pt-24 md:order-none md:pt-0">
         <div class="mb-4 text-center md:hidden">
           <h1 class="truncate text-xl font-bold">{{ player.currentTrack.title }}</h1>
           <p class="truncate text-sm text-white/70">{{ player.currentTrack.artist }}</p>
@@ -172,65 +336,12 @@ function onLyricSeek(timeMs: number) {
             :font-size="lyrics.lineSize"
             color="#ffffff"
             blend="plus-lighter"
+            :align-position="0.35"
             @seek="onLyricSeek"
           />
         </div>
       </div>
     </div>
-
-    <footer class="absolute inset-x-0 bottom-0 z-20 px-6 pb-6">
-      <div class="mx-auto w-full max-w-3xl">
-        <input
-          :value="player.progress"
-          :style="{ '--fill': percent(player.progress), '--buffered': percent(player.bufferedProgress) }"
-          class="ak-slider w-full"
-          type="range"
-          min="0"
-          max="100"
-          aria-label="Playback position"
-          @input="onSeek"
-        />
-        <div class="mt-4 flex items-center justify-between gap-4">
-          <span class="hidden w-24 font-mono text-xs tabular-nums text-white/60 sm:block">{{ player.elapsedTime }}</span>
-          <div class="flex flex-1 items-center justify-center gap-5 sm:gap-7">
-            <button type="button" class="transition" :class="player.shuffle ? 'text-white' : 'text-white/50 hover:text-white'" :title="shuffleTitle" @click="player.toggleShuffle()">
-              <Shuffle :size="20" :stroke-width="2" />
-            </button>
-            <button type="button" class="text-white transition hover:scale-105 active:scale-95" @click="player.previous()">
-              <SkipBack :size="26" :stroke-width="2" />
-            </button>
-            <button
-              type="button"
-              class="grid h-14 w-14 place-items-center rounded-full bg-white text-black shadow-lg shadow-black/30 transition hover:scale-105 active:scale-95"
-              :aria-label="player.isPlaying ? t('controls.pause') : t('controls.play')"
-              @click="player.togglePlayback()"
-            >
-              <Pause v-if="player.isPlaying" :size="24" :stroke-width="2.4" />
-              <Play v-else :size="24" :stroke-width="2.4" class="translate-x-[1px]" />
-            </button>
-            <button type="button" class="text-white transition hover:scale-105 active:scale-95" @click="player.next()">
-              <SkipForward :size="26" :stroke-width="2" />
-            </button>
-            <button type="button" class="transition" :class="player.repeat !== 'off' ? 'text-white' : 'text-white/50 hover:text-white'" :title="repeatTitle" @click="player.cycleRepeat()">
-              <Repeat1 v-if="player.repeat === 'one'" :size="20" :stroke-width="2" />
-              <Repeat v-else :size="20" :stroke-width="2" />
-            </button>
-          </div>
-          <div class="hidden items-center gap-2 sm:flex">
-            <button
-              type="button"
-              class="text-white/60 transition hover:text-white"
-              :aria-label="player.muted ? t('controls.unmute') : t('controls.mute')"
-              @click="player.toggleMute()"
-            >
-              <VolumeX v-if="player.muted" :size="18" :stroke-width="2" />
-              <Volume2 v-else :size="18" :stroke-width="2" />
-            </button>
-            <input v-model.number="player.volume" :style="{ '--fill': percent(player.volume) }" class="ak-slider w-24" type="range" min="0" max="100" aria-label="Volume" />
-          </div>
-        </div>
-      </div>
-    </footer>
   </div>
 </template>
 
@@ -246,15 +357,28 @@ function onLyricSeek(timeMs: number) {
 }
 
 .amll-page :deep(.ak-slider) {
-  height: 4px;
+  height: 6px;
+  border-radius: 9999px;
+}
+
+.amll-page :deep(.ak-slider:hover),
+.amll-page :deep(.ak-slider:focus-visible),
+.amll-page :deep(.ak-slider:active) {
+  height: 9px;
 }
 
 .amll-page :deep(.ak-slider::-webkit-slider-thumb) {
+  width: 14px;
+  height: 14px;
+  border-radius: 9999px;
   background: #fff;
   border-color: rgba(0, 0, 0, 0.35);
 }
 
 .amll-page :deep(.ak-slider::-moz-range-thumb) {
+  width: 14px;
+  height: 14px;
+  border-radius: 9999px;
   background: #fff;
   border-color: rgba(0, 0, 0, 0.35);
 }
