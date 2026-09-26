@@ -1,5 +1,5 @@
 import type { Component } from "vue";
-import { AudioLines, Heart, Library, ListMusic, Settings2 } from "@lucide/vue";
+import { Heart, Library, ListMusic, Settings2 } from "@lucide/vue";
 
 export type View = "library" | "tracks" | "favorites" | "stats" | "playlist-new" | "settings" | "player";
 export type Theme = "light" | "dark";
@@ -14,9 +14,10 @@ export interface NavItem {
 
 export const navItems: NavItem[] = [
   { id: "library", labelKey: "nav.library", index: "01", icon: Library },
-  { id: "settings", labelKey: "nav.settings", index: "02", icon: Settings2 },
-  { id: "player", labelKey: "nav.nowPlaying", index: "03", icon: AudioLines },
 ];
+
+/** Settings entry, pinned to the bottom of the navigation. */
+export const settingsNavItem: NavItem = { id: "settings", labelKey: "nav.settings", index: "02", icon: Settings2 };
 
 /** Collections shown in a dedicated sidebar group, below the primary nav. */
 export const collectionNavItems: NavItem[] = [

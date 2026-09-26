@@ -4,10 +4,6 @@ import { defineStore } from "pinia";
 const VOLUME_STORAGE_KEY = "welkin-volume";
 const MUTED_STORAGE_KEY = "welkin-muted";
 const DEFAULT_VOLUME = 72;
-const SAVE_INTERVAL_STORAGE_KEY = "welkin-save-interval";
-export const DEFAULT_SAVE_INTERVAL = 15;
-export const MIN_SAVE_INTERVAL = 5;
-export const MAX_SAVE_INTERVAL = 60;
 const SHUFFLE_STORAGE_KEY = "welkin-shuffle";
 const REPEAT_STORAGE_KEY = "welkin-repeat";
 export type RepeatMode = "off" | "all" | "one";
@@ -16,14 +12,6 @@ export type RepeatMode = "off" | "all" | "one";
 function readStoredVolume(): number {
   const stored = Number(localStorage.getItem(VOLUME_STORAGE_KEY));
   return Number.isFinite(stored) && stored >= 0 && stored <= 100 ? stored : DEFAULT_VOLUME;
-}
-
-/** Restore the locally saved progress-save interval (seconds). */
-function readStoredSaveInterval(): number {
-  const stored = Number(localStorage.getItem(SAVE_INTERVAL_STORAGE_KEY));
-  return Number.isFinite(stored) && stored >= MIN_SAVE_INTERVAL && stored <= MAX_SAVE_INTERVAL
-    ? Math.round(stored)
-    : DEFAULT_SAVE_INTERVAL;
 }
 
 export interface Track {
@@ -73,8 +61,6 @@ export const usePlayerStore = defineStore("player", () => {
   const duration = ref(0);
   const volume = ref(readStoredVolume());
   const muted = ref(localStorage.getItem(MUTED_STORAGE_KEY) === "1");
-  /** Seconds between periodic progress saves while audio is playing. */
-  const saveInterval = ref(readStoredSaveInterval());
 
   // Persist the output volume/mute locally so each launch starts where the
   // previous one left off (mirrors the theme/accent localStorage pattern).
@@ -88,16 +74,6 @@ export const usePlayerStore = defineStore("player", () => {
     localStorage.setItem(VOLUME_STORAGE_KEY, String(clamped));
   });
   watch(muted, (value) => localStorage.setItem(MUTED_STORAGE_KEY, value ? "1" : "0"));
-  watch(saveInterval, (value) => {
-    const clamped = Number.isFinite(value)
-      ? Math.min(MAX_SAVE_INTERVAL, Math.max(MIN_SAVE_INTERVAL, value))
-      : DEFAULT_SAVE_INTERVAL;
-    if (clamped !== value) {
-      saveInterval.value = clamped;
-      return;
-    }
-    localStorage.setItem(SAVE_INTERVAL_STORAGE_KEY, String(clamped));
-  });
   watch(shuffle, (value) => localStorage.setItem(SHUFFLE_STORAGE_KEY, value ? "1" : "0"));
   watch(repeat, (value) => localStorage.setItem(REPEAT_STORAGE_KEY, value));
 
@@ -359,7 +335,6 @@ export const usePlayerStore = defineStore("player", () => {
     duration,
     volume,
     muted,
-    saveInterval,
     currentIndex,
     hasTrack,
     elapsedTime,

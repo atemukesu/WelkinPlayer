@@ -7,6 +7,8 @@ export interface LyricsPreferences {
   translationSize: number;
   lineSpacing: number;
   translate: boolean;
+  /** Render the player page with the AMLL (Apple Music-like Lyrics) component. */
+  useAmll: boolean;
 }
 
 /** Look-and-feel preferences that travel with the profile. */
@@ -87,6 +89,7 @@ export function createDefaultProfile(seed?: Partial<AppearancePreferences & Lyri
       translationSize: seed?.translationSize ?? 18,
       lineSpacing: seed?.lineSpacing ?? 24,
       translate: seed?.translate ?? true,
+      useAmll: seed?.useAmll ?? false,
     },
     playCounts: {},
     favorites: [],
@@ -165,6 +168,7 @@ export function parseProfile(raw: string | null | undefined, fallback: Profile):
       translationSize: typeof lyrics.translationSize === "number" ? lyrics.translationSize : fallback.lyrics.translationSize,
       lineSpacing: typeof lyrics.lineSpacing === "number" ? lyrics.lineSpacing : fallback.lyrics.lineSpacing,
       translate: typeof lyrics.translate === "boolean" ? lyrics.translate : fallback.lyrics.translate,
+      useAmll: typeof lyrics.useAmll === "boolean" ? lyrics.useAmll : fallback.lyrics.useAmll,
     },
     playCounts,
     favorites,

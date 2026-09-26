@@ -19,7 +19,9 @@ const player = usePlayerStore();
 const profile = useProfileStore();
 const contextTrack = ref<Track | null>(null);
 const contextPosition = ref({ x: 0, y: 0 });
-const recommended = ref<Track[]>([]);
+/** Randomly recommended tracks, held by path so a library re-list keeps the same picks with fresh metadata. */
+const recommendedPaths = ref<string[]>([]);
+const recommended = computed(() => tracksForPaths(recommendedPaths.value, player.tracks));
 const creating = ref(false);
 const newName = ref("");
 const editingId = ref<string | null>(null);
@@ -70,8 +72,20 @@ function pickRandom(list: Track[], count: number): Track[] {
   }
   return result;
 }
-function refreshRecommended() { recommended.value = pickRandom(player.tracks, RECOMMEND_LIMIT); }
-watch(() => player.tracks, refreshRecommended, { immediate: true });
+function refreshRecommended() {
+  recommendedPaths.value = pickRandom(player.tracks, RECOMMEND_LIMIT)
+    .map((track) => track.path)
+    .filter((path): path is string => !!path);
+}
+/**
+ * Fingerprint of the library's track paths. A remote re-list re-applies the same
+ * library with fresh objects, so reshuffle only when the paths truly change
+ * instead of on every `player.tracks` reassignment.
+ */
+const librarySignature = computed(() =>
+  player.tracks.map((track) => track.path).filter((path): path is string => !!path).sort().join("\n"),
+);
+watch(librarySignature, refreshRecommended, { immediate: true });
 
 function play(track: Track) { player.playInQueue(player.tracks, track); }
 function shuffleAll() {

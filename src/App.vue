@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onMounted, onUnmounted, ref, watch, watchEffect } from "vue";
+import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch, watchEffect } from "vue";
 import { useI18n } from "vue-i18n";
 import { describeError, invoke } from "./api";
 import { initAudio, seekTo } from "./lib/audio";
@@ -27,6 +27,8 @@ import FavoritesView from "./views/FavoritesView.vue";
 import StatsView from "./views/StatsView.vue";
 import PlaylistEditorView from "./views/PlaylistEditorView.vue";
 
+const AmllPlayerView = defineAsyncComponent(() => import("./views/AmllPlayerView.vue"));
+
 const { t, locale } = useI18n();
 const player = usePlayerStore();
 const webdav = useWebdavStore();
@@ -50,9 +52,16 @@ const playlistFilter = ref<string | null>(null);
 const editingPlaylist = ref<string | null>(null);
 const playbackRestored = ref(false);
 const showQueue = ref(false);
+/** Whether the AMLL full-screen player should be open. */
+const amllActive = computed(() => view.value === "player" && !!player.currentTrack && lyrics.useAmll);
+/** Stays true until AmllPlayerView finishes its slide-out, then it unmounts. */
+const amllMounted = ref(false);
+watch(amllActive, (active) => { if (active) amllMounted.value = true; }, { immediate: true });
 let applyingProfile = false;
 let restoringPlayback = false;
 let lastPositionSavedAt = 0;
+/** Local-only safety-net cadence (ms) for periodic progress writes while playing. */
+const POSITION_SAVE_INTERVAL_MS = 30_000;
 
 watch(view, (next) => { if (next !== "player") baseView.value = next; });
 watchEffect(() => { document.documentElement.classList.toggle("dark", theme.value === "dark"); document.documentElement.dataset.accent = accent.value; localStorage.setItem("welkin-theme", theme.value); localStorage.setItem("welkin-accent", accent.value); });
@@ -61,10 +70,10 @@ watchEffect(() => { document.documentElement.lang = locale.value; localStorage.s
 watch([theme, accent], () => { if (booted.value && !applyingProfile) profile.setAppearance({ theme: theme.value, accent: accent.value }); });
 watch(locale, (value) => { if (booted.value && !applyingProfile) profile.setAppearance({ locale: value as "zh-CN" | "en" }); });
 watch(
-  () => [lyrics.source, lyrics.lineSize, lyrics.translationSize, lyrics.lineSpacing, lyrics.translate],
+  () => [lyrics.source, lyrics.lineSize, lyrics.translationSize, lyrics.lineSpacing, lyrics.translate, lyrics.useAmll],
   () => {
     if (booted.value && !applyingProfile) {
-      profile.setLyrics({ source: lyrics.source, lineSize: lyrics.lineSize, translationSize: lyrics.translationSize, lineSpacing: lyrics.lineSpacing, translate: lyrics.translate });
+      profile.setLyrics({ source: lyrics.source, lineSize: lyrics.lineSize, translationSize: lyrics.translationSize, lineSpacing: lyrics.lineSpacing, translate: lyrics.translate, useAmll: lyrics.useAmll });
     }
   },
 );
@@ -109,7 +118,7 @@ watch(() => player.position, (position, previous) => {
   // A large jump between two timeupdate samples means the user seeked; save it
   // right away instead of waiting for the periodic safety net.
   const jumped = typeof previous === "number" && Math.abs(position - previous) > 2;
-  if (!jumped && Date.now() - lastPositionSavedAt < player.saveInterval * 1000) return;
+  if (!jumped && Date.now() - lastPositionSavedAt < POSITION_SAVE_INTERVAL_MS) return;
   savePlaybackPosition();
 });
 watch(() => player.isPlaying, (playing) => {
@@ -154,6 +163,7 @@ function applyProfile() {
   lyrics.translationSize = profile.profile.lyrics.translationSize;
   lyrics.lineSpacing = profile.profile.lyrics.lineSpacing;
   lyrics.translate = profile.profile.lyrics.translate;
+  lyrics.useAmll = profile.profile.lyrics.useAmll;
   void nextTick(() => { applyingProfile = false; });
 }
 
@@ -226,7 +236,8 @@ onUnmounted(() => { savePlaybackPosition(true); window.removeEventListener("hash
 </script>
 
 <template>
-  <Transition name="slide"><PlayerView v-if="view === 'player' && player.currentTrack" :return-view="baseView" @navigate="navigate" @queue="toggleQueue" /></Transition>
+  <AmllPlayerView v-if="amllMounted && player.currentTrack" :active="amllActive" :return-view="baseView" @navigate="navigate" @closed="amllMounted = false" />
+  <Transition name="slide"><PlayerView v-if="view === 'player' && player.currentTrack && !lyrics.useAmll" :return-view="baseView" @navigate="navigate" @queue="toggleQueue" /></Transition>
   <SetupWizard v-if="booted && profile.firstRun" v-model:theme="theme" v-model:accent="accent" @finish="onWizardFinish" />
   <div class="flex h-screen flex-col overflow-hidden bg-bg text-fg" :class="booted ? '' : 'opacity-0'"><AppNavigation placement="header" :active-view="baseView" @navigate="navigate" /><div class="relative flex min-h-0 flex-1"><AppNavigation placement="sidebar" :active-view="baseView" :collapsed="sidebarCollapsed" :active-playlist-id="playlistFilter" @navigate="navigate" @toggle="toggleSidebar" @create-playlist="createPlaylist" @open-playlist="openUserPlaylist" /><main class="min-w-0 flex-1 overflow-y-auto"><Transition name="page" mode="out-in"><LibraryView v-if="baseView === 'library'" key="library" :loading="loadingLibrary" :enriching="enriching" :enrich-done="enrichDone" :enrich-total="enrichTotal" :downloading-track-id="downloadingTrackId" @settings="navigate('settings')" @navigate="navigate" @open-playlist="openUserPlaylist" @edit-playlist="editPlaylist" @details="openDetails" @download-metadata="downloadMetadata" /><TracksView v-else-if="baseView === 'tracks'" key="tracks" :playlist-id="playlistFilter" :loading="loadingLibrary" :enriching="enriching" :refreshing="refreshing" :enrich-done="enrichDone" :enrich-total="enrichTotal" :downloading-track-id="downloadingTrackId" @refresh="refreshLibrary" @edit="editPlaylist" @details="openDetails" @download-metadata="downloadMetadata" /><FavoritesView v-else-if="baseView === 'favorites'" key="favorites" :loading="loadingLibrary" :enriching="enriching" :enrich-done="enrichDone" :enrich-total="enrichTotal" :downloading-track-id="downloadingTrackId" @details="openDetails" @download-metadata="downloadMetadata" /><StatsView v-else-if="baseView === 'stats'" key="stats" :loading="loadingLibrary" :downloading-track-id="downloadingTrackId" @details="openDetails" @download-metadata="downloadMetadata" /><PlaylistEditorView v-else-if="baseView === 'playlist-new'" key="playlist-new" :playlist-id="editingPlaylist" @done="onPlaylistSaved" @cancel="onPlaylistEditorCancel" /><SettingsView v-else key="settings" :testing="testing" v-model:theme="theme" v-model:accent="accent" @save="saveSettings" @test="testConnection" @friendly-error="showError" /></Transition></main>
         <NowPlayingPanel v-if="baseView === 'library' || baseView === 'tracks' || baseView === 'favorites' || baseView === 'stats'" :collapsed="panelCollapsed" :width="panelWidth" :resizing="panelResizing" @toggle="togglePanel" @resize="startResize" />

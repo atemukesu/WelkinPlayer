@@ -5,12 +5,11 @@ export type Locale = "zh-CN" | "en";
 const messages = {
   "zh-CN": {
     nav: {
-      library: "资料库",
+      library: "首页",
       favorites: "我喜欢",
       tracks: "全部曲目",
       stats: "播放排名",
       settings: "设置",
-      nowPlaying: "正在播放",
     },
     brand: {
       subtitle: "播放器 // 系统",
@@ -229,15 +228,12 @@ const messages = {
         translationSize: "翻译字号",
         spacing: "歌词行间距",
         translate: "显示翻译歌词",
+        useAmll: "使用 AMLL 歌词",
+        useAmllHint: "在播放页使用 Apple Music 风格歌词（AMLL）渲染逐字歌词",
       },
       appearance: {
         title: "外观",
         desc: "自定义界面主题、主题色与语言。",
-      },
-      playback: {
-        title: "播放",
-        desc: "控制播放进度的保存节奏。暂停、拖动、切换曲目或退出时会立即保存，该间隔仅作为播放中的兜底。",
-        interval: "进度保存间隔",
       },
       cache: {
         title: "本地缓存",
@@ -344,12 +340,11 @@ const messages = {
   },
   en: {
     nav: {
-      library: "Library",
+      library: "Home",
       favorites: "Favorites",
       tracks: "All tracks",
       stats: "Play ranking",
       settings: "Settings",
-      nowPlaying: "Now Playing",
     },
     brand: {
       subtitle: "Player // OS",
@@ -569,15 +564,12 @@ const messages = {
         translationSize: "Translation font size",
         spacing: "Line spacing",
         translate: "Show translated lyrics",
+        useAmll: "Use AMLL lyrics",
+        useAmllHint: "Render word-by-word lyrics with the Apple Music-like Lyrics (AMLL) player",
       },
       appearance: {
         title: "Appearance",
         desc: "Customize the interface theme, accent color, and language.",
-      },
-      playback: {
-        title: "Playback",
-        desc: "Controls how playback progress is saved. Pausing, seeking, changing tracks or quitting saves immediately; this interval is only a safety net while playing.",
-        interval: "Progress save interval",
       },
       cache: {
         title: "Local cache",

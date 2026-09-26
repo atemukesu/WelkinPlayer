@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { Activity, ChevronLeft, ChevronRight, Heart, ListMusic, Music2, Plus } from "@lucide/vue";
+import { Activity, ChevronLeft, ChevronRight, Heart, ListMusic, Music2, Plus, Settings2 } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
-import { navItems } from "../lib/app";
+import { navItems, settingsNavItem } from "../lib/app";
 import type { View } from "../lib/app";
 import { useProfileStore } from "../stores/profile";
 import PlaylistCover from "./PlaylistCover.vue";
@@ -10,6 +10,8 @@ const props = withDefaults(defineProps<{ activeView: View; placement: "header" |
 const emit = defineEmits<{ navigate: [view: View]; toggle: []; createPlaylist: []; openPlaylist: [id: string] }>();
 const { t } = useI18n();
 const profile = useProfileStore();
+/** Mobile bar order: primary nav followed by the settings entry. */
+const mobileNavItems = [...navItems, settingsNavItem];
 function isActivePlaylist(id: string): boolean { return props.activePlaylistId === id; }
 </script>
 
@@ -31,9 +33,12 @@ function isActivePlaylist(id: string): boolean { return props.activePlaylistId =
       <button class="relative flex h-11 w-full items-center border border-transparent text-left text-[13px] font-semibold uppercase tracking-[0.2em] transition-colors" :class="[collapsed ? 'justify-center px-0' : 'gap-2 px-3', activeView === 'tracks' && !activePlaylistId ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg']" :title="collapsed ? t('nav.tracks') : undefined" @click="emit('navigate', 'tracks')"><ListMusic :size="16" :stroke-width="1.8" /><span class="sidebar-nav-label truncate">{{ t("nav.tracks") }}</span></button>
       <button class="relative mt-1.5 flex h-11 w-full items-center border border-transparent text-left text-[13px] font-semibold uppercase tracking-[0.2em] transition-colors" :class="[collapsed ? 'justify-center px-0' : 'gap-2 px-3', activeView === 'stats' ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg']" :title="collapsed ? t('nav.stats') : undefined" @click="emit('navigate', 'stats')"><Activity :size="16" :stroke-width="1.8" /><span class="sidebar-nav-label truncate">{{ t("nav.stats") }}</span></button>
     </div>
-    <button type="button" class="mt-auto grid h-10 place-items-center text-muted transition-colors hover:bg-fg/5 hover:text-fg" :title="t(collapsed ? 'controls.expand' : 'controls.collapse')" @click="emit('toggle')"><ChevronRight v-if="collapsed" :size="18" :stroke-width="1.8" /><ChevronLeft v-else :size="18" :stroke-width="1.8" /></button>
+    <div class="mt-auto border-t border-line pt-3">
+      <button class="relative flex h-11 w-full items-center border border-transparent text-left text-[13px] font-semibold uppercase tracking-[0.2em] transition-colors" :class="[collapsed ? 'justify-center px-0' : 'gap-2 px-3', activeView === 'settings' ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg']" :title="collapsed ? t('nav.settings') : undefined" @click="emit('navigate', 'settings')"><Settings2 :size="16" :stroke-width="1.8" /><span class="sidebar-nav-label truncate">{{ t("nav.settings") }}</span></button>
+      <button type="button" class="relative mt-1 flex h-11 w-full items-center border border-transparent text-left text-[13px] font-semibold uppercase tracking-[0.2em] text-muted transition-colors hover:bg-fg/5 hover:text-fg" :class="collapsed ? 'justify-center px-0' : 'gap-2 px-3'" :title="t(collapsed ? 'controls.expand' : 'controls.collapse')" @click="emit('toggle')"><ChevronRight v-if="collapsed" :size="16" :stroke-width="1.8" /><ChevronLeft v-else :size="16" :stroke-width="1.8" /><span class="sidebar-nav-label truncate">{{ t(collapsed ? 'controls.expand' : 'controls.collapse') }}</span></button>
+    </div>
   </aside>
-  <nav v-if="placement === 'mobile'" class="flex h-14 shrink-0 border-t border-line bg-surface md:hidden"><button v-for="item in navItems" :key="item.id" class="flex flex-1 flex-col items-center justify-center gap-1 text-[9px] font-semibold uppercase tracking-[0.15em] transition-colors" :class="activeView === item.id ? 'ak-select' : 'text-muted'" @click="emit('navigate', item.id)"><component :is="item.icon" :size="18" :stroke-width="1.8" />{{ t(item.labelKey) }}</button></nav>
+  <nav v-if="placement === 'mobile'" class="flex h-14 shrink-0 border-t border-line bg-surface md:hidden"><button v-for="item in mobileNavItems" :key="item.id" class="flex flex-1 flex-col items-center justify-center gap-1 text-[9px] font-semibold uppercase tracking-[0.15em] transition-colors" :class="activeView === item.id ? 'ak-select' : 'text-muted'" @click="emit('navigate', item.id)"><component :is="item.icon" :size="18" :stroke-width="1.8" />{{ t(item.labelKey) }}</button></nav>
 </template>
 
 <style scoped>

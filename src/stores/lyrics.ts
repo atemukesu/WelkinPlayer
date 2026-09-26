@@ -11,6 +11,7 @@ export type LyricLine = ReturnType<typeof parseLyric>["lines"][number];
 export const useLyricsStore = defineStore("lyrics", () => {
   const source = ref<LyricsSource>("local");
   const translate = ref(true);
+  const useAmll = ref(localStorage.getItem("welkin-lyrics-amll") === "1");
   function readSetting(key: string, min: number, max: number, fallback: number) {
     const value = Number(localStorage.getItem(key));
     return Number.isFinite(value) && value >= min && value <= max ? value : fallback;
@@ -31,6 +32,7 @@ export const useLyricsStore = defineStore("lyrics", () => {
   watch(lineSize, (value) => localStorage.setItem("welkin-lyrics-size", String(value)));
   watch(translationSize, (value) => localStorage.setItem("welkin-lyrics-translation-size", String(value)));
   watch(lineSpacing, (value) => localStorage.setItem("welkin-lyrics-spacing", String(value)));
+  watch(useAmll, (value) => localStorage.setItem("welkin-lyrics-amll", value ? "1" : "0"));
 
   function setSource(next: LyricsSource) {
     source.value = next;
@@ -121,6 +123,7 @@ export const useLyricsStore = defineStore("lyrics", () => {
   return {
     source,
     translate,
+    useAmll,
     lineSize,
     translationSize,
     lineSpacing,
