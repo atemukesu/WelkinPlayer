@@ -75,7 +75,7 @@ function setOnlineProviders(next: LyricProvider[]) {
           >{{ t("settings.lyrics.active") }}</span>
         </div>
         <p class="text-[11px] normal-case tracking-normal text-dim">{{ t("settings.lyrics.amllHint") }}</p>
-        <LyricDisplayControls v-model="lyrics.amll" :available-fonts="allFonts" />
+        <LyricDisplayControls v-model="lyrics.amll" :available-fonts="allFonts" show-narrow-spacing />
       </div>
     </div>
   </section>

@@ -4,7 +4,7 @@ import FontFamilyList from "./FontFamilyList.vue";
 import type { LyricDisplaySettings } from "../lib/preferences";
 
 const model = defineModel<LyricDisplaySettings>({ required: true });
-const props = defineProps<{ availableFonts: string[]; showSpacing?: boolean; showRuby?: boolean }>();
+const props = defineProps<{ availableFonts: string[]; showSpacing?: boolean; showRuby?: boolean; showNarrowSpacing?: boolean }>();
 const { t } = useI18n();
 </script>
 
@@ -54,6 +54,22 @@ const { t } = useI18n();
       max="36"
       step="2"
       :style="{ '--fill': `${((model.lineSpacing - 8) / 28) * 100}%` }"
+    />
+  </label>
+
+  <label v-if="props.showNarrowSpacing" class="grid gap-2 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">
+    <span class="flex items-center justify-between">
+      <span>{{ t("settings.lyrics.narrowTopSpacing") }}</span>
+      <output class="font-mono text-accent">{{ model.narrowTopSpacing }}px</output>
+    </span>
+    <input
+      v-model.number="model.narrowTopSpacing"
+      class="ak-slider"
+      type="range"
+      min="0"
+      max="80"
+      step="1"
+      :style="{ '--fill': `${(model.narrowTopSpacing / 80) * 100}%` }"
     />
   </label>
 
