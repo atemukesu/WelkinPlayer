@@ -13,7 +13,7 @@ import TrackCard from "../components/TrackCard.vue";
 import TrackContextMenu from "../components/TrackContextMenu.vue";
 
 withDefaults(defineProps<{ loading: boolean; enriching: boolean; enrichDone: number; enrichTotal: number; downloadingTrackId?: number | null }>(), { downloadingTrackId: null });
-const emit = defineEmits<{ settings: []; details: [track: Track]; downloadMetadata: [track: Track]; editLyrics: [track: Track]; navigate: [view: View]; openPlaylist: [id: string]; editPlaylist: [id: string] }>();
+const emit = defineEmits<{ settings: []; downloadMetadata: [track: Track]; editLyrics: [track: Track]; navigate: [view: View]; openPlaylist: [id: string]; editPlaylist: [id: string] }>();
 const { t } = useI18n();
 const player = usePlayerStore();
 const profile = useProfileStore();
@@ -220,6 +220,6 @@ function removePlaylist(id: string) {
       </section>
     </template>
 
-    <TrackContextMenu v-if="contextTrack" :track="contextTrack" :x="contextPosition.x" :y="contextPosition.y" :downloading="downloadingTrackId === contextTrack.id" @close="contextTrack = null" @download-metadata="downloadMetadata" @details="emit('details', $event)" @edit-lyrics="emit('editLyrics', $event)" />
+    <TrackContextMenu v-if="contextTrack" :track="contextTrack" :x="contextPosition.x" :y="contextPosition.y" :downloading="downloadingTrackId === contextTrack.id" @close="contextTrack = null" @download-metadata="downloadMetadata" @edit-lyrics="emit('editLyrics', $event)" />
   </div>
 </template>

@@ -10,7 +10,7 @@ import { trackViewMode } from "../lib/ui";
 import TrackCard from "./TrackCard.vue";
 
 const props = withDefaults(defineProps<{ tracks: Track[]; emptyKey: string; removable?: boolean; selectable?: boolean; selected?: Set<string> }>(), { removable: false, selectable: false });
-const emit = defineEmits<{ play: [track: Track]; menu: [event: MouseEvent, track: Track]; details: [track: Track]; remove: [track: Track]; "update:selected": [value: Set<string>] }>();
+const emit = defineEmits<{ play: [track: Track]; menu: [event: MouseEvent, track: Track]; remove: [track: Track]; "update:selected": [value: Set<string>] }>();
 const { t } = useI18n();
 const player = usePlayerStore();
 const currentId = computed(() => player.currentTrack?.id);
@@ -144,7 +144,7 @@ function activate(track: Track, event?: MouseEvent) {
               <span class="hidden text-right font-mono text-[13px] tabular-nums text-muted md:block">{{ track.duration }}</span>
               <span class="grid place-items-center text-dim"><span v-if="track.id === currentId && playing" class="text-accent"><span class="ak-eq"><i></i><i></i><i></i></span></span><Pause v-else-if="track.id === currentId" :size="16" class="text-accent" /><Play v-else :size="16" /></span>
               <button v-if="!selectable && removable" type="button" class="grid h-8 w-8 place-items-center text-dim transition-colors hover:text-red-500" :title="t('library.playlists.removeTrack')" @click.stop="emit('remove', track)"><Trash2 :size="15" /></button>
-              <button v-else-if="!selectable" type="button" class="grid h-8 w-8 place-items-center text-dim transition-colors hover:text-fg" :title="t('controls.expand')" @click.stop="emit('details', track)"><Ellipsis :size="18" /></button>
+              <button v-else-if="!selectable" type="button" class="grid h-8 w-8 place-items-center text-dim transition-colors hover:text-fg" :title="t('controls.more')" @click.stop="emit('menu', $event, track)"><Ellipsis :size="18" /></button>
               <span v-else></span>
             </div>
           </template>
