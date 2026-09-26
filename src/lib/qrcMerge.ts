@@ -1,10 +1,15 @@
-//! Merge QQ's word-by-word QRC track with its plaintext translation track.
+//! Turn QQ's word-by-word QRC track into TTML, optionally merging in the
+//! plaintext translation track that ships alongside it.
 //!
-//! Kept in its own module (importing nothing but `lyric-kit`) so the merge can
-//! be validated from plain Node, where the extensionless project imports used
-//! by `lyricSources.ts` do not resolve.
+//! QQ's `[kana:]` reading line is applied here instead of by `lyric-kit`, whose
+//! positional pairing is thrown off by the digits in the credit lines — see
+//! `qrcKana.ts`. Kept in its own module so it can be exercised from plain Node:
+//! `qrcKana.ts` carries no relative imports, while the imports below are
+//! extensionless (bundler-only), so Node tests import `qrcKana.ts` directly.
 
 import { pairTranslation, parseLRC, parseQRC, toTTML } from "lyric-kit";
+
+import { applyKanaToLines, extractKanaTag } from "./qrcKana";
 
 /** Watermarks/placeholders QQ puts in its translation track. */
 const TRANSLATION_NOISE = /(翻译作品|著作权)/;
@@ -14,18 +19,25 @@ function lineText(line: { words: Array<{ word: string }> }): string {
 }
 
 /**
- * Pair QQ's word-by-word QRC track with its plaintext translation track.
+ * Serialize QQ's word-by-word QRC track to TTML, with its kana readings and —
+ * when `translationLrc` is given — its translation track merged in.
  *
  * `lyric-kit` can only carry word timings **and** translations together in
  * TTML, so the paired lines are serialized back to a TTML string.
  */
-export function mergeQrcTranslation(qrcText: string, translationLrc: string): string {
-  const main = parseQRC(qrcText);
-  const translation = parseLRC(translationLrc);
-  const useful = translation.lines.filter((line) => {
-    const text = lineText(line);
-    return text.length > 0 && text !== "//" && !TRANSLATION_NOISE.test(text);
-  });
-  pairTranslation(main.lines, useful, "translatedLyric");
+export function qrcToTtml(qrcText: string, translationLrc?: string): string {
+  const { text: stripped, tag } = extractKanaTag(qrcText);
+  const main = parseQRC(stripped);
+  applyKanaToLines(main.lines, tag);
+
+  if (translationLrc) {
+    const translation = parseLRC(translationLrc);
+    const useful = translation.lines.filter((line) => {
+      const text = lineText(line);
+      return text.length > 0 && text !== "//" && !TRANSLATION_NOISE.test(text);
+    });
+    pairTranslation(main.lines, useful, "translatedLyric");
+  }
+
   return toTTML(main.lines);
 }

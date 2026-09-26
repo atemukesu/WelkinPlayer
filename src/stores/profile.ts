@@ -63,6 +63,7 @@ export const useProfileStore = defineStore("profile", () => {
   const nickname = computed(() => profile.value.nickname.trim());
   const playlists = computed(() => profile.value.playlists);
   const favorites = computed(() => profile.value.favorites);
+  const disabledLyrics = computed(() => profile.value.disabledLyrics);
   const recent = computed(() => profile.value.recent);
   const hasRemoteCopy = computed(() => source.value === "remote");
 
@@ -206,6 +207,26 @@ export const useProfileStore = defineStore("profile", () => {
     if (index >= 0) profile.value.favorites.splice(index, 1);
     else profile.value.favorites.push(path);
     scheduleSave();
+  }
+
+  /** Whether the track's lyrics are suppressed (per-track opt-out). */
+  function isLyricsDisabled(path: string | undefined): boolean {
+    return !!path && profile.value.disabledLyrics.includes(path);
+  }
+
+  /** Suppress or restore lyrics for one track. */
+  function setLyricsDisabled(path: string | undefined, disabled: boolean) {
+    if (!path) return;
+    const has = profile.value.disabledLyrics.includes(path);
+    if (disabled === has) return;
+    if (disabled) profile.value.disabledLyrics.push(path);
+    else profile.value.disabledLyrics = profile.value.disabledLyrics.filter((item) => item !== path);
+    scheduleSave();
+  }
+
+  function toggleLyricsDisabled(path: string | undefined) {
+    if (!path) return;
+    setLyricsDisabled(path, !isLyricsDisabled(path));
   }
 
   function createPlaylist(name: string): Playlist {
@@ -384,6 +405,7 @@ export const useProfileStore = defineStore("profile", () => {
     nickname,
     playlists,
     favorites,
+    disabledLyrics,
     recent,
     hasRemoteCopy,
     hydrate,
@@ -398,6 +420,9 @@ export const useProfileStore = defineStore("profile", () => {
     clearLegacyPlayback,
     isFavorite,
     toggleFavorite,
+    isLyricsDisabled,
+    setLyricsDisabled,
+    toggleLyricsDisabled,
     createPlaylist,
     renamePlaylist,
     updatePlaylist,

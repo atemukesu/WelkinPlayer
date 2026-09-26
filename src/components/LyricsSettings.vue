@@ -63,7 +63,7 @@ function setOnlineProviders(next: LyricProvider[]) {
           >{{ t("settings.lyrics.active") }}</span>
         </div>
         <p class="text-[11px] normal-case tracking-normal text-dim">{{ t("settings.lyrics.classicHint") }}</p>
-        <LyricDisplayControls v-model="lyrics.classic" :available-fonts="allFonts" show-spacing />
+        <LyricDisplayControls v-model="lyrics.classic" :available-fonts="allFonts" show-spacing show-ruby />
       </div>
 
       <div class="grid gap-4 border border-line bg-bg/40 p-4">

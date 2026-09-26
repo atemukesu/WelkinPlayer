@@ -4,7 +4,7 @@ import FontFamilyList from "./FontFamilyList.vue";
 import type { LyricDisplaySettings } from "../lib/profile";
 
 const model = defineModel<LyricDisplaySettings>({ required: true });
-const props = defineProps<{ availableFonts: string[]; showSpacing?: boolean }>();
+const props = defineProps<{ availableFonts: string[]; showSpacing?: boolean; showRuby?: boolean }>();
 const { t } = useI18n();
 </script>
 
@@ -82,5 +82,13 @@ const { t } = useI18n();
   <label class="flex items-center justify-between gap-4">
     <span class="text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.lyrics.translate") }}</span>
     <input v-model="model.translate" class="ak-switch" type="checkbox" />
+  </label>
+
+  <label v-if="props.showRuby" class="flex items-center justify-between gap-4">
+    <span class="grid gap-1 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">
+      {{ t("settings.lyrics.ruby") }}
+      <span class="text-[11px] font-normal normal-case tracking-normal text-dim">{{ t("settings.lyrics.rubyHint") }}</span>
+    </span>
+    <input v-model="model.ruby" class="ak-switch shrink-0" type="checkbox" />
   </label>
 </template>

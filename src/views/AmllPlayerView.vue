@@ -327,8 +327,7 @@ function onLyricSeek(timeMs: number) {
           <p class="truncate text-sm text-white/70">{{ player.currentTrack.artist }}</p>
         </div>
         <p v-if="lyrics.status === 'loading'" class="text-center text-white/70">{{ t("lyrics.loading") }}</p>
-        <p v-else-if="lyrics.status === 'error' || !lyrics.hasLyrics" class="text-center text-white/70">{{ t("lyrics.empty") }}</p>
-        <div v-else class="relative min-h-0 flex-1">
+        <div v-else-if="lyrics.hasLyrics" class="relative min-h-0 flex-1">
           <AmllLyrics
             :lines="amllLines"
             :current-time="positionMs"
@@ -343,6 +342,7 @@ function onLyricSeek(timeMs: number) {
             @seek="onLyricSeek"
           />
         </div>
+        <p v-else-if="!lyrics.suppressed" class="text-center text-white/70">{{ t("lyrics.empty") }}</p>
       </div>
     </div>
   </div>

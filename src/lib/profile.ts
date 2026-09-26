@@ -6,6 +6,8 @@ export interface LyricDisplaySettings {
   translationSize: number;
   lineSpacing: number;
   translate: boolean;
+  /** Render the per-character readings (注音 / ruby) that some lyrics carry. */
+  ruby: boolean;
   /** CSS font weight (100–900). */
   fontWeight: number;
   /** Ordered `font-family` fallback list; empty falls back to the app font. */
@@ -40,6 +42,7 @@ export const DEFAULT_CLASSIC_DISPLAY: LyricDisplaySettings = {
   translationSize: 18,
   lineSpacing: 24,
   translate: true,
+  ruby: true,
   fontWeight: 600,
   fontFamilies: [],
 };
@@ -49,6 +52,7 @@ export const DEFAULT_AMLL_DISPLAY: LyricDisplaySettings = {
   translationSize: 18,
   lineSpacing: 24,
   translate: true,
+  ruby: true,
   fontWeight: 400,
   fontFamilies: [],
 };
@@ -96,6 +100,8 @@ export interface Profile {
   playCounts: Record<string, number>;
   /** Remote track paths the user marked as favorite. */
   favorites: string[];
+  /** Remote track paths whose lyrics are intentionally suppressed. */
+  disabledLyrics: string[];
   /** Most recently played remote track paths, newest first. */
   recent: string[];
   /**
@@ -134,6 +140,7 @@ export function createDefaultProfile(seed?: Partial<AppearancePreferences & Lyri
     },
     playCounts: {},
     favorites: [],
+    disabledLyrics: [],
     recent: [],
     playlists: [],
     updatedAt: 0,
@@ -152,6 +159,7 @@ function parseDisplaySettings(value: unknown, fallback: LyricDisplaySettings): L
     translationSize: typeof data.translationSize === "number" && Number.isFinite(data.translationSize) ? data.translationSize : fallback.translationSize,
     lineSpacing: typeof data.lineSpacing === "number" && Number.isFinite(data.lineSpacing) ? data.lineSpacing : fallback.lineSpacing,
     translate: typeof data.translate === "boolean" ? data.translate : fallback.translate,
+    ruby: typeof data.ruby === "boolean" ? data.ruby : fallback.ruby,
     fontWeight: typeof data.fontWeight === "number" && Number.isFinite(data.fontWeight) ? data.fontWeight : fallback.fontWeight,
     fontFamilies: Array.isArray(data.fontFamilies)
       ? data.fontFamilies.filter((item): item is string => typeof item === "string")
@@ -221,6 +229,10 @@ export function parseProfile(raw: string | null | undefined, fallback: Profile):
     ? data.favorites.filter((item): item is string => typeof item === "string")
     : [];
 
+  const disabledLyrics = Array.isArray(data.disabledLyrics)
+    ? data.disabledLyrics.filter((item): item is string => typeof item === "string")
+    : [];
+
   const recent = Array.isArray(data.recent)
     ? data.recent.filter((item): item is string => typeof item === "string")
     : [];
@@ -267,6 +279,7 @@ export function parseProfile(raw: string | null | undefined, fallback: Profile):
     },
     playCounts,
     favorites,
+    disabledLyrics,
     recent,
     lastTrack: typeof data.lastTrack === "string" ? data.lastTrack : undefined,
     lastPosition: typeof data.lastPosition === "number" && Number.isFinite(data.lastPosition) ? Math.max(0, data.lastPosition) : undefined,

@@ -9,7 +9,7 @@ import { initial, pad } from "../lib/format";
 import TrackContextMenu from "../components/TrackContextMenu.vue";
 
 withDefaults(defineProps<{ loading: boolean; downloadingTrackId?: number | null }>(), { downloadingTrackId: null });
-const emit = defineEmits<{ details: [track: Track]; downloadMetadata: [track: Track] }>();
+const emit = defineEmits<{ details: [track: Track]; downloadMetadata: [track: Track]; editLyrics: [track: Track] }>();
 const { t } = useI18n();
 const player = usePlayerStore();
 const profile = useProfileStore();
@@ -106,6 +106,6 @@ function openContextMenu(event: MouseEvent, track: Track) { const width = 224; c
       </div>
     </section>
 
-    <TrackContextMenu v-if="contextTrack" :track="contextTrack" :x="contextPosition.x" :y="contextPosition.y" :downloading="downloadingTrackId === contextTrack.id" @close="contextTrack = null" @download-metadata="emit('downloadMetadata', $event)" @details="emit('details', $event)" />
+    <TrackContextMenu v-if="contextTrack" :track="contextTrack" :x="contextPosition.x" :y="contextPosition.y" :downloading="downloadingTrackId === contextTrack.id" @close="contextTrack = null" @download-metadata="emit('downloadMetadata', $event)" @details="emit('details', $event)" @edit-lyrics="emit('editLyrics', $event)" />
   </div>
 </template>

@@ -17,6 +17,7 @@ import {
   lyricFromQqBest,
 } from "../lib/lyricSources";
 import { lyricLog, since } from "../lib/lyricLog";
+import { useProfileStore } from "./profile";
 
 export type LyricsStatus = "idle" | "loading" | "ready" | "error";
 
@@ -57,6 +58,7 @@ function normalizeSettings(raw: unknown, fallback: LyricDisplaySettings): LyricD
     translationSize: clampNumber(data.translationSize, 12, 32, fallback.translationSize),
     lineSpacing: clampNumber(data.lineSpacing, 8, 36, fallback.lineSpacing),
     translate: typeof data.translate === "boolean" ? data.translate : fallback.translate,
+    ruby: typeof data.ruby === "boolean" ? data.ruby : fallback.ruby,
     fontWeight: clampWeight(data.fontWeight, fallback.fontWeight),
     fontFamilies: Array.isArray(data.fontFamilies)
       ? data.fontFamilies.filter((item): item is string => typeof item === "string")
@@ -125,6 +127,8 @@ export const useLyricsStore = defineStore("lyrics", () => {
   const activeIndex = ref(-1);
   /** Every line whose time window contains the current position (BG + overlaps). */
   const activeIndices = ref<number[]>([]);
+  /** Whether the track currently loaded has its lyrics disabled per-track. */
+  const disabled = ref(false);
   /** Provider that supplied the currently loaded lyrics (null when unknown). */
   const source = ref<LyricProvider | null>(null);
   /** Detected format of the loaded lyrics (`ttml` / `qrc` / `lrc` / …). */
@@ -133,6 +137,9 @@ export const useLyricsStore = defineStore("lyrics", () => {
   let loadToken = 0;
 
   const hasLyrics = computed(() => lines.value.length > 0);
+  /** True when lyrics are intentionally off (global switch or this track), so
+   * renderers should show nothing rather than a "no lyrics" message. */
+  const suppressed = computed(() => !enabled.value || disabled.value);
   /** Typography for the renderer currently in use. */
   const display = computed(() => (useAmll.value ? amll.value : classic.value));
 
@@ -177,8 +184,10 @@ export const useLyricsStore = defineStore("lyrics", () => {
   async function loadForTrack(track: LyricTrackInfo | undefined) {
     reset();
     const path = track?.path;
-    if (!path || !enabled.value) {
-      lyricLog("info", "skip load", { path, enabled: enabled.value });
+    const isDisabled = path ? useProfileStore().isLyricsDisabled(path) : false;
+    disabled.value = isDisabled;
+    if (!path || !enabled.value || isDisabled) {
+      lyricLog("info", "skip load", { path, enabled: enabled.value, disabled: isDisabled });
       return;
     }
 
@@ -377,6 +386,7 @@ export const useLyricsStore = defineStore("lyrics", () => {
     activeIndices.value = [];
     source.value = null;
     sourceFormat.value = "";
+    disabled.value = false;
   }
 
   return {
@@ -395,6 +405,8 @@ export const useLyricsStore = defineStore("lyrics", () => {
     source,
     sourceFormat,
     hasLyrics,
+    suppressed,
+    disabled,
     setEnabled,
     setProviders,
     setTranslate,

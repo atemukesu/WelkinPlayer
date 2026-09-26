@@ -29,6 +29,14 @@ let manualTimer = 0;
 const lyricFontFamily = computed(() => cssFontFamily(lyrics.classic.fontFamilies));
 /** Active lines stay a touch heavier than the configured base weight. */
 const lyricActiveWeight = computed(() => Math.min(900, lyrics.classic.fontWeight + 200));
+/** Whether the per-word readings (注音 / ruby) carried by the lyrics are shown. */
+const showRuby = computed(() => lyrics.classic.ruby);
+
+/** Join a word's ruby spans into the single label shown above it. */
+function rubyText(word: { ruby?: Array<{ word: string }> }): string {
+  return (word.ruby ?? []).map((span) => span.word).join("");
+}
+
 /**
  * Every line that should render as active: the primary line (which advances
  * ahead of the beat and ignores background vocals) plus any line whose own time
@@ -87,7 +95,14 @@ function updateWordProgress(positionMs: number) {
     const line = lyrics.lines[Number(element.dataset.lyricIndex)];
     if (!line) return;
     element.querySelectorAll<HTMLElement>(".lyric-word").forEach((word, wordIndex) => {
-      word.style.setProperty("--word-progress", `${lyrics.wordProgress(line, wordIndex, positionMs) * 100}%`);
+      const progress = `${lyrics.wordProgress(line, wordIndex, positionMs) * 100}%`;
+      word.style.setProperty("--word-progress", progress);
+      // The reading is a sibling of the base word and `--word-progress` does not
+      // inherit, so write the same sweep onto it explicitly to keep them in step.
+      word
+        .closest("ruby")
+        ?.querySelector<HTMLElement>("rt")
+        ?.style.setProperty("--word-progress", progress);
     });
   });
 }
@@ -103,16 +118,27 @@ function loop() {
   frame = requestAnimationFrame(loop);
 }
 
-/** Vertical offset (px) that centers the active line inside the viewport. */
+/** Fraction of the viewport height at which the active line sits. */
+const ACTIVE_LINE_RATIO = 0.35;
+
+/** Vertical offset (px) that puts the active line at 35% of the viewport. */
 function activeLineOffset(): number {
   const container = lyricsScroll.value;
   const track = lyricsTrack.value;
   if (!container || !track) return scrollOffset.value;
-  const line = container.querySelector<HTMLElement>('[data-lyric-primary="true"]')
-    ?? container.querySelector<HTMLElement>('[data-lyric-active="true"]');
-  if (!line) return scrollOffset.value;
+  // Anchor on the whole active block, not just the primary line: background
+  // vocals and duet counter-lines can sit several lines away, and anchoring on
+  // the primary alone pushes them off screen.
+  const active = Array.from(container.querySelectorAll<HTMLElement>('[data-lyric-active="true"]'));
+  if (active.length === 0) return scrollOffset.value;
+  let top = Number.POSITIVE_INFINITY;
+  let bottom = Number.NEGATIVE_INFINITY;
+  for (const element of active) {
+    top = Math.min(top, element.offsetTop);
+    bottom = Math.max(bottom, element.offsetTop + element.offsetHeight);
+  }
   const maxOffset = Math.max(0, track.offsetHeight - container.clientHeight);
-  const target = line.offsetTop + line.offsetHeight / 2 - container.clientHeight / 2;
+  const target = (top + bottom) / 2 - container.clientHeight * ACTIVE_LINE_RATIO;
   return Math.min(maxOffset, Math.max(0, target));
 }
 
@@ -166,12 +192,21 @@ watch(
 );
 
 /**
- * A line entering the active set is re-rendered with `--word-progress: 0%`,
- * which would paint one frame of "unsung" text before the animation loop
- * corrects it. `flush: "post"` re-applies the real progress right after the DOM
- * patch, so the first painted frame is already correct.
+ * The animation loop only writes `--word-progress` for elements that are
+ * already marked active, so a line entering the active set would otherwise
+ * paint one frame with a stale (or initial) progress. `flush: "post"` writes
+ * the real progress right after the DOM patch, so the first painted frame is
+ * already correct.
  */
-watch(activeSet, () => updateWordProgress(currentTime() * 1000), { flush: "post" });
+watch(
+  activeSet,
+  () => {
+    updateWordProgress(currentTime() * 1000);
+    // A new line joining the block (or an old one leaving) moves the anchor.
+    if (!manualScroll.value) scrollOffset.value = activeLineOffset();
+  },
+  { flush: "post" },
+);
 </script>
 
 <template>
@@ -224,16 +259,24 @@ watch(activeSet, () => updateWordProgress(currentTime() * 1000), { flush: "post"
         </div>
         <div ref="lyricsScroll" class="lyrics-scroll min-h-0 flex-1 overflow-hidden border-l border-line pl-6 md:max-h-[76vh] md:pl-10" :style="{ '--active-index': lyrics.activeIndex, '--line-size': `${lyrics.classic.lineSize}px`, '--translation-size': `${lyrics.classic.translationSize}px`, '--line-spacing': `${lyrics.classic.lineSpacing}px`, '--line-weight': lyrics.classic.fontWeight, '--line-weight-active': lyricActiveWeight, fontFamily: lyricFontFamily }" @wheel.prevent="onWheel">
           <div ref="lyricsTrack" class="lyrics-track" :class="{ 'is-manual': manualScroll }" :style="{ transform: `translate3d(0, ${-scrollOffset}px, 0)` }">
-          <div class="py-[30vh]">
+          <div class="pt-[30vh] pb-[50vh]">
             <p v-if="lyrics.status === 'loading'" class="text-muted">{{ t("lyrics.loading") }}</p>
-            <p v-else-if="lyrics.status === 'error' || !lyrics.hasLyrics" class="text-muted">{{ t("lyrics.empty") }}</p>
-            <template v-else>
+            <template v-else-if="lyrics.hasLyrics">
               <div v-for="(line, lineIndex) in lyrics.lines" :key="`${line.startTime}-${lineIndex}`" class="lyric-line" :class="{ 'is-active': activeSet.has(lineIndex), 'text-muted': !activeSet.has(lineIndex), 'is-bg': line.isBG, 'is-duet': line.isDuet }" :data-lyric-active="activeSet.has(lineIndex)" :data-lyric-primary="lineIndex === lyrics.activeIndex" :data-lyric-index="lineIndex" :style="{ '--line-i': lineIndex }">
-                <p class="lyric-primary"><span v-for="(word, wordIndex) in line.words" :key="`${word.startTime}-${wordIndex}`" class="lyric-word" :style="{ '--word-progress': activeSet.has(lineIndex) ? '0%' : '100%' }">{{ word.word }}</span></p>
+                <p class="lyric-primary">
+                  <template v-for="(word, wordIndex) in line.words" :key="`${word.startTime}-${wordIndex}`">
+                    <ruby v-if="showRuby && word.ruby?.length" class="lyric-ruby">
+                      <span class="lyric-word">{{ word.word }}</span>
+                      <rt class="lyric-ruby-text">{{ rubyText(word) }}</rt>
+                    </ruby>
+                    <span v-else class="lyric-word">{{ word.word }}</span>
+                  </template>
+                </p>
                 <p v-if="lyrics.classic.translate && line.translatedLyric" class="lyric-translation">{{ line.translatedLyric }}</p>
                 <p v-if="line.romanLyric" class="lyric-roman">{{ line.romanLyric }}</p>
               </div>
             </template>
+            <p v-else-if="!lyrics.suppressed" class="text-muted">{{ t("lyrics.empty") }}</p>
           </div>
           </div>
         </div>
@@ -252,13 +295,13 @@ watch(activeSet, () => updateWordProgress(currentTime() * 1000), { flush: "post"
 
 @property --word-sung {
   syntax: "<color>";
-  inherits: true;
+  inherits: false;
   initial-value: transparent;
 }
 
 @property --word-rest {
   syntax: "<color>";
-  inherits: true;
+  inherits: false;
   initial-value: transparent;
 }
 
@@ -289,16 +332,12 @@ watch(activeSet, () => updateWordProgress(currentTime() * 1000), { flush: "post"
 }
 
 .lyric-line {
-  --word-sung: var(--muted);
-  --word-rest: var(--muted);
   opacity: 0.72;
-  transition: opacity var(--lyric-duration) var(--lyric-ease), --word-sung var(--lyric-duration) var(--lyric-ease), --word-rest var(--lyric-duration) var(--lyric-ease);
+  transition: opacity var(--lyric-duration) var(--lyric-ease);
   margin-bottom: var(--line-spacing, 16px);
 }
 
 .lyric-line.is-active {
-  --word-sung: var(--accent);
-  --word-rest: var(--fg);
   opacity: 1;
 }
 
@@ -314,12 +353,62 @@ watch(activeSet, () => updateWordProgress(currentTime() * 1000), { flush: "post"
   font-weight: var(--line-weight-active, 800);
 }
 
+/*
+ * The colours now switch instantly. Interpolating a registered custom property
+ * that a `background-clip: text` gradient paints produced a visible flash while
+ * the scroll transform was re-rasterising at the same moment; the line still
+ * fades in and out through the `opacity` transition on `.lyric-line`.
+ */
 .lyric-word {
+  --word-sung: var(--muted);
+  --word-rest: var(--muted);
   display: inline;
   background: linear-gradient(90deg, var(--word-sung) var(--word-progress), var(--word-rest) var(--word-progress));
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+
+.lyric-line.is-active .lyric-word {
+  --word-sung: var(--accent);
+  --word-rest: var(--fg);
+}
+
+/*
+ * Readings (注音 / ruby) sit above the base word and, like it, are painted by
+ * the word-progress gradient so they fill in together as the line is sung.
+ */
+.lyric-ruby {
+  ruby-position: over;
+  ruby-align: center;
+}
+
+.lyric-ruby-text {
+  --word-sung: var(--muted);
+  --word-rest: var(--muted);
+  font-size: 0.5em;
+  font-weight: calc(var(--line-weight, 600) - 200);
+  background: linear-gradient(90deg, var(--word-sung) var(--word-progress), var(--word-rest) var(--word-progress));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+
+.lyric-line.is-active .lyric-ruby-text {
+  --word-sung: var(--accent);
+  --word-rest: var(--fg);
+}
+
+.lyric-line.is-bg .lyric-ruby-text {
+  --word-sung: var(--dim);
+  --word-rest: var(--dim);
+}
+
+.lyric-line.is-bg.is-active .lyric-ruby-text {
+  --word-sung: var(--accent);
+  --word-rest: var(--muted);
 }
 
 .lyric-translation {
@@ -344,10 +433,13 @@ watch(activeSet, () => updateWordProgress(currentTime() * 1000), { flush: "post"
 
 /* Background vocals read as a smaller, dimmer sub-line under the main one. */
 .lyric-line.is-bg {
-  --word-sung: var(--dim);
-  --word-rest: var(--dim);
   margin-bottom: calc(var(--line-spacing, 16px) * 0.5);
   opacity: 0.6;
+}
+
+.lyric-line.is-bg .lyric-word {
+  --word-sung: var(--dim);
+  --word-rest: var(--dim);
 }
 
 .lyric-line.is-bg .lyric-primary {
@@ -360,9 +452,12 @@ watch(activeSet, () => updateWordProgress(currentTime() * 1000), { flush: "post"
 }
 
 .lyric-line.is-bg.is-active {
+  opacity: 0.85;
+}
+
+.lyric-line.is-bg.is-active .lyric-word {
   --word-sung: var(--accent);
   --word-rest: var(--muted);
-  opacity: 0.85;
 }
 
 .lyric-line.is-bg.is-active .lyric-primary {

@@ -1,14 +1,18 @@
 <script setup lang="ts">
-import { ArrowDown, ArrowUp, ChevronRight, Download, Heart, HeartOff, Info, ListPlus, ListX, Pencil } from "@lucide/vue";
+import { ArrowDown, ArrowUp, ChevronRight, Download, Eye, EyeOff, FileText, Heart, HeartOff, Info, ListPlus, ListX, Pencil } from "@lucide/vue";
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import type { Track } from "../stores/player";
+import { usePlayerStore } from "../stores/player";
 import { useProfileStore } from "../stores/profile";
+import { useLyricsStore } from "../stores/lyrics";
 
 const props = withDefaults(defineProps<{ track: Track; x: number; y: number; downloading: boolean; selectedPaths?: string[]; playlistId?: string | null }>(), { selectedPaths: () => [], playlistId: null });
-const emit = defineEmits<{ close: []; downloadMetadata: [track: Track]; details: [track: Track] }>();
+const emit = defineEmits<{ close: []; downloadMetadata: [track: Track]; details: [track: Track]; editLyrics: [track: Track] }>();
 const { t } = useI18n();
 const profile = useProfileStore();
+const player = usePlayerStore();
+const lyrics = useLyricsStore();
 const visible = ref(true);
 const showPlaylists = ref(false);
 
@@ -16,6 +20,7 @@ const paths = computed(() => props.selectedPaths.length > 0 ? props.selectedPath
 const isSelection = computed(() => props.selectedPaths.length > 0);
 const allFavorite = computed(() => paths.value.length > 0 && paths.value.every((path) => profile.isFavorite(path)));
 const favorite = computed(() => !isSelection.value && profile.isFavorite(props.track.path));
+const lyricsDisabled = computed(() => !isSelection.value && !!props.track.path && profile.isLyricsDisabled(props.track.path));
 
 const playlistPos = computed(() => {
   if (!props.playlistId || !props.track.path || isSelection.value) return null;
@@ -28,6 +33,16 @@ function close() { visible.value = false; }
 function closeOnEscape(event: KeyboardEvent) { if (event.key === "Escape") close(); }
 function downloadMetadata() { emit("downloadMetadata", props.track); close(); }
 function viewDetails() { emit("details", props.track); close(); }
+function editLyrics() { emit("editLyrics", props.track); close(); }
+function toggleLyrics() {
+  const path = props.track.path;
+  if (!path) return;
+  profile.toggleLyricsDisabled(path);
+  // Reflect the change immediately when the toggled track is the one playing.
+  const current = player.currentTrack;
+  if (current && current.path === path) void lyrics.loadForTrack(current);
+  close();
+}
 function toggleFavorite() {
   const desired = !allFavorite.value;
   for (const path of paths.value) {
@@ -67,6 +82,8 @@ onBeforeUnmount(() => window.removeEventListener("keydown", closeOnEscape));
           <button v-if="playlistId" type="button" role="menuitem" class="track-menu__item" @click="removeFromPlaylist"><ListX :size="16" />{{ t("library.menu.removeFromPlaylist") }}</button>
           <button v-if="!isSelection" type="button" role="menuitem" class="track-menu__item" @click="viewDetails"><Info :size="16" />{{ t("library.menu.properties") }}</button>
           <button v-if="!isSelection" type="button" role="menuitem" class="track-menu__item" @click="close"><Pencil :size="16" />{{ t("library.menu.edit") }}</button>
+          <button v-if="!isSelection && track.path" type="button" role="menuitem" class="track-menu__item" @click="editLyrics"><FileText :size="16" />{{ t("library.menu.editLyrics") }}</button>
+          <button v-if="!isSelection && track.path" type="button" role="menuitem" class="track-menu__item" @click="toggleLyrics"><EyeOff v-if="!lyricsDisabled" :size="16" /><Eye v-else :size="16" />{{ lyricsDisabled ? t("library.menu.enableLyrics") : t("library.menu.disableLyrics") }}</button>
           <div class="track-menu__divider"></div>
           <button type="button" role="menuitem" class="track-menu__item track-menu__item--last" :disabled="downloading || !track.path" @click="downloadMetadata"><Download :size="16" /><span>{{ downloading ? t("library.menu.downloadingMetadata") : t("library.menu.downloadMetadata") }}</span></button>
         </div>

@@ -7,7 +7,7 @@
 
 import { invoke } from "../api";
 import { decryptQrc } from "./qrc";
-import { mergeQrcTranslation } from "./qrcMerge";
+import { qrcToTtml } from "./qrcMerge";
 import { lyricLog } from "./lyricLog";
 
 /** Title/artist/album used to look a track up on the music platforms. */
@@ -324,9 +324,10 @@ export async function lyricFromQqQrc(songId: string): Promise<string | null> {
   }
 
   // <contentts> is the translation track and arrives as plaintext LRC, so it
-  // must not be decrypted. Merging it into the QRC keeps word timings (TTML).
+  // must not be decrypted. Serializing to TTML keeps word timings, kana
+  // readings and any translation together.
   const translation = cdata(body, "contentts");
-  const content = translation ? mergeQrcTranslation(qrc, translation) : qrc;
+  const content = qrcToTtml(qrc, translation || undefined);
   lyricLog(
     "info",
     `qq qrc (word-by-word) ${songId}`,
@@ -343,7 +344,7 @@ export async function lyricFromQqBest(ids: LyricIds): Promise<LyricFetchResult |
   if (ids.qqId) {
     try {
       const qrc = await lyricFromQqQrc(ids.qqId);
-      if (qrc) return { content: qrc, sourceId: `qq/${ids.qqId}` };
+      if (qrc) return { content: qrc, sourceId: `qq/${ids.qqMid ?? ids.qqId}` };
       lyricLog("warn", `qq ${ids.qqId}: QRC empty, falling back to line-level LRC`);
     } catch (error) {
       lyricLog("warn", `qq ${ids.qqId}: QRC failed, falling back to line-level LRC`, error);
@@ -373,6 +374,12 @@ interface AmllItem {
   musicNames?: string[];
   artistNames?: string[];
   albumNames?: string[];
+  /** Platform ids the database entry is linked to; used for exact matching. */
+  ncmMusicIds?: string[];
+  qqMusicIds?: string[];
+  appleMusicIds?: string[];
+  spotifyIds?: string[];
+  isrcs?: string[];
 }
 
 /** Fetch one AMLL entry by an explicit query parameter. */
@@ -394,23 +401,52 @@ async function amllGet(param: string): Promise<string | null> {
   }
 }
 
+/** The first resolved platform id that a database entry is linked to, if any. */
+function amllItemMatchingId(item: AmllItem, ids: LyricIds): string | null {
+  if (ids.netease && item.ncmMusicIds?.includes(ids.netease)) return `ncm/${ids.netease}`;
+  const qq = item.qqMusicIds ?? [];
+  if (ids.qqMid && qq.includes(ids.qqMid)) return `qq/${ids.qqMid}`;
+  if (ids.qqId && qq.includes(ids.qqId)) return `qq/${ids.qqId}`;
+  return null;
+}
+
 /**
- * Last-resort AMLL lookup: fuzzy search by title/artist, then fetch the best
- * entry by its exact filename. Platform-id lookups are preferred because the
- * database's QQ ids are stored inconsistently (mid for some entries, the
- * numeric song id for others).
+ * Search the AMLL database by name, but only trust an entry whose own platform
+ * ids overlap the ids NetEase/QQ resolved for this track. The database is not
+ * relevance-ranked, so a name-only match is a last resort and is logged as
+ * unverified.
  */
-async function amllSearchByName(query: LyricQuery): Promise<string | null> {
+async function amllSearchByName(
+  ids: LyricIds,
+  query: LyricQuery,
+): Promise<{ filename: string; sourceId?: string } | null> {
   if (!query.title.trim()) return null;
   try {
     const params = new URLSearchParams();
     params.set("musicName", query.title);
     if (query.artist.trim()) params.set("artistName", query.artist);
     if (query.album?.trim()) params.set("albumName", query.album);
-    params.set("pageSize", "5");
+    params.set("pageSize", "10");
     const body = await tunnel(`${AMLL_BASE}/v1/lyrics/search?${params}`, AMLL_BASE);
     const parsed = JSON.parse(body) as { data?: { items?: AmllItem[] } };
-    const items = parsed.data?.items ?? [];
+    const items = (parsed.data?.items ?? []).filter((item) => item.filename);
+    if (items.length === 0) {
+      lyricLog("warn", "amll search: no entry", `"${query.title} ${query.artist}"`);
+      return null;
+    }
+
+    const verified = items
+      .map((item) => ({ item, sourceId: amllItemMatchingId(item, ids) }))
+      .find((candidate) => candidate.sourceId !== null);
+    if (verified?.item.filename && verified.sourceId) {
+      lyricLog(
+        "info",
+        "amll search: id-verified hit",
+        `${verified.item.filename} (${verified.sourceId}, ${items.length} results)`,
+      );
+      return { filename: verified.item.filename, sourceId: verified.sourceId };
+    }
+
     const best = pickBest(query, items, (item) => ({
       title: item.musicNames?.[0] ?? "",
       artist: (item.artistNames ?? []).join(", "),
@@ -419,15 +455,19 @@ async function amllSearchByName(query: LyricQuery): Promise<string | null> {
     if (!best?.filename) {
       lyricLog(
         "warn",
-        "amll name search: no entry",
+        "amll search: no name match either",
         `"${query.title} ${query.artist}" (${items.length} results)`,
       );
       return null;
     }
-    lyricLog("info", "amll name search matched", `${best.filename} (${items.length} results)`);
-    return amllGet(`filename=${encodeURIComponent(best.filename)}`);
+    lyricLog(
+      "warn",
+      "amll search: unverified name match",
+      `${best.filename} (${items.length} results, no id overlap)`,
+    );
+    return { filename: best.filename };
   } catch (error) {
-    lyricLog("warn", "amll name search failed", error);
+    lyricLog("warn", "amll search failed", error);
     return null;
   }
 }
@@ -457,9 +497,11 @@ export async function lyricFromAmll(
     const lyrics = await amllGet(candidate.param);
     if (lyrics) return { content: lyrics, sourceId: candidate.sourceId };
   }
-  lyricLog("warn", "amll: no platform id hit; falling back to name search");
-  const fallback = await amllSearchByName(query);
-  return fallback ? { content: fallback } : null;
+  lyricLog("warn", "amll: no platform id hit; falling back to search");
+  const fallback = await amllSearchByName(ids, query);
+  if (!fallback) return null;
+  const content = await amllGet(`filename=${encodeURIComponent(fallback.filename)}`);
+  return content ? { content, sourceId: fallback.sourceId } : null;
 }
 
 /**
