@@ -11,7 +11,7 @@ import ViewModeToggle from "../components/ViewModeToggle.vue";
 import PlaylistCover from "../components/PlaylistCover.vue";
 
 const props = withDefaults(defineProps<{ playlistId?: string | null; loading: boolean; enriching: boolean; refreshing?: boolean; enrichDone: number; enrichTotal: number; downloadingTrackId?: number | null }>(), { playlistId: null, refreshing: false, downloadingTrackId: null });
-const emit = defineEmits<{ refresh: []; edit: [id: string]; downloadMetadata: [track: Track]; editLyrics: [track: Track] }>();
+const emit = defineEmits<{ refresh: []; edit: [id: string]; downloadMetadata: [track: Track]; editLyrics: [track: Track]; editInfo: [track: Track] }>();
 const { t } = useI18n();
 const player = usePlayerStore();
 const profile = useProfileStore();
@@ -85,6 +85,6 @@ function downloadMetadata(track: Track) { emit("downloadMetadata", track); }
     </div>
     <div v-else class="min-h-0 flex-1"><TrackList v-model:selected="selected" :tracks="tracks" empty-key="library.playlists.noTracks" :removable="!!activePlaylist" :selectable="selectMode" @play="play" @menu="openContextMenu" @remove="remove" /></div>
 
-    <TrackContextMenu v-if="contextTrack" :track="contextTrack" :x="contextPosition.x" :y="contextPosition.y" :selected-paths="[...selected]" :playlist-id="activePlaylist?.id ?? null" :downloading="downloadingTrackId === contextTrack.id" @close="contextTrack = null" @download-metadata="downloadMetadata" @edit-lyrics="emit('editLyrics', $event)" />
+    <TrackContextMenu v-if="contextTrack" :track="contextTrack" :x="contextPosition.x" :y="contextPosition.y" :selected-paths="[...selected]" :playlist-id="activePlaylist?.id ?? null" :downloading="downloadingTrackId === contextTrack.id" @close="contextTrack = null" @download-metadata="downloadMetadata" @edit-lyrics="emit('editLyrics', $event)" @edit-info="emit('editInfo', $event)" />
   </div>
 </template>

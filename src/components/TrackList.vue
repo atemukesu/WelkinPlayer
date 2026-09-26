@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { VList } from "virtua/vue";
-import { Check, Ellipsis, Pause, Play, Trash2 } from "@lucide/vue";
+import { Check, Pause, Play, Trash2 } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { usePlayerStore } from "../stores/player";
 import type { Track } from "../stores/player";
@@ -15,6 +15,16 @@ const { t } = useI18n();
 const player = usePlayerStore();
 const currentId = computed(() => player.currentTrack?.id);
 const playing = computed(() => player.isPlaying);
+
+// The trailing action column only exists when a remove button is shown; without
+// it the row keeps the space for the play indicator as the last column.
+const showRemove = computed(() => props.removable && !props.selectable);
+const listGrid = computed(() => showRemove.value
+  ? "grid-cols-[36px_44px_minmax(0,1fr)_44px_40px] md:grid-cols-[36px_44px_minmax(0,1fr)_140px_56px_44px_44px]"
+  : "grid-cols-[36px_44px_minmax(0,1fr)_44px] md:grid-cols-[36px_44px_minmax(0,1fr)_140px_56px_44px]");
+const listHeaderGrid = computed(() => showRemove.value
+  ? "grid-cols-[36px_44px_minmax(0,1fr)_140px_56px_44px_44px]"
+  : "grid-cols-[36px_44px_minmax(0,1fr)_140px_56px_44px]");
 
 const GAP = 16;
 const SCROLLBAR = 8;
@@ -122,15 +132,15 @@ function activate(track: Track, event?: MouseEvent) {
 
     <template v-else>
       <div class="flex h-full flex-col">
-        <div class="hidden shrink-0 grid-cols-[36px_44px_minmax(0,1fr)_140px_56px_44px_44px] items-center gap-4 px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-dim md:grid"><span>#</span><span></span><span>{{ t("library.colTrack") }}</span><span>{{ t("library.colAlbum") }}</span><span class="text-right">{{ t("library.colTime") }}</span><span></span><span></span></div>
+        <div class="hidden shrink-0 items-center gap-4 px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-dim md:grid" :class="listHeaderGrid"><span>#</span><span></span><span>{{ t("library.colTrack") }}</span><span>{{ t("library.colAlbum") }}</span><span class="text-right">{{ t("library.colTime") }}</span><span></span><span v-if="showRemove"></span></div>
         <VList v-if="tracks.length" :data="tracks" :item-size="LIST_ROW_HEIGHT" class="min-h-0 flex-1">
           <template #default="{ item: track, index }">
             <div
               role="button"
               tabindex="0"
               :key="track.id"
-              class="grid w-full cursor-pointer grid-cols-[36px_44px_minmax(0,1fr)_44px_40px] items-center gap-4 border-t border-line px-3 py-2 text-left md:grid-cols-[36px_44px_minmax(0,1fr)_140px_56px_44px_44px]"
-              :class="selectable ? (isSelected(track) ? 'bg-accent/10' : 'ak-hover') : (track.id === currentId ? 'ak-select relative z-10 border-transparent' : 'ak-hover')"
+              class="grid w-full cursor-pointer items-center gap-4 border-t border-line px-3 py-2 text-left"
+              :class="[listGrid, selectable ? (isSelected(track) ? 'bg-accent/10' : 'ak-hover') : (track.id === currentId ? 'ak-select relative z-10 border-transparent' : 'ak-hover')]"
               @click="activate(track, $event)"
               @keydown.enter="activate(track)"
               @keydown.space.prevent="activate(track)"
@@ -143,9 +153,7 @@ function activate(track: Track, event?: MouseEvent) {
               <span class="hidden truncate text-xs text-muted md:block">{{ track.album }}</span>
               <span class="hidden text-right font-mono text-[13px] tabular-nums text-muted md:block">{{ track.duration }}</span>
               <span class="grid place-items-center text-dim"><span v-if="track.id === currentId && playing" class="text-accent"><span class="ak-eq"><i></i><i></i><i></i></span></span><Pause v-else-if="track.id === currentId" :size="16" class="text-accent" /><Play v-else :size="16" /></span>
-              <button v-if="!selectable && removable" type="button" class="grid h-8 w-8 place-items-center text-dim transition-colors hover:text-red-500" :title="t('library.playlists.removeTrack')" @click.stop="emit('remove', track)"><Trash2 :size="15" /></button>
-              <button v-else-if="!selectable" type="button" class="grid h-8 w-8 place-items-center text-dim transition-colors hover:text-fg" :title="t('controls.more')" @click.stop="emit('menu', $event, track)"><Ellipsis :size="18" /></button>
-              <span v-else></span>
+              <button v-if="showRemove" type="button" class="grid h-8 w-8 place-items-center text-dim transition-colors hover:text-red-500" :title="t('library.playlists.removeTrack')" @click.stop="emit('remove', track)"><Trash2 :size="15" /></button>
             </div>
           </template>
         </VList>

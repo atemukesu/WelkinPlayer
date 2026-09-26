@@ -53,6 +53,22 @@ export interface TrackMetadata {
   coverHash: string | null;
 }
 
+/** Mirrors the Rust `TrackTags` struct used by the metadata editor. */
+export interface TrackTags {
+  title: string | null;
+  artist: string | null;
+  album: string | null;
+  albumArtist: string | null;
+  genre: string | null;
+  comment: string | null;
+  year: number | null;
+  trackNumber: number | null;
+  trackTotal: number | null;
+  discNumber: number | null;
+  discTotal: number | null;
+  hasCover: boolean;
+}
+
 /** Mirrors the Rust `CachedTrack` struct returned by `load_cached_tracks`. */
 export interface CachedTrack {
   path: string;

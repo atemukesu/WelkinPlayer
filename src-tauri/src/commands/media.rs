@@ -96,7 +96,7 @@ fn read_meta(dir: &Path, hash: &str) -> Option<TrackMetadata> {
     serde_json::from_slice(&bytes).ok()
 }
 
-fn write_meta(dir: &Path, hash: &str, metadata: &TrackMetadata) -> Result<(), AppError> {
+pub(crate) fn write_meta(dir: &Path, hash: &str, metadata: &TrackMetadata) -> Result<(), AppError> {
     let file = meta_file(dir, hash);
     if let Some(parent) = file.parent() {
         std::fs::create_dir_all(parent)?;

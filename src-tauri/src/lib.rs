@@ -11,6 +11,12 @@ use tauri::Manager;
 pub fn run() {
     logging::init();
 
+    // Android has no keyring backend; this installs the Keystore-backed one.
+    #[cfg(target_os = "android")]
+    if let Err(error) = android_keyring::set_android_keyring_credential_builder() {
+        log::error!("failed to initialize android-keyring credential store: {error}");
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
@@ -46,6 +52,8 @@ pub fn run() {
             commands::covers::upload_playlist_cover,
             commands::covers::resolve_playlist_covers,
             commands::covers::delete_playlist_cover,
+            commands::editor::read_track_tags,
+            commands::editor::edit_track_metadata,
             commands::playback::load_local_playback,
             commands::playback::load_remote_playback,
             commands::playback::save_playback,

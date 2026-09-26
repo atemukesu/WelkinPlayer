@@ -10,7 +10,7 @@ import TrackContextMenu from "../components/TrackContextMenu.vue";
 import ViewModeToggle from "../components/ViewModeToggle.vue";
 
 defineProps<{ loading: boolean; enriching: boolean; enrichDone: number; enrichTotal: number; downloadingTrackId?: number | null }>();
-const emit = defineEmits<{ downloadMetadata: [track: Track]; editLyrics: [track: Track] }>();
+const emit = defineEmits<{ downloadMetadata: [track: Track]; editLyrics: [track: Track]; editInfo: [track: Track] }>();
 const { t } = useI18n();
 const player = usePlayerStore();
 const profile = useProfileStore();
@@ -58,6 +58,6 @@ function downloadMetadata(track: Track) { emit("downloadMetadata", track); }
       <TrackList v-model:selected="selected" :tracks="tracks" empty-key="favorites.empty" :selectable="selectMode" @play="play" @menu="openContextMenu" />
     </div>
 
-    <TrackContextMenu v-if="contextTrack" :track="contextTrack" :x="contextPosition.x" :y="contextPosition.y" :selected-paths="[...selected]" :downloading="downloadingTrackId === contextTrack.id" @close="contextTrack = null" @download-metadata="downloadMetadata" @edit-lyrics="emit('editLyrics', $event)" />
+    <TrackContextMenu v-if="contextTrack" :track="contextTrack" :x="contextPosition.x" :y="contextPosition.y" :selected-paths="[...selected]" :downloading="downloadingTrackId === contextTrack.id" @close="contextTrack = null" @download-metadata="downloadMetadata" @edit-lyrics="emit('editLyrics', $event)" @edit-info="emit('editInfo', $event)" />
   </div>
 </template>
