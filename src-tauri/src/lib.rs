@@ -32,6 +32,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::ping,
             commands::echo,
+            commands::fonts::list_system_fonts,
             commands::webdav::load_webdav_password,
             commands::webdav::save_webdav_password,
             commands::webdav::test_webdav_connection,

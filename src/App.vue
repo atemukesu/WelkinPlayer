@@ -5,6 +5,7 @@ import { describeError, invoke } from "./api";
 import { initAudio, seekTo } from "./lib/audio";
 import { accents } from "./lib/app";
 import type { Accent, Theme, View } from "./lib/app";
+import type { LyricDisplaySettings } from "./lib/profile";
 import { useLibrary } from "./composables/useLibrary";
 import { pushToast } from "./lib/toast";
 import { usePlayerStore } from "./stores/player";
@@ -70,12 +71,18 @@ watchEffect(() => { document.documentElement.lang = locale.value; localStorage.s
 watch([theme, accent], () => { if (booted.value && !applyingProfile) profile.setAppearance({ theme: theme.value, accent: accent.value }); });
 watch(locale, (value) => { if (booted.value && !applyingProfile) profile.setAppearance({ locale: value as "zh-CN" | "en" }); });
 watch(
-  () => [lyrics.source, lyrics.lineSize, lyrics.translationSize, lyrics.lineSpacing, lyrics.translate, lyrics.useAmll],
+  () => [lyrics.source, lyrics.useAmll, lyrics.classic, lyrics.amll],
   () => {
     if (booted.value && !applyingProfile) {
-      profile.setLyrics({ source: lyrics.source, lineSize: lyrics.lineSize, translationSize: lyrics.translationSize, lineSpacing: lyrics.lineSpacing, translate: lyrics.translate, useAmll: lyrics.useAmll });
+      profile.setLyrics({
+        source: lyrics.source,
+        useAmll: lyrics.useAmll,
+        classic: cloneDisplay(lyrics.classic),
+        amll: cloneDisplay(lyrics.amll),
+      });
     }
   },
+  { deep: true },
 );
 watch(() => player.currentTrack?.path, (path) => { if (booted.value && path && player.isPlaying) profile.recordPlay(path); });
 watch(() => profile.revision, () => { if (booted.value) applyProfile(); });
@@ -159,12 +166,15 @@ function applyProfile() {
   accent.value = profile.profile.appearance.accent;
   locale.value = profile.profile.appearance.locale;
   lyrics.source = profile.profile.lyrics.source;
-  lyrics.lineSize = profile.profile.lyrics.lineSize;
-  lyrics.translationSize = profile.profile.lyrics.translationSize;
-  lyrics.lineSpacing = profile.profile.lyrics.lineSpacing;
-  lyrics.translate = profile.profile.lyrics.translate;
+  lyrics.classic = cloneDisplay(profile.profile.lyrics.classic);
+  lyrics.amll = cloneDisplay(profile.profile.lyrics.amll);
   lyrics.useAmll = profile.profile.lyrics.useAmll;
   void nextTick(() => { applyingProfile = false; });
+}
+
+/** Deep-copy display settings so the profile never shares reactive refs. */
+function cloneDisplay(value: LyricDisplaySettings): LyricDisplaySettings {
+  return { ...value, fontFamilies: [...value.fontFamilies] };
 }
 
 async function bootstrap() {

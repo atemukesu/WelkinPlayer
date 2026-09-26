@@ -168,7 +168,7 @@ const shuffleTitle = computed(() => player.shuffle ? t("controls.shuffleOn") : t
  */
 const amllLines = computed(() => {
   const raw = toRaw(lyrics.lines);
-  if (lyrics.translate) return raw;
+  if (lyrics.amll.translate) return raw;
   return raw.map((line) => (line.translatedLyric ? { ...line, translatedLyric: "" } : line));
 });
 
@@ -333,7 +333,10 @@ function onLyricSeek(timeMs: number) {
             :lines="amllLines"
             :current-time="positionMs"
             :playing="player.isPlaying"
-            :font-size="lyrics.lineSize"
+            :font-size="lyrics.amll.lineSize"
+            :font-weight="lyrics.amll.fontWeight"
+            :font-families="lyrics.amll.fontFamilies"
+            :translation-size="lyrics.amll.translationSize"
             color="#ffffff"
             blend="plus-lighter"
             :align-position="0.35"

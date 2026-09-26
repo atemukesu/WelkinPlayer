@@ -1,15 +1,45 @@
 import type { Accent, Theme } from "./app";
 
-/** Lyrics-related preferences, mirrored from the lyrics store. */
-export interface LyricsPreferences {
-  source: "local" | "disabled";
+/** Typography for one lyrics renderer (standard or AMLL). */
+export interface LyricDisplaySettings {
   lineSize: number;
   translationSize: number;
   lineSpacing: number;
   translate: boolean;
+  /** CSS font weight (100–900). */
+  fontWeight: number;
+  /** Ordered `font-family` fallback list; empty falls back to the app font. */
+  fontFamilies: string[];
+}
+
+/** Lyrics-related preferences, mirrored from the lyrics store. */
+export interface LyricsPreferences {
+  source: "local" | "disabled";
   /** Render the player page with the AMLL (Apple Music-like Lyrics) component. */
   useAmll: boolean;
+  /** Typography for the standard player, used when {@link useAmll} is false. */
+  classic: LyricDisplaySettings;
+  /** Typography for the AMLL player, used when {@link useAmll} is true. */
+  amll: LyricDisplaySettings;
 }
+
+export const DEFAULT_CLASSIC_DISPLAY: LyricDisplaySettings = {
+  lineSize: 24,
+  translationSize: 18,
+  lineSpacing: 24,
+  translate: true,
+  fontWeight: 600,
+  fontFamilies: [],
+};
+
+export const DEFAULT_AMLL_DISPLAY: LyricDisplaySettings = {
+  lineSize: 24,
+  translationSize: 18,
+  lineSpacing: 24,
+  translate: true,
+  fontWeight: 400,
+  fontFamilies: [],
+};
 
 /** Look-and-feel preferences that travel with the profile. */
 export interface AppearancePreferences {
@@ -85,11 +115,9 @@ export function createDefaultProfile(seed?: Partial<AppearancePreferences & Lyri
     },
     lyrics: {
       source: seed?.source ?? "local",
-      lineSize: seed?.lineSize ?? 24,
-      translationSize: seed?.translationSize ?? 18,
-      lineSpacing: seed?.lineSpacing ?? 24,
-      translate: seed?.translate ?? true,
       useAmll: seed?.useAmll ?? false,
+      classic: seed?.classic ? { ...seed.classic } : { ...DEFAULT_CLASSIC_DISPLAY },
+      amll: seed?.amll ? { ...seed.amll } : { ...DEFAULT_AMLL_DISPLAY },
     },
     playCounts: {},
     favorites: [],
@@ -101,6 +129,35 @@ export function createDefaultProfile(seed?: Partial<AppearancePreferences & Lyri
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+/** Parse one renderer's typography, filling missing/malformed fields. */
+function parseDisplaySettings(value: unknown, fallback: LyricDisplaySettings): LyricDisplaySettings {
+  const data = isRecord(value) ? value : {};
+  return {
+    lineSize: typeof data.lineSize === "number" && Number.isFinite(data.lineSize) ? data.lineSize : fallback.lineSize,
+    translationSize: typeof data.translationSize === "number" && Number.isFinite(data.translationSize) ? data.translationSize : fallback.translationSize,
+    lineSpacing: typeof data.lineSpacing === "number" && Number.isFinite(data.lineSpacing) ? data.lineSpacing : fallback.lineSpacing,
+    translate: typeof data.translate === "boolean" ? data.translate : fallback.translate,
+    fontWeight: typeof data.fontWeight === "number" && Number.isFinite(data.fontWeight) ? data.fontWeight : fallback.fontWeight,
+    fontFamilies: Array.isArray(data.fontFamilies)
+      ? data.fontFamilies.filter((item): item is string => typeof item === "string")
+      : [...fallback.fontFamilies],
+  };
+}
+
+/**
+ * Legacy flat lyrics fields predate the per-mode split; seed both renderers
+ * from them so an upgrade keeps the user's existing size/spacing.
+ */
+function legacyDisplay(fallback: LyricDisplaySettings, lyrics: Record<string, unknown>): LyricDisplaySettings {
+  return {
+    ...fallback,
+    lineSize: typeof lyrics.lineSize === "number" ? lyrics.lineSize : fallback.lineSize,
+    translationSize: typeof lyrics.translationSize === "number" ? lyrics.translationSize : fallback.translationSize,
+    lineSpacing: typeof lyrics.lineSpacing === "number" ? lyrics.lineSpacing : fallback.lineSpacing,
+    translate: typeof lyrics.translate === "boolean" ? lyrics.translate : fallback.translate,
+  };
 }
 
 /**
@@ -164,11 +221,9 @@ export function parseProfile(raw: string | null | undefined, fallback: Profile):
     },
     lyrics: {
       source: lyrics.source === "disabled" ? "disabled" : "local",
-      lineSize: typeof lyrics.lineSize === "number" ? lyrics.lineSize : fallback.lyrics.lineSize,
-      translationSize: typeof lyrics.translationSize === "number" ? lyrics.translationSize : fallback.lyrics.translationSize,
-      lineSpacing: typeof lyrics.lineSpacing === "number" ? lyrics.lineSpacing : fallback.lyrics.lineSpacing,
-      translate: typeof lyrics.translate === "boolean" ? lyrics.translate : fallback.lyrics.translate,
       useAmll: typeof lyrics.useAmll === "boolean" ? lyrics.useAmll : fallback.lyrics.useAmll,
+      classic: parseDisplaySettings(lyrics.classic, legacyDisplay(fallback.lyrics.classic, lyrics)),
+      amll: parseDisplaySettings(lyrics.amll, legacyDisplay(fallback.lyrics.amll, lyrics)),
     },
     playCounts,
     favorites,

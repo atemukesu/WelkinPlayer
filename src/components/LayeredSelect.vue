@@ -43,7 +43,11 @@ onBeforeUnmount(() => { open.value = false; });
 .layered-select__backdrop { position: absolute; inset: 0; pointer-events: none; clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 10px 100%, 0 calc(100% - 10px)); -webkit-mask-image: linear-gradient(#000, #000); mask-image: linear-gradient(#000, #000); -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; animation: ak-mask-h 320ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
 .layered-select__backdrop--gray { z-index: 0; background: #9ca3af; transform: translate(6px, 6px); animation-delay: 90ms; }
 .layered-select__backdrop--white { z-index: 1; background: #fff; }
-.layered-select__content { position: relative; z-index: 2; -webkit-mask-image: linear-gradient(#000, #000); mask-image: linear-gradient(#000, #000); -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; animation: ak-mask-h 320ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+.layered-select__content { position: relative; z-index: 2; max-height: min(22rem, 50vh); overflow-y: auto; overscroll-behavior: contain; clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 10px 100%, 0 calc(100% - 10px)); -webkit-mask-image: linear-gradient(#000, #000); mask-image: linear-gradient(#000, #000); -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; animation: ak-mask-h 320ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+.layered-select__content::-webkit-scrollbar { width: 10px; }
+.layered-select__content::-webkit-scrollbar-track { background: #fff; }
+.layered-select__content::-webkit-scrollbar-thumb { background: #d1d5db; }
+.layered-select__content::-webkit-scrollbar-thumb:hover { background: #9ca3af; }
 .layered-select__option { display: block; width: 100%; padding: 0.6rem 0.75rem; color: #000; font-size: 0.8125rem; font-weight: 600; text-align: left; text-transform: uppercase; letter-spacing: 0.1em; transition: background-color 180ms cubic-bezier(0.2, 0.8, 0.2, 1); }
 .layered-select__option:hover, .layered-select__option--selected { background: #d1d5db; color: #000; }
 .layered-select__option:first-child { clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 0 100%); }

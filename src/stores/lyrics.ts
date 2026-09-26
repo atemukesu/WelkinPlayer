@@ -2,23 +2,92 @@ import { computed, ref, watch } from "vue";
 import { defineStore } from "pinia";
 import { findLyricIndex, parseLyric } from "lyric-kit";
 import { invoke, toAppError } from "../api";
+import {
+  DEFAULT_AMLL_DISPLAY,
+  DEFAULT_CLASSIC_DISPLAY,
+} from "../lib/profile";
+import type { LyricDisplaySettings } from "../lib/profile";
 
 export type LyricsSource = "local" | "disabled";
 export type LyricsStatus = "idle" | "loading" | "ready" | "error";
 
 export type LyricLine = ReturnType<typeof parseLyric>["lines"][number];
 
+export type { LyricDisplaySettings };
+
+const CLASSIC_KEY = "welkin-lyrics-classic";
+const AMLL_KEY = "welkin-lyrics-amll-settings";
+
+function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.min(max, Math.max(min, numeric));
+}
+
+/** Snap a weight to the nearest 100 between 100 and 900. */
+function clampWeight(value: unknown, fallback: number): number {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.min(900, Math.max(100, Math.round(numeric / 100) * 100));
+}
+
+function normalizeSettings(raw: unknown, fallback: LyricDisplaySettings): LyricDisplaySettings {
+  const data = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return {
+    lineSize: clampNumber(data.lineSize, 16, 48, fallback.lineSize),
+    translationSize: clampNumber(data.translationSize, 12, 32, fallback.translationSize),
+    lineSpacing: clampNumber(data.lineSpacing, 8, 36, fallback.lineSpacing),
+    translate: typeof data.translate === "boolean" ? data.translate : fallback.translate,
+    fontWeight: clampWeight(data.fontWeight, fallback.fontWeight),
+    fontFamilies: Array.isArray(data.fontFamilies)
+      ? data.fontFamilies.filter((item): item is string => typeof item === "string")
+      : [...fallback.fontFamilies],
+  };
+}
+
+function readLegacySetting(key: string, min: number, max: number): number | undefined {
+  const value = Number(localStorage.getItem(key));
+  if (!Number.isFinite(value) || value < min || value > max) return undefined;
+  return value;
+}
+
+/** Load one renderer's settings from localStorage, tolerating bad JSON. */
+function loadSettings(key: string, fallback: LyricDisplaySettings): LyricDisplaySettings {
+  const stored = localStorage.getItem(key);
+  if (!stored) return { ...fallback };
+  try {
+    return normalizeSettings(JSON.parse(stored), fallback);
+  } catch {
+    return { ...fallback };
+  }
+}
+
 export const useLyricsStore = defineStore("lyrics", () => {
   const source = ref<LyricsSource>("local");
-  const translate = ref(true);
   const useAmll = ref(localStorage.getItem("welkin-lyrics-amll") === "1");
-  function readSetting(key: string, min: number, max: number, fallback: number) {
-    const value = Number(localStorage.getItem(key));
-    return Number.isFinite(value) && value >= min && value <= max ? value : fallback;
-  }
-  const lineSize = ref(readSetting("welkin-lyrics-size", 16, 48, 24));
-  const translationSize = ref(readSetting("welkin-lyrics-translation-size", 12, 32, 18));
-  const lineSpacing = ref(readSetting("welkin-lyrics-spacing", 8, 36, 24));
+
+  // Migrate the pre-split keys into the new per-mode defaults on first load.
+  const legacySize = readLegacySetting("welkin-lyrics-size", 16, 48);
+  const legacyTranslationSize = readLegacySetting("welkin-lyrics-translation-size", 12, 32);
+  const legacyLineSpacing = readLegacySetting("welkin-lyrics-spacing", 8, 36);
+
+  const classic = ref<LyricDisplaySettings>(
+    loadSettings(CLASSIC_KEY, {
+      ...DEFAULT_CLASSIC_DISPLAY,
+      ...(legacySize !== undefined ? { lineSize: legacySize } : {}),
+      ...(legacyTranslationSize !== undefined ? { translationSize: legacyTranslationSize } : {}),
+      ...(legacyLineSpacing !== undefined ? { lineSpacing: legacyLineSpacing } : {}),
+    }),
+  );
+  const amll = ref<LyricDisplaySettings>(
+    loadSettings(AMLL_KEY, {
+      ...DEFAULT_AMLL_DISPLAY,
+      ...(legacySize !== undefined ? { lineSize: legacySize } : {}),
+      ...(legacyTranslationSize !== undefined ? { translationSize: legacyTranslationSize } : {}),
+      ...(legacyLineSpacing !== undefined ? { lineSpacing: legacyLineSpacing } : {}),
+    }),
+  );
+
   const status = ref<LyricsStatus>("idle");
   const error = ref("");
   const lines = ref<LyricLine[]>([]);
@@ -28,10 +97,11 @@ export const useLyricsStore = defineStore("lyrics", () => {
 
   const enabled = computed(() => source.value !== "disabled");
   const hasLyrics = computed(() => lines.value.length > 0);
+  /** Typography for the renderer currently in use. */
+  const display = computed(() => (useAmll.value ? amll.value : classic.value));
 
-  watch(lineSize, (value) => localStorage.setItem("welkin-lyrics-size", String(value)));
-  watch(translationSize, (value) => localStorage.setItem("welkin-lyrics-translation-size", String(value)));
-  watch(lineSpacing, (value) => localStorage.setItem("welkin-lyrics-spacing", String(value)));
+  watch(classic, (value) => localStorage.setItem(CLASSIC_KEY, JSON.stringify(value)), { deep: true });
+  watch(amll, (value) => localStorage.setItem(AMLL_KEY, JSON.stringify(value)), { deep: true });
   watch(useAmll, (value) => localStorage.setItem("welkin-lyrics-amll", value ? "1" : "0"));
 
   function setSource(next: LyricsSource) {
@@ -40,7 +110,7 @@ export const useLyricsStore = defineStore("lyrics", () => {
   }
 
   function setTranslate(next: boolean) {
-    translate.value = next;
+    display.value.translate = next;
   }
 
   function load(next: LyricLine[]) {
@@ -122,11 +192,11 @@ export const useLyricsStore = defineStore("lyrics", () => {
 
   return {
     source,
-    translate,
+    translate: computed(() => display.value.translate),
     useAmll,
-    lineSize,
-    translationSize,
-    lineSpacing,
+    classic,
+    amll,
+    display,
     status,
     error,
     lines,

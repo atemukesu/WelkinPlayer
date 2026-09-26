@@ -7,6 +7,7 @@ import { usePlayerStore } from "../stores/player";
 import { useLyricsStore } from "../stores/lyrics";
 import { currentTime } from "../lib/audio";
 import { initial } from "../lib/format";
+import { cssFontFamily } from "../lib/fonts";
 import PlayerBar from "../components/PlayerBar.vue";
 import type { View } from "../lib/app";
 
@@ -23,6 +24,11 @@ let lastScrolledIndex = -1;
 let frame = 0;
 let lastLyricsSync = 0;
 let manualTimer = 0;
+
+/** CSS `font-family` value for the standard lyrics renderer, if configured. */
+const lyricFontFamily = computed(() => cssFontFamily(lyrics.classic.fontFamilies));
+/** Active lines stay a touch heavier than the configured base weight. */
+const lyricActiveWeight = computed(() => Math.min(900, lyrics.classic.fontWeight + 200));
 
 const controlsVisible = ref(true);
 const isFullscreen = ref(false);
@@ -196,7 +202,7 @@ watch(
           <h1 class="mt-2 truncate text-xl font-black leading-none tracking-tight">{{ player.currentTrack.title }}</h1>
           <p class="mt-2 truncate text-sm text-muted">{{ player.currentTrack.album }}</p>
         </div>
-        <div ref="lyricsScroll" class="lyrics-scroll min-h-0 flex-1 overflow-hidden border-l border-line pl-6 md:max-h-[76vh] md:pl-10" :style="{ '--active-index': lyrics.activeIndex, '--line-size': `${lyrics.lineSize}px`, '--translation-size': `${lyrics.translationSize}px`, '--line-spacing': `${lyrics.lineSpacing}px` }" @wheel.prevent="onWheel">
+        <div ref="lyricsScroll" class="lyrics-scroll min-h-0 flex-1 overflow-hidden border-l border-line pl-6 md:max-h-[76vh] md:pl-10" :style="{ '--active-index': lyrics.activeIndex, '--line-size': `${lyrics.classic.lineSize}px`, '--translation-size': `${lyrics.classic.translationSize}px`, '--line-spacing': `${lyrics.classic.lineSpacing}px`, '--line-weight': lyrics.classic.fontWeight, '--line-weight-active': lyricActiveWeight, fontFamily: lyricFontFamily }" @wheel.prevent="onWheel">
           <div ref="lyricsTrack" class="lyrics-track" :class="{ 'is-manual': manualScroll }" :style="{ transform: `translate3d(0, ${-scrollOffset}px, 0)` }">
           <div class="py-[30vh]">
             <p v-if="lyrics.status === 'loading'" class="text-muted">{{ t("lyrics.loading") }}</p>
@@ -204,7 +210,7 @@ watch(
             <template v-else>
               <div v-for="(line, lineIndex) in lyrics.lines" :key="`${line.startTime}-${lineIndex}`" class="lyric-line" :class="lineIndex === lyrics.activeIndex ? 'is-active' : 'text-muted'" :data-lyric-active="lineIndex === lyrics.activeIndex" :style="{ '--line-i': lineIndex }">
                 <p class="lyric-primary"><span v-for="(word, wordIndex) in line.words" :key="`${word.startTime}-${wordIndex}`" class="lyric-word" :style="{ '--word-progress': lineIndex === lyrics.activeIndex ? '0%' : '100%' }">{{ word.word }}</span></p>
-                <p v-if="lyrics.translate && line.translatedLyric" class="lyric-translation">{{ line.translatedLyric }}</p>
+                <p v-if="lyrics.classic.translate && line.translatedLyric" class="lyric-translation">{{ line.translatedLyric }}</p>
               </div>
             </template>
           </div>
@@ -277,14 +283,14 @@ watch(
 
 .lyric-primary {
   font-size: var(--line-size, 24px);
-  font-weight: 600;
+  font-weight: var(--line-weight, 600);
   line-height: 1.4;
   transition: font-weight var(--lyric-duration) var(--lyric-ease);
 }
 
 .lyric-line.is-active .lyric-primary {
   color: var(--fg);
-  font-weight: 800;
+  font-weight: var(--line-weight-active, 800);
 }
 
 .lyric-word {
