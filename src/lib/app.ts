@@ -1,7 +1,7 @@
 import type { Component } from "vue";
 import { Heart, Library, ListMusic, Settings2 } from "@lucide/vue";
 
-export type View = "library" | "tracks" | "favorites" | "stats" | "playlist-new" | "lyrics-edit" | "track-edit" | "settings" | "player";
+export type View = "library" | "tracks" | "favorites" | "stats" | "playlist-new" | "lyrics-edit" | "track-edit" | "track-info" | "settings" | "player";
 export type Theme = "light" | "dark";
 export type Accent = "amber" | "orange" | "cyan" | "red" | "green" | "blue";
 

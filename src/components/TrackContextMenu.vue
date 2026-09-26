@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ArrowDown, ArrowUp, ChevronRight, Download, Eye, EyeOff, FileText, Heart, HeartOff, ListPlus, ListX, Pencil } from "@lucide/vue";
+import { ArrowDown, ArrowUp, ChevronRight, Download, Eye, EyeOff, FileText, Heart, HeartOff, Info, ListPlus, ListX, Pencil } from "@lucide/vue";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import type { Track } from "../stores/player";
@@ -8,7 +8,7 @@ import { useProfileStore } from "../stores/profile";
 import { useLyricsStore } from "../stores/lyrics";
 
 const props = withDefaults(defineProps<{ track: Track; x: number; y: number; downloading: boolean; selectedPaths?: string[]; playlistId?: string | null }>(), { selectedPaths: () => [], playlistId: null });
-const emit = defineEmits<{ close: []; downloadMetadata: [track: Track]; editLyrics: [track: Track]; editInfo: [track: Track] }>();
+const emit = defineEmits<{ close: []; downloadMetadata: [track: Track]; editLyrics: [track: Track]; editInfo: [track: Track]; showInfo: [track: Track] }>();
 const { t } = useI18n();
 const profile = useProfileStore();
 const player = usePlayerStore();
@@ -64,6 +64,7 @@ function closeOnEscape(event: KeyboardEvent) { if (event.key === "Escape") close
 function downloadMetadata() { emit("downloadMetadata", props.track); close(); }
 function editLyrics() { emit("editLyrics", props.track); close(); }
 function editInfo() { if (!props.track.path) return; emit("editInfo", props.track); close(); }
+function showInfo() { if (!props.track.path) return; emit("showInfo", props.track); close(); }
 function toggleLyrics() {
   const path = props.track.path;
   if (!path) return;
@@ -120,6 +121,7 @@ onBeforeUnmount(() => {
           <button v-if="playlistId && !isSelection && canMoveUp" type="button" role="menuitem" class="track-menu__item" @click="moveTrack('up')"><ArrowUp :size="16" />{{ t("library.menu.moveUp") }}</button>
           <button v-if="playlistId && !isSelection && canMoveDown" type="button" role="menuitem" class="track-menu__item" @click="moveTrack('down')"><ArrowDown :size="16" />{{ t("library.menu.moveDown") }}</button>
           <button v-if="playlistId" type="button" role="menuitem" class="track-menu__item" @click="removeFromPlaylist"><ListX :size="16" />{{ t("library.menu.removeFromPlaylist") }}</button>
+          <button v-if="!isSelection && track.path" type="button" role="menuitem" class="track-menu__item" @click="showInfo"><Info :size="16" />{{ t("library.menu.properties") }}</button>
           <button v-if="!isSelection && track.path" type="button" role="menuitem" class="track-menu__item" @click="editInfo"><Pencil :size="16" />{{ t("library.menu.edit") }}</button>
           <button v-if="!isSelection && track.path" type="button" role="menuitem" class="track-menu__item" @click="editLyrics"><FileText :size="16" />{{ t("library.menu.editLyrics") }}</button>
           <button v-if="!isSelection && track.path" type="button" role="menuitem" class="track-menu__item" @click="toggleLyrics"><EyeOff v-if="!lyricsDisabled" :size="16" /><Eye v-else :size="16" />{{ lyricsDisabled ? t("library.menu.enableLyrics") : t("library.menu.disableLyrics") }}</button>

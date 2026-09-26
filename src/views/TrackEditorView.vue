@@ -190,7 +190,7 @@ watch(() => props.path, load, { immediate: true });
       </div>
     </header>
 
-    <div v-if="loading" class="mt-8 flex items-center gap-2 font-mono text-[12px] uppercase tracking-[0.2em] text-accent"><span class="ak-pulse" style="width: 14px; height: 9px"></span>{{ t("trackEditor.loading") }}</div>
+    <div v-if="loading" class="mt-8 flex items-center gap-2 font-mono text-[12px] uppercase tracking-[0.2em] text-accent"><span class="ak-pulse" style="width: 12px; height: 12px"></span>{{ t("trackEditor.loading") }}</div>
 
     <template v-else>
       <p v-if="loadError" class="mt-6 border-l-2 border-accent/60 pl-3 text-xs text-muted">{{ t("trackEditor.loadFailed", { value: loadError }) }}</p>

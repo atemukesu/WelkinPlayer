@@ -246,7 +246,7 @@ watch(() => props.path, loadLyrics, { immediate: true });
       </div>
     </header>
 
-    <div v-if="loading" class="mt-8 flex items-center gap-2 font-mono text-[12px] uppercase tracking-[0.2em] text-accent"><span class="ak-pulse" style="width: 14px; height: 9px"></span>{{ t("lyricsEditor.loading") }}</div>
+    <div v-if="loading" class="mt-8 flex items-center gap-2 font-mono text-[12px] uppercase tracking-[0.2em] text-accent"><span class="ak-pulse" style="width: 12px; height: 12px"></span>{{ t("lyricsEditor.loading") }}</div>
 
     <template v-else>
       <div class="mt-6 grid gap-4 lg:grid-cols-2">

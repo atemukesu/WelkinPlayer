@@ -111,14 +111,23 @@ async function toggleFullscreen() {
 const fullscreenTitle = computed(() => (isFullscreen.value ? t("controls.exitFullscreen") : t("controls.fullscreen")));
 
 /**
- * Space must always toggle playback on this page. App.vue's global shortcut
- * bails out when a button keeps focus, so intercept Space in the capture phase
- * and stop the previously focused control from being re-triggered.
+ * Space toggles playback and Escape folds the page away (same as the return
+ * control). App.vue's global shortcut bails out when a button keeps focus, so
+ * intercept both in the capture phase and stop the previously focused control
+ * from being re-triggered.
  */
 function onKeydown(event: KeyboardEvent) {
-  if (event.code !== "Space" && event.key !== " ") return;
+  const isSpace = event.code === "Space" || event.key === " ";
+  const isEscape = event.key === "Escape";
+  if (!isSpace && !isEscape) return;
   bumpControls();
   if (!props.active) return;
+  if (isEscape) {
+    event.preventDefault();
+    event.stopPropagation();
+    emit("navigate", props.returnView);
+    return;
+  }
   const target = event.target as HTMLElement | null;
   if (target) {
     const tag = target.tagName;
@@ -390,13 +399,10 @@ function onLyricSeek(timeMs: number) {
 }
 
 @media (min-width: 768px) {
-  .amll-controls {
+  .amll-controls,
+  .amll-controls[data-collapsed="true"] {
     max-height: none;
     overflow: visible;
-    opacity: 1;
-  }
-
-  .amll-controls[data-collapsed="true"] {
     opacity: 1;
     pointer-events: auto;
   }

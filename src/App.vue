@@ -28,6 +28,7 @@ import StatsView from "./views/StatsView.vue";
 import PlaylistEditorView from "./views/PlaylistEditorView.vue";
 import LyricsEditorView from "./views/LyricsEditorView.vue";
 import TrackEditorView from "./views/TrackEditorView.vue";
+import TrackInfoView from "./views/TrackInfoView.vue";
 
 const AmllPlayerView = defineAsyncComponent(() => import("./views/AmllPlayerView.vue"));
 
@@ -39,7 +40,7 @@ const playback = usePlaybackStore();
 const lyrics = useLyricsStore();
 const { loadingLibrary, enriching, refreshing, enrichDone, enrichTotal, friendlyError, loadCachedLibrary, loadRemoteLibrary, refreshLibrary, downloadTrackMetadata } = useLibrary();
 const view = ref<View>(getViewFromHash());
-const baseView = ref<View>(view.value === "player" ? "library" : view.value);
+const baseView = ref<View>(view.value === "player" || view.value === "track-info" ? "library" : view.value);
 const theme = ref<Theme>(localStorage.getItem("welkin-theme") === "dark" ? "dark" : "light");
 const accent = ref<Accent>(readAccent());
 const sidebarCollapsed = ref(localStorage.getItem("welkin-sidebar-collapsed") === "1");
@@ -50,6 +51,7 @@ const playlistFilter = ref<string | null>(null);
 const editingPlaylist = ref<string | null>(null);
 const editingLyricsPath = ref<string | null>(null);
 const editingTrackPath = ref<string | null>(null);
+const viewingTrackPath = ref<string | null>(null);
 const playbackRestored = ref(false);
 const showQueue = ref(false);
 /** Whether the AMLL full-screen player should be open. */
@@ -63,7 +65,7 @@ let lastPositionSavedAt = 0;
 /** Local-only safety-net cadence (ms) for periodic progress writes while playing. */
 const POSITION_SAVE_INTERVAL_MS = 30_000;
 
-watch(view, (next) => { if (next !== "player") baseView.value = next; });
+watch(view, (next) => { if (next !== "player" && next !== "track-info") baseView.value = next; });
 watchEffect(() => { document.documentElement.classList.toggle("dark", theme.value === "dark"); document.documentElement.dataset.accent = accent.value; localStorage.setItem("welkin-theme", theme.value); localStorage.setItem("welkin-accent", accent.value); });
 watchEffect(() => { document.documentElement.lang = locale.value; localStorage.setItem("welkin-locale", locale.value); });
 
@@ -134,7 +136,7 @@ watch(() => player.isPlaying, (playing) => {
 });
 
 function readAccent(): Accent { const value = localStorage.getItem("welkin-accent"); return (accents.some((item) => item.id === value) ? value : "amber") as Accent; }
-function getViewFromHash(): View { const route = window.location.hash.slice(1); return route === "settings" || route === "player" || route === "tracks" || route === "favorites" || route === "stats" || route === "playlist-new" || route === "lyrics-edit" || route === "track-edit" ? route : "library"; }
+function getViewFromHash(): View { const route = window.location.hash.slice(1); return route === "settings" || route === "player" || route === "tracks" || route === "favorites" || route === "stats" || route === "playlist-new" || route === "lyrics-edit" || route === "track-edit" || route === "track-info" ? route : "library"; }
 function setView(nextView: View) { view.value = nextView; window.location.hash = nextView === "library" ? "" : nextView; }
 function navigate(nextView: View) { playlistFilter.value = null; setView(nextView); }
 function syncViewFromHash() { view.value = getViewFromHash(); }
@@ -143,6 +145,8 @@ function createPlaylist() { playlistFilter.value = null; editingPlaylist.value =
 function editPlaylist(id: string) { playlistFilter.value = null; editingPlaylist.value = id; setView("playlist-new"); }
 function editLyrics(track: Track) { if (!track.path) return; editingLyricsPath.value = track.path; closeQueue(); setView("lyrics-edit"); }
 function editInfo(track: Track) { if (!track.path) return; editingTrackPath.value = track.path; closeQueue(); setView("track-edit"); }
+function showTrackInfo(track: Track) { if (!track.path) return; viewingTrackPath.value = track.path; closeQueue(); setView("track-info"); }
+function closeTrackInfo() { setView(baseView.value); }
 function onPlaylistSaved(id: string) { playlistFilter.value = id; setView("tracks"); }
 function onPlaylistEditorCancel() { navigate("library"); }
 function toggleQueue() {
@@ -236,7 +240,8 @@ onUnmounted(() => { savePlaybackPosition(true); window.removeEventListener("hash
 <template>
   <AmllPlayerView v-if="amllMounted && player.currentTrack" :active="amllActive" :return-view="baseView" @navigate="navigate" @closed="amllMounted = false" />
   <Transition name="slide"><PlayerView v-if="view === 'player' && player.currentTrack && !lyrics.useAmll" :return-view="baseView" @navigate="navigate" @queue="toggleQueue" /></Transition>
+  <Transition name="info"><TrackInfoView v-if="view === 'track-info' && viewingTrackPath" :path="viewingTrackPath" @back="closeTrackInfo" /></Transition>
   <SetupWizard v-if="booted && profile.firstRun" v-model:theme="theme" v-model:accent="accent" @finish="onWizardFinish" />
-  <div class="flex h-screen flex-col overflow-hidden bg-bg text-fg" :class="booted ? '' : 'opacity-0'"><AppNavigation placement="header" :active-view="baseView" @navigate="navigate" /><div class="relative flex min-h-0 flex-1"><AppNavigation placement="sidebar" :active-view="baseView" :collapsed="sidebarCollapsed" :active-playlist-id="playlistFilter" @navigate="navigate" @toggle="toggleSidebar" @create-playlist="createPlaylist" @open-playlist="openUserPlaylist" /><main class="min-w-0 flex-1 overflow-y-auto"><Transition name="page" mode="out-in"><LibraryView v-if="baseView === 'library'" key="library" :loading="loadingLibrary" :enriching="enriching" :enrich-done="enrichDone" :enrich-total="enrichTotal" :downloading-track-id="downloadingTrackId" @settings="navigate('settings')" @navigate="navigate" @open-playlist="openUserPlaylist" @edit-playlist="editPlaylist" @download-metadata="downloadMetadata" @edit-lyrics="editLyrics" @edit-info="editInfo" /><TracksView v-else-if="baseView === 'tracks'" key="tracks" :playlist-id="playlistFilter" :loading="loadingLibrary" :enriching="enriching" :refreshing="refreshing" :enrich-done="enrichDone" :enrich-total="enrichTotal" :downloading-track-id="downloadingTrackId" @refresh="refreshLibrary" @edit="editPlaylist" @download-metadata="downloadMetadata" @edit-lyrics="editLyrics" @edit-info="editInfo" /><FavoritesView v-else-if="baseView === 'favorites'" key="favorites" :loading="loadingLibrary" :enriching="enriching" :enrich-done="enrichDone" :enrich-total="enrichTotal" :downloading-track-id="downloadingTrackId" @download-metadata="downloadMetadata" @edit-lyrics="editLyrics" @edit-info="editInfo" /><StatsView v-else-if="baseView === 'stats'" key="stats" :loading="loadingLibrary" :downloading-track-id="downloadingTrackId" @download-metadata="downloadMetadata" @edit-lyrics="editLyrics" @edit-info="editInfo" /><PlaylistEditorView v-else-if="baseView === 'playlist-new'" key="playlist-new" :playlist-id="editingPlaylist" @done="onPlaylistSaved" @cancel="onPlaylistEditorCancel" /><LyricsEditorView v-else-if="baseView === 'lyrics-edit'" key="lyrics-edit" :path="editingLyricsPath" @back="navigate('library')" @friendly-error="showError" /><TrackEditorView v-else-if="baseView === 'track-edit'" key="track-edit" :path="editingTrackPath" @back="navigate('library')" @friendly-error="showError" /><SettingsView v-else key="settings" :testing="testing" v-model:theme="theme" v-model:accent="accent" @save="saveSettings" @test="testConnection" @friendly-error="showError" /></Transition></main>
+  <div class="flex h-screen flex-col overflow-hidden bg-bg text-fg" :class="booted ? '' : 'opacity-0'"><AppNavigation placement="header" :active-view="baseView" @navigate="navigate" /><div class="relative flex min-h-0 flex-1"><AppNavigation placement="sidebar" :active-view="baseView" :collapsed="sidebarCollapsed" :active-playlist-id="playlistFilter" @navigate="navigate" @toggle="toggleSidebar" @create-playlist="createPlaylist" @open-playlist="openUserPlaylist" /><main class="min-w-0 flex-1 overflow-y-auto"><Transition name="page" mode="out-in"><LibraryView v-if="baseView === 'library'" key="library" :loading="loadingLibrary" :enriching="enriching" :enrich-done="enrichDone" :enrich-total="enrichTotal" :downloading-track-id="downloadingTrackId" @settings="navigate('settings')" @navigate="navigate" @open-playlist="openUserPlaylist" @edit-playlist="editPlaylist" @download-metadata="downloadMetadata" @edit-lyrics="editLyrics" @edit-info="editInfo" @show-info="showTrackInfo" /><TracksView v-else-if="baseView === 'tracks'" key="tracks" :playlist-id="playlistFilter" :loading="loadingLibrary" :enriching="enriching" :refreshing="refreshing" :enrich-done="enrichDone" :enrich-total="enrichTotal" :downloading-track-id="downloadingTrackId" @refresh="refreshLibrary" @edit="editPlaylist" @download-metadata="downloadMetadata" @edit-lyrics="editLyrics" @edit-info="editInfo" @show-info="showTrackInfo" /><FavoritesView v-else-if="baseView === 'favorites'" key="favorites" :loading="loadingLibrary" :enriching="enriching" :enrich-done="enrichDone" :enrich-total="enrichTotal" :downloading-track-id="downloadingTrackId" @download-metadata="downloadMetadata" @edit-lyrics="editLyrics" @edit-info="editInfo" @show-info="showTrackInfo" /><StatsView v-else-if="baseView === 'stats'" key="stats" :loading="loadingLibrary" :downloading-track-id="downloadingTrackId" @download-metadata="downloadMetadata" @edit-lyrics="editLyrics" @edit-info="editInfo" @show-info="showTrackInfo" /><PlaylistEditorView v-else-if="baseView === 'playlist-new'" key="playlist-new" :playlist-id="editingPlaylist" @done="onPlaylistSaved" @cancel="onPlaylistEditorCancel" /><LyricsEditorView v-else-if="baseView === 'lyrics-edit'" key="lyrics-edit" :path="editingLyricsPath" @back="navigate('library')" @friendly-error="showError" /><TrackEditorView v-else-if="baseView === 'track-edit'" key="track-edit" :path="editingTrackPath" @back="navigate('library')" @friendly-error="showError" /><SettingsView v-else key="settings" :testing="testing" v-model:theme="theme" v-model:accent="accent" @save="saveSettings" @test="testConnection" @friendly-error="showError" /></Transition></main>
         <Transition name="queue-panel"><div v-if="showQueue" class="absolute inset-y-0 right-0 z-20 w-80 border-l border-line bg-surface"><QueuePanel @close="closeQueue" /></div></Transition>
       </div><PlayerBar v-if="player.currentTrack" @open="navigate('player')" @queue="toggleQueue" /><AppNavigation placement="mobile" :active-view="baseView" :active-playlist-id="playlistFilter" @navigate="navigate" @create-playlist="createPlaylist" @open-playlist="openUserPlaylist" /><ToastStack /></div></template>
