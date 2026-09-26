@@ -3,7 +3,7 @@ export type { Track, RepeatMode } from "./player";
 export { useWebdavStore } from "./webdav";
 export type { WebdavStatus } from "./webdav";
 export { useLyricsStore } from "./lyrics";
-export type { LyricsSource, LyricsStatus, LyricLine } from "./lyrics";
+export type { LyricProvider, LyricsStatus, LyricLine } from "./lyrics";
 export { useSyncStore } from "./sync";
 export type { SyncStatus } from "./sync";
 export { useProfileStore, tracksForPaths } from "./profile";

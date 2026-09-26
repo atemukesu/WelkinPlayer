@@ -12,9 +12,21 @@ export interface LyricDisplaySettings {
   fontFamilies: string[];
 }
 
+/** Where a lyric provider may be selected on the settings page. */
+export type LyricProvider = "qq" | "local" | "netease" | "amll";
+
+/** All lyric providers in their default priority order (highest first). */
+export const LYRIC_PROVIDERS: LyricProvider[] = ["local", "amll", "qq", "netease"];
+
 /** Lyrics-related preferences, mirrored from the lyrics store. */
 export interface LyricsPreferences {
-  source: "local" | "disabled";
+  /** Whether lyric fetching is enabled at all. */
+  enabled: boolean;
+  /**
+   * Ordered list of lyric providers, highest priority first. The player walks
+   * this list in order and uses the first provider that returns lyrics.
+   */
+  providers: LyricProvider[];
   /** Render the player page with the AMLL (Apple Music-like Lyrics) component. */
   useAmll: boolean;
   /** Typography for the standard player, used when {@link useAmll} is false. */
@@ -114,7 +126,8 @@ export function createDefaultProfile(seed?: Partial<AppearancePreferences & Lyri
       locale: seed?.locale ?? "zh-CN",
     },
     lyrics: {
-      source: seed?.source ?? "local",
+      enabled: seed?.enabled ?? true,
+      providers: seed?.providers ? [...seed.providers] : [...LYRIC_PROVIDERS],
       useAmll: seed?.useAmll ?? false,
       classic: seed?.classic ? { ...seed.classic } : { ...DEFAULT_CLASSIC_DISPLAY },
       amll: seed?.amll ? { ...seed.amll } : { ...DEFAULT_AMLL_DISPLAY },
@@ -144,6 +157,25 @@ function parseDisplaySettings(value: unknown, fallback: LyricDisplaySettings): L
       ? data.fontFamilies.filter((item): item is string => typeof item === "string")
       : [...fallback.fontFamilies],
   };
+}
+
+export function normalizeLyricProviders(value: unknown, fallback: LyricProvider[] = LYRIC_PROVIDERS): LyricProvider[] {
+  if (!Array.isArray(value)) return [...fallback];
+  const seen = new Set<LyricProvider>();
+  const result: LyricProvider[] = [];
+  for (const item of value) {
+    if (typeof item === "string" && (LYRIC_PROVIDERS as string[]).includes(item)) {
+      const provider = item as LyricProvider;
+      if (!seen.has(provider)) {
+        seen.add(provider);
+        result.push(provider);
+      }
+    }
+  }
+  for (const provider of LYRIC_PROVIDERS) {
+    if (!seen.has(provider)) result.push(provider);
+  }
+  return result.length > 0 ? result : [...fallback];
 }
 
 /**
@@ -220,7 +252,15 @@ export function parseProfile(raw: string | null | undefined, fallback: Profile):
       locale: appearance.locale === "en" ? "en" : appearance.locale === "zh-CN" ? "zh-CN" : fallback.appearance.locale,
     },
     lyrics: {
-      source: lyrics.source === "disabled" ? "disabled" : "local",
+      // Legacy documents stored a flat `source` enum; migrate "disabled" so an
+      // upgrade keeps the user's opt-out.
+      enabled:
+        typeof lyrics.enabled === "boolean"
+          ? lyrics.enabled
+          : lyrics.source === "disabled"
+            ? false
+            : fallback.lyrics.enabled,
+      providers: normalizeLyricProviders(lyrics.providers, fallback.lyrics.providers),
       useAmll: typeof lyrics.useAmll === "boolean" ? lyrics.useAmll : fallback.lyrics.useAmll,
       classic: parseDisplaySettings(lyrics.classic, legacyDisplay(fallback.lyrics.classic, lyrics)),
       amll: parseDisplaySettings(lyrics.amll, legacyDisplay(fallback.lyrics.amll, lyrics)),

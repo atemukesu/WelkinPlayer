@@ -71,11 +71,12 @@ watchEffect(() => { document.documentElement.lang = locale.value; localStorage.s
 watch([theme, accent], () => { if (booted.value && !applyingProfile) profile.setAppearance({ theme: theme.value, accent: accent.value }); });
 watch(locale, (value) => { if (booted.value && !applyingProfile) profile.setAppearance({ locale: value as "zh-CN" | "en" }); });
 watch(
-  () => [lyrics.source, lyrics.useAmll, lyrics.classic, lyrics.amll],
+  () => [lyrics.enabled, lyrics.providers, lyrics.useAmll, lyrics.classic, lyrics.amll],
   () => {
     if (booted.value && !applyingProfile) {
       profile.setLyrics({
-        source: lyrics.source,
+        enabled: lyrics.enabled,
+        providers: [...lyrics.providers],
         useAmll: lyrics.useAmll,
         classic: cloneDisplay(lyrics.classic),
         amll: cloneDisplay(lyrics.amll),
@@ -165,7 +166,8 @@ function applyProfile() {
   theme.value = profile.profile.appearance.theme;
   accent.value = profile.profile.appearance.accent;
   locale.value = profile.profile.appearance.locale;
-  lyrics.source = profile.profile.lyrics.source;
+  lyrics.enabled = profile.profile.lyrics.enabled;
+  lyrics.providers = [...profile.profile.lyrics.providers];
   lyrics.classic = cloneDisplay(profile.profile.lyrics.classic);
   lyrics.amll = cloneDisplay(profile.profile.lyrics.amll);
   lyrics.useAmll = profile.profile.lyrics.useAmll;

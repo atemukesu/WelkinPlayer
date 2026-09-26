@@ -7,6 +7,7 @@
 
 pub mod covers;
 pub mod fonts;
+pub mod lyrics;
 pub mod media;
 pub mod playback;
 pub mod profile;
@@ -46,6 +47,28 @@ pub fn echo(message: String) -> Result<String, AppError> {
 
     log::debug!("echo: {message}");
     Ok(message.to_string())
+}
+
+/// Bridges frontend diagnostics into the Rust log.
+///
+/// The webview console is easy to miss when the app runs in a window, so the
+/// frontend routes its pipeline traces through here to land on the same stderr
+/// stream as the backend under `tauri dev`.
+#[tauri::command]
+pub fn log_message(level: String, message: String) -> Result<(), AppError> {
+    let message = message.trim();
+
+    if message.is_empty() {
+        return Ok(());
+    }
+
+    match level.as_str() {
+        "warn" => log::warn!("{message}"),
+        "error" => log::error!("{message}"),
+        _ => log::info!("{message}"),
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

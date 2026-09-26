@@ -153,7 +153,7 @@ onBeforeUnmount(() => {
 
 watch(
   () => player.currentTrack?.path,
-  (path) => { lyrics.loadForTrack(path); },
+  () => { lyrics.loadForTrack(player.currentTrack ?? undefined); },
   { immediate: true },
 );
 
@@ -293,7 +293,7 @@ function onLyricSeek(timeMs: number) {
             </button>
           </div>
           <div class="mt-4 flex items-center justify-between gap-3">
-            <button type="button" class="transition" :class="player.shuffle ? 'text-white' : 'text-white/50 hover:text-white'" :title="shuffleTitle" @click="player.toggleShuffle()">
+            <button type="button" class="transition" :class="player.shuffle ? 'text-white' : 'text-white/50'" :title="shuffleTitle" @click="player.toggleShuffle()">
               <Shuffle :size="20" :stroke-width="2" />
             </button>
             <div class="flex items-center gap-3 sm:gap-5">
@@ -313,7 +313,7 @@ function onLyricSeek(timeMs: number) {
                 <SkipForward :size="26" :stroke-width="2" fill="currentColor" />
               </button>
             </div>
-            <button type="button" class="transition" :class="player.repeat !== 'off' ? 'text-white' : 'text-white/50 hover:text-white'" :title="repeatTitle" @click="player.cycleRepeat()">
+            <button type="button" class="transition" :class="player.repeat !== 'off' ? 'text-white' : 'text-white/50'" :title="repeatTitle" @click="player.cycleRepeat()">
               <Repeat1 v-if="player.repeat === 'one'" :size="20" :stroke-width="2" />
               <Repeat v-else :size="20" :stroke-width="2" />
             </button>

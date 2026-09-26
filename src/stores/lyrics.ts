@@ -1,22 +1,41 @@
 import { computed, ref, watch } from "vue";
 import { defineStore } from "pinia";
-import { findLyricIndex, parseLyric } from "lyric-kit";
+import { detectFormat, findActiveLyricIndices, parseLyric, pickPrimaryIndex } from "lyric-kit";
 import { invoke, toAppError } from "../api";
 import {
   DEFAULT_AMLL_DISPLAY,
   DEFAULT_CLASSIC_DISPLAY,
+  LYRIC_PROVIDERS,
+  normalizeLyricProviders,
 } from "../lib/profile";
-import type { LyricDisplaySettings } from "../lib/profile";
+import type { LyricDisplaySettings, LyricProvider } from "../lib/profile";
+import { readLyricSource, tagLyric } from "../lib/lyricTag";
+import {
+  LyricResolver,
+  lyricFromAmll,
+  lyricFromNetease,
+  lyricFromQqBest,
+} from "../lib/lyricSources";
+import { lyricLog, since } from "../lib/lyricLog";
 
-export type LyricsSource = "local" | "disabled";
 export type LyricsStatus = "idle" | "loading" | "ready" | "error";
 
 export type LyricLine = ReturnType<typeof parseLyric>["lines"][number];
 
-export type { LyricDisplaySettings };
+export type { LyricDisplaySettings, LyricProvider };
+
+/** Minimal track descriptor passed to the loader (title/artist drive online lookup). */
+export interface LyricTrackInfo {
+  path?: string;
+  title?: string;
+  artist?: string;
+  album?: string;
+}
 
 const CLASSIC_KEY = "welkin-lyrics-classic";
 const AMLL_KEY = "welkin-lyrics-amll-settings";
+const ENABLED_KEY = "welkin-lyrics-enabled";
+const PROVIDERS_KEY = "welkin-lyrics-providers";
 
 function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
   const numeric = Number(value);
@@ -62,8 +81,20 @@ function loadSettings(key: string, fallback: LyricDisplaySettings): LyricDisplay
   }
 }
 
+/** Load the stored provider order, tolerating bad JSON. */
+function loadProviders(): LyricProvider[] {
+  const stored = localStorage.getItem(PROVIDERS_KEY);
+  if (!stored) return normalizeLyricProviders(undefined);
+  try {
+    return normalizeLyricProviders(JSON.parse(stored));
+  } catch {
+    return normalizeLyricProviders(undefined);
+  }
+}
+
 export const useLyricsStore = defineStore("lyrics", () => {
-  const source = ref<LyricsSource>("local");
+  const enabled = ref(localStorage.getItem(ENABLED_KEY) !== "0");
+  const providers = ref<LyricProvider[]>(loadProviders());
   const useAmll = ref(localStorage.getItem("welkin-lyrics-amll") === "1");
 
   // Migrate the pre-split keys into the new per-mode defaults on first load.
@@ -92,10 +123,15 @@ export const useLyricsStore = defineStore("lyrics", () => {
   const error = ref("");
   const lines = ref<LyricLine[]>([]);
   const activeIndex = ref(-1);
+  /** Every line whose time window contains the current position (BG + overlaps). */
+  const activeIndices = ref<number[]>([]);
+  /** Provider that supplied the currently loaded lyrics (null when unknown). */
+  const source = ref<LyricProvider | null>(null);
+  /** Detected format of the loaded lyrics (`ttml` / `qrc` / `lrc` / …). */
+  const sourceFormat = ref("");
   /** Guards against out-of-order lyric loads when switching tracks quickly. */
   let loadToken = 0;
 
-  const enabled = computed(() => source.value !== "disabled");
   const hasLyrics = computed(() => lines.value.length > 0);
   /** Typography for the renderer currently in use. */
   const display = computed(() => (useAmll.value ? amll.value : classic.value));
@@ -103,9 +139,16 @@ export const useLyricsStore = defineStore("lyrics", () => {
   watch(classic, (value) => localStorage.setItem(CLASSIC_KEY, JSON.stringify(value)), { deep: true });
   watch(amll, (value) => localStorage.setItem(AMLL_KEY, JSON.stringify(value)), { deep: true });
   watch(useAmll, (value) => localStorage.setItem("welkin-lyrics-amll", value ? "1" : "0"));
+  watch(enabled, (value) => localStorage.setItem(ENABLED_KEY, value ? "1" : "0"));
+  watch(providers, (value) => localStorage.setItem(PROVIDERS_KEY, JSON.stringify(value)), { deep: true });
 
-  function setSource(next: LyricsSource) {
-    source.value = next;
+  function setEnabled(next: boolean) {
+    enabled.value = next;
+    if (!next) reset();
+  }
+
+  function setProviders(next: LyricProvider[]) {
+    providers.value = normalizeLyricProviders(next);
     reset();
   }
 
@@ -118,39 +161,173 @@ export const useLyricsStore = defineStore("lyrics", () => {
     status.value = "ready";
     error.value = "";
     activeIndex.value = -1;
+    activeIndices.value = [];
   }
 
-  async function loadForTrack(path: string | undefined) {
+  /**
+   * Fetch lyrics for a track by walking the provider order and using the first
+   * one that returns parsable content. The cached copy (from any provider) is
+   * shown immediately while the lookup runs.
+   *
+   * `local` reads the same-named `.lrc` sidecar from WebDAV; every online hit
+   * is written to the local cache and uploaded back to WebDAV as that sidecar,
+   * so later plays resolve straight from `local`. AMLL is queried by the
+   * NetEase/QQ platform ids resolved from one shared title/artist search.
+   */
+  async function loadForTrack(track: LyricTrackInfo | undefined) {
     reset();
-    if (!path || !enabled.value) return;
+    const path = track?.path;
+    if (!path || !enabled.value) {
+      lyricLog("info", "skip load", { path, enabled: enabled.value });
+      return;
+    }
 
     const token = ++loadToken;
+    const started = performance.now();
     status.value = "loading";
+    lyricLog("info", "load start", {
+      path,
+      title: track?.title,
+      artist: track?.artist,
+      providers: [...providers.value],
+    });
 
     // 1. Show the locally cached lyrics immediately (no network needed).
-    let cached: string | null = null;
-    try {
-      cached = await invoke<string | null>("get_cached_lyrics", { path });
-    } catch { cached = null; }
     let shown = false;
-    if (cached && token === loadToken) {
-      shown = applyContent(cached);
-    }
-
-    // 2. Ask the remote for the authoritative copy and update only if it differs.
     try {
-      const content = await invoke<string>("read_track_lyrics", { path });
+      const cached = await invoke<string | null>("get_cached_lyrics", { path });
       if (token !== loadToken) return;
-      if (content && content !== cached) {
-        const applied = applyContent(content);
-        if (!applied && !shown) fail("empty");
-      } else if (!shown) {
-        fail("empty");
+      if (cached) {
+        shown = applyContent(cached);
+        if (shown) rememberSource(cached);
+        lyricLog("info", "cache hit", `${cached.length} chars`);
+      } else {
+        lyricLog("info", "cache miss");
       }
     } catch (error) {
-      if (token !== loadToken) return;
-      if (!shown) fail(toAppError(error).code);
+      lyricLog("warn", "cache read failed", error);
     }
+
+    // 2. Walk the provider order; the first hit wins and is persisted.
+    const query = {
+      title: (track?.title ?? "").trim(),
+      artist: (track?.artist ?? "").trim(),
+      album: (track?.album ?? "").trim(),
+    };
+    const resolver = new LyricResolver(query);
+
+    let lastError = "";
+    for (const provider of providers.value) {
+      if (token !== loadToken) return;
+      lyricLog("info", `try provider: ${provider}`);
+      try {
+        let content: string | null = null;
+        let sourceId: string | undefined;
+        if (provider === "local") {
+          content = await readLocalLyrics(path);
+        } else if (provider === "amll") {
+          await resolver.netease();
+          await resolver.qq();
+          const hit = await lyricFromAmll(resolver.cached, query);
+          if (hit) {
+            content = hit.content;
+            sourceId = hit.sourceId;
+          }
+        } else if (provider === "netease") {
+          const ids = await resolver.netease();
+          if (ids.netease) {
+            content = await lyricFromNetease(ids.netease);
+            sourceId = `ncm/${ids.netease}`;
+          }
+        } else if (provider === "qq") {
+          const hit = await lyricFromQqBest(await resolver.qq());
+          if (hit) {
+            content = hit.content;
+            sourceId = hit.sourceId;
+          }
+        }
+        if (token !== loadToken) return;
+        if (content && applyContent(content)) {
+          rememberSource(content, provider);
+          lyricLog(
+            "info",
+            `provider ${provider} hit`,
+            `${content.length} chars, ${lines.value.length} lines, format=${
+              sourceFormat.value || "?"
+            } (${since(started)})`,
+          );
+          // Online lyrics are tagged, cached and mirrored to WebDAV; a `local`
+          // hit is already the sidecar itself.
+          if (provider !== "local") void persistLyrics(path, content, provider, sourceId);
+          return;
+        }
+        lyricLog("info", `provider ${provider} miss (unparsable or empty)`);
+      } catch (error) {
+        if (token !== loadToken) return;
+        lastError = toAppError(error).code;
+        lyricLog("error", `provider ${provider} failed`, error);
+      }
+    }
+
+    if (token !== loadToken) return;
+    // A cached copy is still a valid result even if the network lookup failed.
+    if (!shown) {
+      lyricLog("error", "no lyrics found", `${lastError || "empty"} (${since(started)})`);
+      fail(lastError || "empty");
+    } else {
+      lyricLog("warn", "no provider hit; keeping the cached copy", since(started));
+    }
+  }
+
+  /** Read the same-named `.lrc` sidecar from WebDAV (it caches locally too). */
+  async function readLocalLyrics(path: string): Promise<string | null> {
+    try {
+      const content = await invoke<string>("read_track_lyrics", { path });
+      const ok = Boolean(content && content.trim());
+      lyricLog(
+        ok ? "info" : "warn",
+        "local sidecar",
+        ok ? `${content.length} chars` : "found but blank",
+      );
+      return ok ? content : null;
+    } catch (error) {
+      lyricLog("warn", "local sidecar unavailable", error);
+      return null;
+    }
+  }
+
+  /**
+   * Tag the lyric with its origin, cache it locally and mirror it to WebDAV as
+   * a same-named sidecar; failures are non-fatal.
+   */
+  async function persistLyrics(
+    path: string,
+    content: string,
+    provider: LyricProvider,
+    sourceId?: string,
+  ) {
+    const tagged = tagLyric(content, { source: provider, sourceId });
+    try {
+      await invoke("save_track_lyrics", { path, content: tagged });
+      lyricLog(
+        "info",
+        `persisted from ${provider}`,
+        `${tagged.length} chars -> local cache + WebDAV sidecar`,
+      );
+    } catch (error) {
+      lyricLog("error", `persist failed from ${provider}`, error);
+    }
+  }
+
+  function isProvider(value: string | null | undefined): value is LyricProvider {
+    return typeof value === "string" && (LYRIC_PROVIDERS as string[]).includes(value);
+  }
+
+  /** Remember where the loaded lyrics came from (tagged file first, provider as fallback). */
+  function rememberSource(content: string, provider?: LyricProvider) {
+    sourceFormat.value = detectFormat(content);
+    const tagged = readLyricSource(content);
+    source.value = isProvider(tagged?.source) ? tagged.source : provider ?? null;
   }
 
   /** Parse lyric text and load it; returns false when there are no lines. */
@@ -174,8 +351,17 @@ export const useLyricsStore = defineStore("lyrics", () => {
     return Math.min(1, Math.max(0, (positionMs - word.startTime) / duration));
   }
 
+  /** Replace the active set only when it really changed (avoids a re-render every tick). */
+  function setActiveIndices(next: number[]) {
+    const current = activeIndices.value;
+    if (current.length === next.length && current.every((value, index) => value === next[index])) return;
+    activeIndices.value = next;
+  }
+
   function sync(positionSeconds: number) {
-    activeIndex.value = findLyricIndex(lines.value, positionSeconds * 1000);
+    const positionMs = positionSeconds * 1000;
+    activeIndex.value = pickPrimaryIndex(lines.value, positionMs);
+    setActiveIndices(findActiveLyricIndices(lines.value, positionMs));
   }
 
   function fail(message: string) {
@@ -188,10 +374,14 @@ export const useLyricsStore = defineStore("lyrics", () => {
     error.value = "";
     lines.value = [];
     activeIndex.value = -1;
+    activeIndices.value = [];
+    source.value = null;
+    sourceFormat.value = "";
   }
 
   return {
-    source,
+    enabled,
+    providers,
     translate: computed(() => display.value.translate),
     useAmll,
     classic,
@@ -201,9 +391,12 @@ export const useLyricsStore = defineStore("lyrics", () => {
     error,
     lines,
     activeIndex,
-    enabled,
+    activeIndices,
+    source,
+    sourceFormat,
     hasLyrics,
-    setSource,
+    setEnabled,
+    setProviders,
     setTranslate,
     load,
     loadForTrack,

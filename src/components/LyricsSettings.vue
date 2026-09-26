@@ -3,17 +3,20 @@ import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 import { useLyricsStore } from "../stores/lyrics";
 import { useSystemFonts } from "../lib/fonts";
-import LayeredSelect from "./LayeredSelect.vue";
+import type { LyricProvider } from "../lib/profile";
+import LyricProviderOrder from "./LyricProviderOrder.vue";
 import LyricDisplayControls from "./LyricDisplayControls.vue";
 
 const { t } = useI18n();
 const lyrics = useLyricsStore();
 const { allFonts } = useSystemFonts();
 
-const lyricSourceOptions = computed(() => [
-  { value: "local" as const, label: t("settings.lyrics.sourceLocal") },
-  { value: "disabled" as const, label: t("settings.lyrics.sourceDisabled") },
-]);
+/** Local same-name lyrics always win, so the list only orders the online fallbacks. */
+const onlineProviders = computed(() => lyrics.providers.filter((provider) => provider !== "local"));
+
+function setOnlineProviders(next: LyricProvider[]) {
+  lyrics.setProviders(["local", ...next.filter((provider) => provider !== "local")]);
+}
 </script>
 
 <template>
@@ -23,10 +26,25 @@ const lyricSourceOptions = computed(() => [
       <p class="mt-2 text-sm text-muted">{{ t("settings.lyrics.desc") }}</p>
     </div>
     <div class="grid gap-6">
-      <label class="grid gap-2 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">
-        {{ t("settings.lyrics.source") }}
-        <LayeredSelect v-model="lyrics.source" :label="t('settings.lyrics.source')" :options="lyricSourceOptions" />
+      <label class="flex items-center justify-between gap-4">
+        <span class="grid gap-1 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">
+          {{ t("settings.lyrics.enable") }}
+          <span class="text-[11px] font-normal normal-case tracking-normal text-dim">{{ t("settings.lyrics.enableHint") }}</span>
+        </span>
+        <input v-model="lyrics.enabled" class="ak-switch shrink-0" type="checkbox" />
       </label>
+
+      <div class="grid gap-3">
+        <div class="grid gap-1">
+          <span class="text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.lyrics.providers") }}</span>
+          <span class="text-[11px] font-normal normal-case tracking-normal text-dim">{{ t("settings.lyrics.providersHint") }}</span>
+        </div>
+        <LyricProviderOrder
+          :model-value="onlineProviders"
+          :disabled="!lyrics.enabled"
+          @update:model-value="setOnlineProviders"
+        />
+      </div>
 
       <label class="flex items-center justify-between gap-4">
         <span class="grid gap-1 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">

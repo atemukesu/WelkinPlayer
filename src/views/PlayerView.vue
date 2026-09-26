@@ -29,6 +29,16 @@ let manualTimer = 0;
 const lyricFontFamily = computed(() => cssFontFamily(lyrics.classic.fontFamilies));
 /** Active lines stay a touch heavier than the configured base weight. */
 const lyricActiveWeight = computed(() => Math.min(900, lyrics.classic.fontWeight + 200));
+/**
+ * Every line that should render as active: the primary line (which advances
+ * ahead of the beat and ignores background vocals) plus any line whose own time
+ * window overlaps it — background vocals and duet counter-lines.
+ */
+const activeSet = computed(() => {
+  const set = new Set(lyrics.activeIndices);
+  if (lyrics.activeIndex >= 0) set.add(lyrics.activeIndex);
+  return set;
+});
 
 const controlsVisible = ref(true);
 const isFullscreen = ref(false);
@@ -72,12 +82,13 @@ function syncLyrics() {
 
 function updateWordProgress(positionMs: number) {
   const container = lyricsScroll.value;
-  const activeLine = container?.querySelector<HTMLElement>('[data-lyric-active="true"]');
-  if (!activeLine || lyrics.activeIndex < 0) return;
-  const line = lyrics.lines[lyrics.activeIndex];
-  if (!line) return;
-  activeLine.querySelectorAll<HTMLElement>(".lyric-word").forEach((word, wordIndex) => {
-    word.style.setProperty("--word-progress", `${lyrics.wordProgress(line, wordIndex, positionMs) * 100}%`);
+  if (!container || activeSet.value.size === 0) return;
+  container.querySelectorAll<HTMLElement>('[data-lyric-active="true"]').forEach((element) => {
+    const line = lyrics.lines[Number(element.dataset.lyricIndex)];
+    if (!line) return;
+    element.querySelectorAll<HTMLElement>(".lyric-word").forEach((word, wordIndex) => {
+      word.style.setProperty("--word-progress", `${lyrics.wordProgress(line, wordIndex, positionMs) * 100}%`);
+    });
   });
 }
 
@@ -97,7 +108,8 @@ function activeLineOffset(): number {
   const container = lyricsScroll.value;
   const track = lyricsTrack.value;
   if (!container || !track) return scrollOffset.value;
-  const line = container.querySelector<HTMLElement>('[data-lyric-active="true"]');
+  const line = container.querySelector<HTMLElement>('[data-lyric-primary="true"]')
+    ?? container.querySelector<HTMLElement>('[data-lyric-active="true"]');
   if (!line) return scrollOffset.value;
   const maxOffset = Math.max(0, track.offsetHeight - container.clientHeight);
   const target = line.offsetTop + line.offsetHeight / 2 - container.clientHeight / 2;
@@ -136,10 +148,10 @@ onBeforeUnmount(() => {
 
 watch(
   () => player.currentTrack?.path,
-  (path) => {
+  () => {
     lastScrolledIndex = -1;
     scrollOffset.value = 0;
-    void lyrics.loadForTrack(path).then(syncLyrics);
+    void lyrics.loadForTrack(player.currentTrack ?? undefined).then(syncLyrics);
   },
   { immediate: true },
 );
@@ -152,6 +164,14 @@ watch(
   },
   { flush: "pre" },
 );
+
+/**
+ * A line entering the active set is re-rendered with `--word-progress: 0%`,
+ * which would paint one frame of "unsung" text before the animation loop
+ * corrects it. `flush: "post"` re-applies the real progress right after the DOM
+ * patch, so the first painted frame is already correct.
+ */
+watch(activeSet, () => updateWordProgress(currentTime() * 1000), { flush: "post" });
 </script>
 
 <template>
@@ -208,9 +228,10 @@ watch(
             <p v-if="lyrics.status === 'loading'" class="text-muted">{{ t("lyrics.loading") }}</p>
             <p v-else-if="lyrics.status === 'error' || !lyrics.hasLyrics" class="text-muted">{{ t("lyrics.empty") }}</p>
             <template v-else>
-              <div v-for="(line, lineIndex) in lyrics.lines" :key="`${line.startTime}-${lineIndex}`" class="lyric-line" :class="lineIndex === lyrics.activeIndex ? 'is-active' : 'text-muted'" :data-lyric-active="lineIndex === lyrics.activeIndex" :style="{ '--line-i': lineIndex }">
-                <p class="lyric-primary"><span v-for="(word, wordIndex) in line.words" :key="`${word.startTime}-${wordIndex}`" class="lyric-word" :style="{ '--word-progress': lineIndex === lyrics.activeIndex ? '0%' : '100%' }">{{ word.word }}</span></p>
+              <div v-for="(line, lineIndex) in lyrics.lines" :key="`${line.startTime}-${lineIndex}`" class="lyric-line" :class="{ 'is-active': activeSet.has(lineIndex), 'text-muted': !activeSet.has(lineIndex), 'is-bg': line.isBG, 'is-duet': line.isDuet }" :data-lyric-active="activeSet.has(lineIndex)" :data-lyric-primary="lineIndex === lyrics.activeIndex" :data-lyric-index="lineIndex" :style="{ '--line-i': lineIndex }">
+                <p class="lyric-primary"><span v-for="(word, wordIndex) in line.words" :key="`${word.startTime}-${wordIndex}`" class="lyric-word" :style="{ '--word-progress': activeSet.has(lineIndex) ? '0%' : '100%' }">{{ word.word }}</span></p>
                 <p v-if="lyrics.classic.translate && line.translatedLyric" class="lyric-translation">{{ line.translatedLyric }}</p>
+                <p v-if="line.romanLyric" class="lyric-roman">{{ line.romanLyric }}</p>
               </div>
             </template>
           </div>
@@ -306,6 +327,46 @@ watch(
   font-size: var(--translation-size, 18px);
   line-height: 1.5;
   color: var(--dim);
+}
+
+.lyric-roman {
+  margin-top: 0.2rem;
+  font-size: calc(var(--translation-size, 18px) * 0.9);
+  line-height: 1.45;
+  color: var(--dim);
+  opacity: 0.85;
+}
+
+/* Duet counter-lines (the second voice) hug the right edge, like AMLL. */
+.lyric-line.is-duet {
+  text-align: right;
+}
+
+/* Background vocals read as a smaller, dimmer sub-line under the main one. */
+.lyric-line.is-bg {
+  --word-sung: var(--dim);
+  --word-rest: var(--dim);
+  margin-bottom: calc(var(--line-spacing, 16px) * 0.5);
+  opacity: 0.6;
+}
+
+.lyric-line.is-bg .lyric-primary {
+  font-size: calc(var(--line-size, 24px) * 0.68);
+  font-weight: calc(var(--line-weight, 600) - 100);
+}
+
+.lyric-line.is-bg .lyric-translation {
+  font-size: calc(var(--translation-size, 18px) * 0.85);
+}
+
+.lyric-line.is-bg.is-active {
+  --word-sung: var(--accent);
+  --word-rest: var(--muted);
+  opacity: 0.85;
+}
+
+.lyric-line.is-bg.is-active .lyric-primary {
+  font-weight: calc(var(--line-weight-active, 800) - 200);
 }
 
 @media (min-width: 640px) {

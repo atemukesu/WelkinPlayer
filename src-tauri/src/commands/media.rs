@@ -27,7 +27,7 @@ const LIBRARY_HASH_FILE: &str = "library.hash";
 /// `Range` before falling back to downloading the complete file.
 const HEAD_RANGES: [u64; 2] = [1_572_864, 6_291_456]; // 1.5 / 6 MiB
 
-fn lyric_path(track_path: &str) -> Result<String, AppError> {
+pub(crate) fn lyric_path(track_path: &str) -> Result<String, AppError> {
     let slash = track_path
         .rfind('/')
         .ok_or_else(|| AppError::invalid_argument("path", "must contain an audio file name"))?;
@@ -75,7 +75,7 @@ pub(crate) fn allow_cache_dir(app: &AppHandle) {
 }
 
 /// Stable, path-derived cache id (16 hex chars).
-fn cover_hash(path: &str) -> String {
+pub(crate) fn cover_hash(path: &str) -> String {
     use std::hash::{Hash, Hasher};
 
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -122,7 +122,7 @@ fn read_lyric(dir: &Path, hash: &str) -> Option<String> {
     std::fs::read_to_string(lyric_file(dir, hash)).ok()
 }
 
-fn write_lyric(dir: &Path, hash: &str, content: &str) -> Result<(), AppError> {
+pub(crate) fn write_lyric(dir: &Path, hash: &str, content: &str) -> Result<(), AppError> {
     let file = lyric_file(dir, hash);
     if let Some(parent) = file.parent() {
         std::fs::create_dir_all(parent)?;

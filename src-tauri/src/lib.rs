@@ -32,6 +32,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::ping,
             commands::echo,
+            commands::log_message,
             commands::fonts::list_system_fonts,
             commands::webdav::load_webdav_password,
             commands::webdav::save_webdav_password,
@@ -52,6 +53,8 @@ pub fn run() {
             commands::media::download_track_metadata,
             commands::media::read_track_lyrics,
             commands::media::get_cached_lyrics,
+            commands::lyrics::lyric_http_get,
+            commands::lyrics::save_track_lyrics,
             commands::media::get_cached_metadata,
             commands::media::get_cover,
             commands::media::get_cached_cover,
