@@ -7,8 +7,8 @@ import {
   DEFAULT_CLASSIC_DISPLAY,
   LYRIC_PROVIDERS,
   normalizeLyricProviders,
-} from "../lib/profile";
-import type { LyricDisplaySettings, LyricProvider } from "../lib/profile";
+} from "../lib/preferences";
+import type { LyricDisplaySettings, LyricProvider } from "../lib/preferences";
 import { readLyricSource, tagLyric } from "../lib/lyricTag";
 import {
   LyricResolver,

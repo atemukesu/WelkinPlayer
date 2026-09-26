@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useI18n } from "vue-i18n";
 import FontFamilyList from "./FontFamilyList.vue";
-import type { LyricDisplaySettings } from "../lib/profile";
+import type { LyricDisplaySettings } from "../lib/preferences";
 
 const model = defineModel<LyricDisplaySettings>({ required: true });
 const props = defineProps<{ availableFonts: string[]; showSpacing?: boolean; showRuby?: boolean }>();

@@ -1,3 +1,5 @@
+#[cfg(target_os = "android")]
+mod android;
 mod commands;
 mod dav;
 mod error;
@@ -12,9 +14,18 @@ pub fn run() {
     logging::init();
 
     // Android has no keyring backend; this installs the Keystore-backed one.
+    // android-keyring reads the ndk-context global, which tao no longer sets,
+    // so publish the JNI context first and skip the backend if that fails.
     #[cfg(target_os = "android")]
-    if let Err(error) = android_keyring::set_android_keyring_credential_builder() {
-        log::error!("failed to initialize android-keyring credential store: {error}");
+    match android::initialize() {
+        Ok(()) => {
+            if let Err(error) = android_keyring::set_android_keyring_credential_builder() {
+                log::error!("failed to initialize android-keyring credential store: {error}");
+            }
+        }
+        Err(error) => {
+            log::error!("Android JNI context unavailable; system keychain disabled: {error}");
+        }
     }
 
     tauri::Builder::default()

@@ -2,7 +2,7 @@
 import { ref } from "vue";
 import { ChevronDown, ChevronUp, GripVertical } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
-import type { LyricProvider } from "../lib/profile";
+import type { LyricProvider } from "../lib/preferences";
 
 const props = defineProps<{ modelValue: LyricProvider[]; disabled?: boolean }>();
 const emit = defineEmits<{ "update:modelValue": [value: LyricProvider[]] }>();

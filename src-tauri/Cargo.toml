@@ -58,9 +58,13 @@ keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
 
 # Android has no keyring backend of its own. `android-keyring` installs a
 # Keystore-backed credential builder over the plain `keyring` crate.
+# `jni`/`ndk-context` are used to publish the Android context that
+# android-keyring (via ndk-context) expects, which tao 0.35 no longer does.
 [target.'cfg(target_os = "android")'.dependencies]
 keyring = "3"
 android-keyring = "0.2"
+jni = "0.21"
+ndk-context = "0.1"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

@@ -7,5 +7,5 @@ export type { LyricProvider, LyricsStatus, LyricLine } from "./lyrics";
 export { useSyncStore } from "./sync";
 export type { SyncStatus } from "./sync";
 export { useProfileStore, tracksForPaths } from "./profile";
-export type { ProfileSource } from "./profile";
+export type { ProfileSource, RemoteProbe } from "./profile";
 export type { Profile, Playlist } from "../lib/profile";

@@ -5,7 +5,6 @@ import { describeError, invoke } from "./api";
 import { initAudio, seekTo } from "./lib/audio";
 import { accents } from "./lib/app";
 import type { Accent, Theme, View } from "./lib/app";
-import type { LyricDisplaySettings } from "./lib/profile";
 import { useLibrary } from "./composables/useLibrary";
 import { pushToast } from "./lib/toast";
 import { usePlayerStore } from "./stores/player";
@@ -59,7 +58,6 @@ const amllActive = computed(() => view.value === "player" && !!player.currentTra
 /** Stays true until AmllPlayerView finishes its slide-out, then it unmounts. */
 const amllMounted = ref(false);
 watch(amllActive, (active) => { if (active) amllMounted.value = true; }, { immediate: true });
-let applyingProfile = false;
 let restoringPlayback = false;
 let lastPositionSavedAt = 0;
 /** Local-only safety-net cadence (ms) for periodic progress writes while playing. */
@@ -69,25 +67,7 @@ watch(view, (next) => { if (next !== "player" && next !== "track-info") baseView
 watchEffect(() => { document.documentElement.classList.toggle("dark", theme.value === "dark"); document.documentElement.dataset.accent = accent.value; localStorage.setItem("welkin-theme", theme.value); localStorage.setItem("welkin-accent", accent.value); });
 watchEffect(() => { document.documentElement.lang = locale.value; localStorage.setItem("welkin-locale", locale.value); });
 
-watch([theme, accent], () => { if (booted.value && !applyingProfile) profile.setAppearance({ theme: theme.value, accent: accent.value }); });
-watch(locale, (value) => { if (booted.value && !applyingProfile) profile.setAppearance({ locale: value as "zh-CN" | "en" }); });
-watch(
-  () => [lyrics.enabled, lyrics.providers, lyrics.useAmll, lyrics.classic, lyrics.amll],
-  () => {
-    if (booted.value && !applyingProfile) {
-      profile.setLyrics({
-        enabled: lyrics.enabled,
-        providers: [...lyrics.providers],
-        useAmll: lyrics.useAmll,
-        classic: cloneDisplay(lyrics.classic),
-        amll: cloneDisplay(lyrics.amll),
-      });
-    }
-  },
-  { deep: true },
-);
 watch(() => player.currentTrack?.path, (path) => { if (booted.value && path && player.isPlaying) profile.recordPlay(path); });
-watch(() => profile.revision, () => { if (booted.value) applyProfile(); });
 
 // Resume the last track/position once the profile, playback state and library are ready.
 watch([() => playback.ready, () => player.tracks.length], () => {
@@ -156,33 +136,18 @@ function toggleQueue() {
 function openQueue() { showQueue.value = true; }
 function closeQueue() { showQueue.value = false; }
 
-function applyProfile() {
-  applyingProfile = true;
-  theme.value = profile.profile.appearance.theme;
-  accent.value = profile.profile.appearance.accent;
-  locale.value = profile.profile.appearance.locale;
-  lyrics.enabled = profile.profile.lyrics.enabled;
-  lyrics.providers = [...profile.profile.lyrics.providers];
-  lyrics.classic = cloneDisplay(profile.profile.lyrics.classic);
-  lyrics.amll = cloneDisplay(profile.profile.lyrics.amll);
-  lyrics.useAmll = profile.profile.lyrics.useAmll;
-  void nextTick(() => { applyingProfile = false; });
-}
-
-/** Deep-copy display settings so the profile never shares reactive refs. */
-function cloneDisplay(value: LyricDisplaySettings): LyricDisplaySettings {
-  return { ...value, fontFamilies: [...value.fontFamilies] };
-}
-
 async function bootstrap() {
   await webdav.hydrate();
-  const firstRun = await profile.hydrate({ theme: theme.value, accent: accent.value, locale: locale.value as "zh-CN" | "en" });
-  applyProfile();
+  const firstRun = await profile.hydrate();
   const seeded = await playback.hydrate({ path: profile.profile.lastTrack, position: profile.profile.lastPosition });
   if (seeded) profile.clearLegacyPlayback();
   booted.value = true;
   void loadCachedLibrary();
-  if (!firstRun && webdav.hasStoredPassword) void loadRemoteLibrary({ silent: true });
+  if (!firstRun) {
+    // The wizard owns the first remote fetch; returning users refresh silently.
+    void profile.syncRemote();
+    if (webdav.hasStoredPassword) void loadRemoteLibrary({ silent: true });
+  }
 }
 
 function onWizardFinish() {

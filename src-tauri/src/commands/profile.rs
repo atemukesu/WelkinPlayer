@@ -1,10 +1,12 @@
 //! Cross-device profile storage.
 //!
-//! The whole user profile (nickname, appearance, play counts, favorites and
-//! playlists) lives in a single JSON document so reading it costs exactly one
-//! `GET` instead of a request per concern. WebDAV is the authoritative copy;
-//! a local copy (`profile.json`) is kept as a fallback for offline use and for
-//! installs without a configured server.
+//! The whole user profile (nickname, play counts, favorites and playlists)
+//! lives in a single JSON document so reading it costs exactly one `GET`
+//! instead of a request per concern. Client-specific preferences (theme,
+//! accent, locale, lyric typography, …) are intentionally not part of this
+//! document. WebDAV is the authoritative copy; a local copy (`profile.json`)
+//! is kept as a fallback for offline use and for installs without a
+//! configured server.
 
 use serde::Serialize;
 use tauri::AppHandle;

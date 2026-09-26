@@ -3,7 +3,7 @@ import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 import { useLyricsStore } from "../stores/lyrics";
 import { useSystemFonts } from "../lib/fonts";
-import type { LyricProvider } from "../lib/profile";
+import type { LyricProvider } from "../lib/preferences";
 import LyricProviderOrder from "./LyricProviderOrder.vue";
 import LyricDisplayControls from "./LyricDisplayControls.vue";
 

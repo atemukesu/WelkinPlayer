@@ -13,6 +13,9 @@ import type { Track } from "./player";
 /** Where the loaded profile came from. */
 export type ProfileSource = "remote" | "local" | "none";
 
+/** Outcome of probing the server for an existing profile document. */
+export type RemoteProbe = "found" | "missing" | "error";
+
 interface LoadedProfile {
   content: string | null;
   source: ProfileSource;
@@ -72,13 +75,14 @@ export const useProfileStore = defineStore("profile", () => {
   }
 
   /**
-   * Load the local cache immediately (no network), then fetch the
-   * authoritative remote copy in the background. Returns `true` when the
-   * first-run wizard should show.
+   * Load the local cache immediately (no network). Returns `true` when the
+   * first-run wizard should show. The authoritative remote copy is fetched
+   * separately: [`syncRemote`] for returning users, or [`fetchRemote`] from the
+   * wizard once server credentials are known.
    */
-  async function hydrate(seed?: Partial<Profile["appearance"] & Profile["lyrics"]>): Promise<boolean> {
+  async function hydrate(): Promise<boolean> {
     if (ready.value) return firstRun.value;
-    const fallback = createDefaultProfile(seed);
+    const fallback = createDefaultProfile();
     try {
       const local = await invoke<LoadedProfile>("load_local_profile");
       hadLocalCopy = local.content !== null;
@@ -94,7 +98,6 @@ export const useProfileStore = defineStore("profile", () => {
       ready.value = true;
     }
     void resolveCovers();
-    void syncRemote();
     return firstRun.value;
   }
 
@@ -122,6 +125,33 @@ export const useProfileStore = defineStore("profile", () => {
       source.value = remote.source;
     } catch (error) {
       remoteError.value = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  /**
+   * Probe the server for an existing profile without any seeding side effects.
+   *
+   * Used by the first-run wizard *after* the user has saved WebDAV credentials:
+   * when an initialized document is found it is applied and the wizard skips
+   * the remaining configuration instead of overwriting the remote copy.
+   */
+  async function fetchRemote(): Promise<RemoteProbe> {
+    try {
+      const remote = await invoke<LoadedProfile>("load_remote_profile");
+      remoteError.value = remote.remoteError;
+      if (remote.source === "remote" && remote.content !== null) {
+        profile.value = parseProfile(remote.content, profile.value);
+        source.value = "remote";
+        revision.value += 1;
+        void resolveCovers();
+        void migrateLegacyCovers();
+        return profile.value.initialized ? "found" : "missing";
+      }
+      source.value = remote.source;
+      return remote.remoteError ? "error" : "missing";
+    } catch (error) {
+      remoteError.value = error instanceof Error ? error.message : String(error);
+      return "error";
     }
   }
 
@@ -159,23 +189,19 @@ export const useProfileStore = defineStore("profile", () => {
     scheduleSave();
   }
 
-  function setAppearance(patch: Partial<Profile["appearance"]>) {
-    profile.value.appearance = { ...profile.value.appearance, ...patch };
-    touch();
-    scheduleSave();
-  }
-
-  function setLyrics(patch: Partial<Profile["lyrics"]>) {
-    profile.value.lyrics = { ...profile.value.lyrics, ...patch };
-    touch();
-    scheduleSave();
-  }
-
   function completeSetup() {
     profile.value.initialized = true;
     firstRun.value = false;
     touch();
     return flush();
+  }
+
+  /**
+   * Close the wizard after an existing remote profile was loaded, without
+   * writing anything back: the remote document is already authoritative.
+   */
+  function finishExisting() {
+    firstRun.value = false;
   }
 
   function recordPlay(path: string | undefined) {
@@ -410,12 +436,12 @@ export const useProfileStore = defineStore("profile", () => {
     hasRemoteCopy,
     hydrate,
     syncRemote,
+    fetchRemote,
     flush,
     scheduleSave,
     setNickname,
-    setAppearance,
-    setLyrics,
     completeSetup,
+    finishExisting,
     recordPlay,
     clearLegacyPlayback,
     isFavorite,
