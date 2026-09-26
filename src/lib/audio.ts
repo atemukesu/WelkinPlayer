@@ -23,6 +23,28 @@ let initPromise: Promise<void> | null = null;
 let scope: EffectScope | null = null;
 /** Position (seconds) to apply once the current source reports its metadata. */
 let pendingSeek: number | null = null;
+/**
+ * Bumped whenever the media source changes. Async play/error results capture the
+ * generation they were issued for, so a failure from a source that has since
+ * been replaced can never pause the track the user just started.
+ */
+let sourceGeneration = 0;
+/** Source generation whose failure was already surfaced (toast once per source). */
+let reportedGeneration = -1;
+/** No `timeupdate` for this long while the store wants to play means a stall. */
+const STALL_TIMEOUT_MS = 4000;
+/** Minimum gap between automatic stall-recovery attempts. */
+const RECOVERY_COOLDOWN_MS = 3000;
+/** Report a network error after this many consecutive failed recoveries. */
+const MAX_STALL_RECOVERIES = 6;
+/** Timestamp of the last observed playback progress, for stall detection. */
+let lastProgressAt = 0;
+/** Timestamp of the last stall-recovery attempt. */
+let lastRecoveryAt = 0;
+/** Consecutive recoveries without a healthy buffer; resets once playback is smooth. */
+let stallRecoveries = 0;
+/** Stall watchdog interval id. */
+let watchdogTimer = 0;
 
 function t(key: string): string {
   return i18n.global.t(key);
@@ -39,20 +61,40 @@ function describeMediaError(element: HTMLAudioElement | null): string {
   }
 }
 
-function fail(message: string) {
+/**
+ * Rejections that are part of normal playback control rather than real errors.
+ * A pending `play()` promise rejects with `AbortError` whenever a newer source is
+ * loaded or the element is paused, and the autoplay policy rejects with
+ * `NotAllowedError`. Both happen routinely while swapping tracks, so they must
+ * never surface as a "playback failed" toast or force playback to stop.
+ */
+function isBenignPlayRejection(error: DOMException | null | undefined): boolean {
+  return error?.name === "AbortError" || error?.name === "NotAllowedError";
+}
+
+/**
+ * React to a real playback failure. Failures from a superseded source are
+ * ignored entirely so they cannot clobber the current track; the media `error`
+ * event and the rejected `play()` promise describe the same failure, so the
+ * toast is only shown once per source.
+ */
+function fail(message: string, generation: number) {
+  if (generation !== sourceGeneration) return;
   const player = usePlayerStore();
   audio?.pause();
   player.setPlaying(false);
+  if (generation === reportedGeneration) return;
+  reportedGeneration = generation;
   pushToast("error", message);
 }
 
 function play() {
-  const result = audio?.play();
-  if (result) {
-    result.catch((error: DOMException) => {
-      fail(error?.name === "NotSupportedError" ? t("playback.unsupported") : t("playback.failed"));
-    });
-  }
+  if (!audio) return;
+  const generation = sourceGeneration;
+  audio.play().catch((error: DOMException) => {
+    if (isBenignPlayRejection(error)) return;
+    fail(error?.name === "NotSupportedError" ? t("playback.unsupported") : t("playback.failed"), generation);
+  });
 }
 
 function syncBuffered() {
@@ -84,12 +126,64 @@ function setSource(path: string) {
   const player = usePlayerStore();
   // A new source must never inherit a seek that was queued for the previous track.
   pendingSeek = null;
+  sourceGeneration += 1;
+  lastProgressAt = performance.now();
+  lastRecoveryAt = 0;
+  stallRecoveries = 0;
   audio.src = url;
   audio.load();
   player.setPosition(0);
   player.setDuration(0);
   player.setBufferedProgress(0);
   if (player.isPlaying) play();
+}
+
+/**
+ * Playback can stall exactly at the end of the buffered range when a media
+ * request fails: the element stops fetching but never fires `error`, so it waits
+ * forever. A new request is only issued when playback seeks outside the buffered
+ * range — which is why the manual workaround is to drag forward (a backward seek
+ * stays buffered and does nothing). Reload the resource at the current position
+ * to force a fresh range request without drifting forward.
+ */
+function recoverFromStall() {
+  if (!audio) return;
+  const now = performance.now();
+  if (now - lastRecoveryAt < RECOVERY_COOLDOWN_MS) return;
+  lastRecoveryAt = now;
+  // Give the fresh request a full timeout before judging it again.
+  lastProgressAt = now;
+
+  if (stallRecoveries >= MAX_STALL_RECOVERIES) {
+    fail(t("playback.network"), sourceGeneration);
+    return;
+  }
+  stallRecoveries += 1;
+
+  const player = usePlayerStore();
+  const resumeAt = audio.currentTime;
+  pendingSeek = resumeAt > 0 ? resumeAt : null;
+  audio.load();
+  if (player.isPlaying) play();
+}
+
+/** Watchdog: detect playback that stopped advancing at the buffered edge. */
+function checkStall() {
+  if (!audio) return;
+  const player = usePlayerStore();
+  if (!player.isPlaying || audio.paused || audio.ended || audio.seeking) return;
+  // A load that never produced metadata is handled by the error path instead.
+  if (audio.readyState < HTMLMediaElement.HAVE_METADATA) return;
+
+  const now = performance.now();
+  if (audio.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+    // Enough data is buffered to keep playing: playback is healthy again.
+    lastProgressAt = now;
+    stallRecoveries = 0;
+    return;
+  }
+  if (now - lastProgressAt < STALL_TIMEOUT_MS) return;
+  recoverFromStall();
 }
 
 /**
@@ -132,15 +226,24 @@ async function bootstrapAudio(): Promise<void> {
     }
   });
   audio.addEventListener("durationchange", () => { player.setDuration(audio?.duration ?? 0); syncBuffered(); });
-  audio.addEventListener("timeupdate", () => { player.setPosition(audio?.currentTime ?? 0); syncBuffered(); });
+  audio.addEventListener("timeupdate", () => { player.setPosition(audio?.currentTime ?? 0); syncBuffered(); lastProgressAt = performance.now(); });
   audio.addEventListener("progress", syncBuffered);
-  audio.addEventListener("play", () => player.setPlaying(true));
-  audio.addEventListener("pause", () => player.setPlaying(false));
-  audio.addEventListener("ended", () => player.next());
+  audio.addEventListener("play", () => { lastProgressAt = performance.now(); if (!player.isPlaying) player.setPlaying(true); });
+  audio.addEventListener("pause", () => { if (player.isPlaying) player.setPlaying(false); });
+  audio.addEventListener("ended", () => {
+    // A source that "ends" without ever reporting a duration is a broken/empty
+    // file. Auto-advancing would spin through the whole queue, so report it and
+    // stop instead.
+    if (!audio || !(audio.duration > 0)) {
+      fail(t("playback.failed"), sourceGeneration);
+      return;
+    }
+    player.next();
+  });
   audio.addEventListener("error", () => {
     // Ignore the error fired when the source is intentionally cleared.
     if (!player.currentTrack?.path) return;
-    fail(describeMediaError(audio));
+    fail(describeMediaError(audio), sourceGeneration);
   });
 
   scope = effectScope();
@@ -151,6 +254,9 @@ async function bootstrapAudio(): Promise<void> {
         if (!audio) return;
         if (!path) {
           pendingSeek = null;
+          sourceGeneration += 1;
+          lastRecoveryAt = 0;
+          stallRecoveries = 0;
           audio.removeAttribute("src");
           audio.load();
           return;
@@ -180,8 +286,13 @@ async function bootstrapAudio(): Promise<void> {
       () => player.isPlaying,
       (playing) => {
         if (!audio || !player.currentTrack?.path) return;
-        if (playing) play();
-        else audio.pause();
+        if (playing) {
+          // Don't stack redundant play() promises while one is already pending
+          // or the element is already running.
+          if (audio.paused) play();
+        } else {
+          audio.pause();
+        }
       },
     );
 
@@ -200,6 +311,9 @@ async function bootstrapAudio(): Promise<void> {
     );
   });
 
+  lastProgressAt = performance.now();
+  watchdogTimer = window.setInterval(checkStall, 1000);
+
   const initialPath = player.currentTrack?.path;
   if (initialPath) setSource(initialPath);
 }
@@ -214,8 +328,13 @@ function disposeAudio() {
     audio.load();
     audio = null;
   }
+  window.clearInterval(watchdogTimer);
+  watchdogTimer = 0;
   initPromise = null;
   pendingSeek = null;
+  lastProgressAt = 0;
+  lastRecoveryAt = 0;
+  stallRecoveries = 0;
 }
 
 if (import.meta.hot) import.meta.hot.dispose(disposeAudio);
