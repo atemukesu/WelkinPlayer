@@ -180,7 +180,7 @@ onMounted(() => {
             </label>
             <label class="grid gap-2 text-[13px] font-semibold text-dim">
               {{ t("settings.webdav.password") }}
-              <span class="flex items-stretch gap-2">
+              <span class="flex flex-wrap items-stretch gap-2">
                 <input v-model="webdav.password" :type="showPassword ? 'text' : 'password'" autocomplete="current-password" class="h-10 min-w-0 flex-1 border border-line bg-bg px-3 text-sm text-fg outline-none focus:border-accent" :placeholder="webdav.hasStoredPassword ? t('settings.webdav.passwordStored') : ''" @input="webdav.markPasswordTouched(); connectionOk = false; writeOk = false" />
                 <button v-if="webdav.hasStoredPassword" type="button" class="grid h-10 shrink-0 place-items-center border border-line px-3 text-[11px] text-dim hover:text-fg" @click="webdav.clearPassword()">{{ t("settings.webdav.passwordClear") }}</button>
                 <button type="button" class="grid h-10 w-10 place-items-center border border-line text-dim hover:text-fg" @click="showPassword = !showPassword">

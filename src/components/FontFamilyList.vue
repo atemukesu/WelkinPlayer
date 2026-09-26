@@ -49,11 +49,11 @@ function move(index: number, direction: -1 | 1) {
       @update:model-value="select"
     />
 
-    <ul v-if="modelValue.length" class="grid gap-1">
+    <ul v-if="modelValue.length" class="grid min-w-0 gap-1">
       <li
         v-for="(font, index) in modelValue"
         :key="`${font}-${index}`"
-        class="flex items-center gap-2 border border-line bg-bg px-2 py-1.5"
+        class="flex min-w-0 items-center gap-2 border border-line bg-bg px-2 py-1.5"
       >
         <span class="w-6 shrink-0 text-center font-mono text-[11px] text-dim">{{ index + 1 }}</span>
         <span class="min-w-0 flex-1 truncate text-[13px] font-normal normal-case tracking-normal text-fg" :style="{ fontFamily: cssFontFamily([font]) }">{{ font }}</span>
