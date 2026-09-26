@@ -207,34 +207,48 @@ function onLyricSeek(timeMs: number) {
     <div class="pointer-events-none absolute inset-x-0 top-0 h-40 bg-gradient-to-b from-black/40 to-transparent"></div>
     <div class="pointer-events-none absolute inset-x-0 bottom-0 h-56 bg-gradient-to-t from-black/60 to-transparent"></div>
 
-    <header class="pointer-events-none absolute inset-x-0 top-0 z-20 flex h-16 items-center gap-4 px-4 sm:px-6 md:hidden">
-      <div class="flex items-center gap-4 transition-all duration-300 ease-out" :class="revealClass">
-        <button
-          type="button"
-          class="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-white/10 text-white backdrop-blur transition hover:bg-white/20"
-          :aria-label="t('controls.return')"
-          @click="emit('navigate', returnView)"
+    <header class="pointer-events-none absolute inset-x-0 top-0 z-20 h-16 px-4 md:hidden">
+      <div class="flex h-full min-w-0 items-center gap-3">
+        <span
+          class="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-md text-sm font-black text-white/90"
+          :style="{ backgroundColor: player.currentTrack.color }"
         >
-          <ChevronDown :size="20" :stroke-width="2" />
-        </button>
-        <button
-          type="button"
-          class="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-white/10 text-white backdrop-blur transition hover:bg-white/20"
-          :title="fullscreenTitle"
-          :aria-label="fullscreenTitle"
-          :aria-pressed="isFullscreen"
-          @click="toggleFullscreen()"
-        >
-          <Minimize2 v-if="isFullscreen" :size="18" :stroke-width="2" />
-          <Maximize2 v-else :size="18" :stroke-width="2" />
-        </button>
+          <img v-if="player.currentTrack.cover" :src="player.currentTrack.cover" alt="" decoding="async" class="h-full w-full object-cover" />
+          <template v-else>{{ initial(player.currentTrack) }}</template>
+        </span>
+        <span class="grid min-w-0 gap-0.5">
+          <strong class="truncate text-sm font-semibold leading-tight">{{ player.currentTrack.title }}</strong>
+          <small class="truncate text-xs leading-tight text-white/70">{{ player.currentTrack.artist }}</small>
+        </span>
       </div>
-      <span class="flex-1"></span>
-      <span class="h-10 w-10 shrink-0"></span>
+      <div class="absolute right-4 top-1/2 -translate-y-1/2">
+        <div class="flex items-center gap-2 transition-all duration-300 ease-out" :class="revealClass">
+          <button
+            type="button"
+            class="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-white/10 text-white backdrop-blur transition hover:bg-white/20"
+            :aria-label="t('controls.return')"
+            @click="emit('navigate', returnView)"
+          >
+            <ChevronDown :size="20" :stroke-width="2" />
+          </button>
+          <button
+            type="button"
+            class="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-white/10 text-white backdrop-blur transition hover:bg-white/20"
+            :title="fullscreenTitle"
+            :aria-label="fullscreenTitle"
+            :aria-pressed="isFullscreen"
+            @click="toggleFullscreen()"
+          >
+            <Minimize2 v-if="isFullscreen" :size="18" :stroke-width="2" />
+            <Maximize2 v-else :size="18" :stroke-width="2" />
+          </button>
+        </div>
+      </div>
     </header>
 
-    <div class="relative z-10 grid h-full grid-cols-1 grid-rows-[minmax(0,1fr)_auto] gap-8 px-6 md:grid-cols-[minmax(240px,0.82fr)_minmax(0,1.18fr)] md:grid-rows-1 md:gap-14 md:px-14 lg:px-24">
-      <div class="order-2 flex min-h-0 flex-col items-center justify-center gap-6 pb-6 pt-4 md:order-none md:pb-16 md:pt-24">
+    <div class="relative z-10 flex h-full flex-col px-6 md:grid md:grid-cols-[minmax(240px,0.82fr)_minmax(0,1.18fr)] md:grid-rows-1 md:gap-14 md:px-14 lg:px-24">
+      <div class="amll-controls order-2 shrink-0 md:order-none md:min-h-0" :data-collapsed="controlsVisible ? 'false' : 'true'">
+        <div class="flex flex-col items-center justify-center gap-6 px-6 pb-6 pt-4 md:h-full md:gap-6 md:px-0 md:pb-16 md:pt-24">
         <div class="relative hidden w-full max-w-[420px] md:block">
           <div class="absolute -top-20 left-1/2 flex -translate-x-1/2 items-center gap-4 transition-all duration-300 ease-out" :class="revealClass">
             <button
@@ -319,13 +333,10 @@ function onLyricSeek(timeMs: number) {
             </button>
           </div>
         </div>
+        </div>
       </div>
 
-      <div class="order-1 flex min-h-0 flex-col justify-center pt-24 md:order-none md:pt-0">
-        <div class="mb-4 text-center md:hidden">
-          <h1 class="truncate text-xl font-bold">{{ player.currentTrack.title }}</h1>
-          <p class="truncate text-sm text-white/70">{{ player.currentTrack.artist }}</p>
-        </div>
+      <div class="order-1 flex min-h-0 flex-1 flex-col justify-center pt-16 md:order-none md:pt-0">
         <p v-if="lyrics.status === 'loading'" class="text-center text-white/70">{{ t("lyrics.loading") }}</p>
         <div v-else-if="lyrics.hasLyrics" class="relative min-h-0 flex-1">
           <AmllLyrics
@@ -358,6 +369,39 @@ function onLyricSeek(timeMs: number) {
 .amll-page.is-open {
   transform: translateY(0);
 }
+
+/*
+ * Mobile: the transport controls own a region below the lyrics. When they
+ * auto-hide the region collapses to zero height, so the lyrics reclaim the
+ * space instead of leaving a blank strip. A grid-row `0fr` collapse does NOT
+ * work here because the container's height is auto inside a flex column, so
+ * animate `max-height` instead.
+ */
+.amll-controls {
+  max-height: 180px;
+  overflow: hidden;
+  transition: max-height 320ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 220ms ease;
+}
+
+.amll-controls[data-collapsed="true"] {
+  max-height: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+@media (min-width: 768px) {
+  .amll-controls {
+    max-height: none;
+    overflow: visible;
+    opacity: 1;
+  }
+
+  .amll-controls[data-collapsed="true"] {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
 
 .amll-page :deep(.ak-slider) {
   height: 6px;

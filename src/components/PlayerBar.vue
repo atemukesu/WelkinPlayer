@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import {
+  ChevronUp,
   ListMusic,
   Pause,
   Play,
@@ -21,6 +22,8 @@ const emit = defineEmits<{ open: []; queue: [] }>();
 
 const { t } = useI18n();
 const player = usePlayerStore();
+/** Mobile control tray; desktop always renders the full set of controls. */
+const expanded = ref(false);
 
 const repeatTitle = computed(() => player.repeat === "one" ? t("controls.repeatOne") : player.repeat === "all" ? t("controls.repeatAll") : t("controls.repeatOff"));
 const shuffleTitle = computed(() => player.shuffle ? t("controls.shuffleOn") : t("controls.shuffleOff"));
@@ -128,7 +131,77 @@ function onSeek(event: Event) {
           <Pause v-if="player.isPlaying" :size="18" :stroke-width="2.2" />
           <Play v-else :size="18" :stroke-width="2.2" />
         </button>
+        <button
+          type="button"
+          class="grid h-10 w-10 place-items-center text-muted transition-colors hover:text-fg md:hidden"
+          :title="t(expanded ? 'controls.collapse' : 'controls.expand')"
+          :aria-label="t(expanded ? 'controls.collapse' : 'controls.expand')"
+          :aria-expanded="expanded"
+          @click="expanded = !expanded"
+        >
+          <ChevronUp :size="18" :stroke-width="2" class="transition-transform duration-300" :class="expanded ? 'rotate-180' : ''" />
+        </button>
       </div>
     </div>
+
+    <Transition name="tray">
+      <div v-if="expanded" class="player-tray md:hidden">
+      <div class="overflow-hidden">
+      <div class="grid gap-3 border-t border-line px-4 py-3">
+      <div class="flex items-center justify-between">
+        <button class="grid h-10 w-10 place-items-center" :class="player.shuffle ? 'text-accent' : 'text-muted'" :title="shuffleTitle" :aria-label="shuffleTitle" @click="player.toggleShuffle()">
+          <Shuffle :size="17" :stroke-width="1.8" />
+        </button>
+        <button class="grid h-10 w-10 place-items-center text-fg transition-colors hover:text-accent" :title="t('controls.previous')" :aria-label="t('controls.previous')" @click="player.previous()">
+          <SkipBack :size="20" :stroke-width="2" />
+        </button>
+        <button class="grid h-10 w-10 place-items-center text-fg transition-colors hover:text-accent" :title="t('controls.next')" :aria-label="t('controls.next')" @click="player.next()">
+          <SkipForward :size="20" :stroke-width="2" />
+        </button>
+        <button class="grid h-10 w-10 place-items-center" :class="player.repeat !== 'off' ? 'text-accent' : 'text-muted'" :title="repeatTitle" :aria-label="repeatTitle" @click="player.cycleRepeat()">
+          <Repeat1 v-if="player.repeat === 'one'" :size="17" :stroke-width="1.8" />
+          <Repeat v-else :size="17" :stroke-width="1.8" />
+        </button>
+        <button class="grid h-10 w-10 place-items-center text-muted transition-colors hover:text-fg" :title="t('controls.queue')" :aria-label="t('controls.queue')" @click="emit('queue')">
+          <ListMusic :size="18" :stroke-width="1.8" />
+        </button>
+      </div>
+      <div class="flex items-center gap-3">
+        <span class="font-mono text-[12px] tabular-nums text-muted">{{ player.elapsedTime }} / {{ player.totalTime }}</span>
+        <div class="ml-auto flex items-center gap-2">
+          <button type="button" class="text-dim transition-colors hover:text-fg" :title="player.muted ? t('controls.unmute') : t('controls.mute')" :aria-label="player.muted ? t('controls.unmute') : t('controls.mute')" @click="player.toggleMute()">
+            <VolumeX v-if="player.muted" :size="17" :stroke-width="1.8" />
+            <Volume2 v-else :size="17" :stroke-width="1.8" />
+          </button>
+          <input v-model.number="player.volume" :style="{ '--fill': percent(player.volume) }" class="ak-slider w-28" type="range" min="0" max="100" aria-label="Volume" />
+        </div>
+      </div>
+      </div>
+      </div>
+      </div>
+    </Transition>
   </footer>
 </template>
+
+<style scoped>
+.player-tray {
+  display: grid;
+  grid-template-rows: 1fr;
+}
+
+.player-tray > * {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.tray-enter-active,
+.tray-leave-active {
+  transition: grid-template-rows 300ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 220ms ease;
+}
+
+.tray-enter-from,
+.tray-leave-to {
+  grid-template-rows: 0fr;
+  opacity: 0;
+}
+</style>
