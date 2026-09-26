@@ -43,7 +43,7 @@ function playAll() {
   const index = player.shuffle ? Math.floor(Math.random() * ranked.value.length) : 0;
   player.playInQueue(queue.value, ranked.value[index].track);
 }
-function openContextMenu(event: MouseEvent, track: Track) { const width = 224; const height = 240; contextTrack.value = track; contextPosition.value = { x: Math.min(event.clientX, window.innerWidth - width - 8), y: Math.min(event.clientY, window.innerHeight - height - 8) }; }
+function openContextMenu(event: MouseEvent, track: Track) { contextTrack.value = track; contextPosition.value = { x: event.clientX, y: event.clientY }; }
 </script>
 
 <template>

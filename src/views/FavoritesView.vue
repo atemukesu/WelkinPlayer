@@ -31,7 +31,7 @@ function playFirst() {
   const first = player.shuffle ? pool[Math.floor(Math.random() * pool.length)] : pool[0];
   player.playInQueue(tracks.value, first);
 }
-function openContextMenu(event: MouseEvent, track: Track) { const width = 224; const height = 240; contextTrack.value = track; contextPosition.value = { x: Math.min(event.clientX, window.innerWidth - width - 8), y: Math.min(event.clientY, window.innerHeight - height - 8) }; }
+function openContextMenu(event: MouseEvent, track: Track) { contextTrack.value = track; contextPosition.value = { x: event.clientX, y: event.clientY }; }
 function downloadMetadata(track: Track) { emit("downloadMetadata", track); }
 </script>
 

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ArrowDown, ArrowUp, ChevronRight, Download, Eye, EyeOff, FileText, Heart, HeartOff, Info, ListPlus, ListX, Pencil } from "@lucide/vue";
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import type { Track } from "../stores/player";
 import { usePlayerStore } from "../stores/player";
@@ -15,6 +15,36 @@ const player = usePlayerStore();
 const lyrics = useLyricsStore();
 const visible = ref(true);
 const showPlaylists = ref(false);
+const menuRef = ref<HTMLElement | null>(null);
+const position = ref({ x: props.x, y: props.y });
+
+// Keep the menu fully inside the viewport, measuring its real rendered size.
+function clampToViewport() {
+  const el = menuRef.value;
+  if (!el) {
+    position.value = { x: props.x, y: props.y };
+    return;
+  }
+  // Extra margin covers the offset shadow and rounded/angled corners.
+  const margin = 8;
+  const width = el.offsetWidth;
+  const height = el.offsetHeight;
+  let x = props.x;
+  let y = props.y;
+  if (x + width + margin > window.innerWidth) x = window.innerWidth - width - margin;
+  if (y + height + margin > window.innerHeight) y = window.innerHeight - height - margin;
+  if (x < margin) x = margin;
+  if (y < margin) y = margin;
+  position.value = { x, y };
+}
+
+function scheduleClamp() {
+  void nextTick(clampToViewport);
+}
+
+function onWindowResize() {
+  scheduleClamp();
+}
 
 const paths = computed(() => props.selectedPaths.length > 0 ? props.selectedPaths : (props.track.path ? [props.track.path] : []));
 const isSelection = computed(() => props.selectedPaths.length > 0);
@@ -64,12 +94,22 @@ function moveTrack(direction: "up" | "down") {
   profile.moveTrackInPlaylist(props.playlistId, props.track.path, direction);
   close();
 }
-onMounted(() => window.addEventListener("keydown", closeOnEscape));
-onBeforeUnmount(() => window.removeEventListener("keydown", closeOnEscape));
+watch(() => [props.x, props.y], scheduleClamp);
+watch(showPlaylists, scheduleClamp);
+watch(visible, (isVisible) => { if (isVisible) scheduleClamp(); });
+onMounted(() => {
+  window.addEventListener("keydown", closeOnEscape);
+  window.addEventListener("resize", onWindowResize);
+  scheduleClamp();
+});
+onBeforeUnmount(() => {
+  window.removeEventListener("keydown", closeOnEscape);
+  window.removeEventListener("resize", onWindowResize);
+});
 </script>
 
 <template>
-  <Teleport to="body"><Transition name="track-menu-backdrop"><div v-if="visible" class="fixed inset-0 z-[60]" @pointerdown="close"></div></Transition><Transition name="track-menu-close" @after-leave="emit('close')"><div v-if="visible" class="track-menu fixed z-[61] w-56" :style="{ left: `${x}px`, top: `${y}px` }" role="menu"><span class="track-menu__backdrop track-menu__backdrop--gray" aria-hidden="true"></span><span class="track-menu__backdrop track-menu__backdrop--white" aria-hidden="true"></span>        <div class="track-menu__content">
+  <Teleport to="body"><Transition name="track-menu-backdrop"><div v-if="visible" class="fixed inset-0 z-[60]" @pointerdown="close"></div></Transition><Transition name="track-menu-close" @after-leave="emit('close')"><div v-if="visible" class="track-menu fixed z-[61] w-56" ref="menuRef" :style="{ left: `${position.x}px`, top: `${position.y}px` }" role="menu"><span class="track-menu__backdrop track-menu__backdrop--gray" aria-hidden="true"></span><span class="track-menu__backdrop track-menu__backdrop--white" aria-hidden="true"></span>        <div class="track-menu__content">
           <div class="track-menu__header">
             <template v-if="isSelection"><p class="truncate text-xs font-semibold tracking-wide">{{ t("library.menu.selectedCount", { count: paths.length }) }}</p></template>
             <template v-else><p class="truncate text-xs font-semibold tracking-wide">{{ track.title }}</p><p class="truncate text-[11px] text-black/60">{{ track.artist }}</p></template>
@@ -95,7 +135,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", closeOnEscape));
 .track-menu__backdrop { position: absolute; inset: 0; pointer-events: none; clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 10px 100%, 0 calc(100% - 10px)); -webkit-mask-image: linear-gradient(#000, #000); mask-image: linear-gradient(#000, #000); -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; animation: ak-mask-h 320ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
 .track-menu__backdrop--gray { z-index: 0; background: #9ca3af; transform: translate(6px, 6px); animation-delay: 90ms; }
 .track-menu__backdrop--white { z-index: 1; background: #fff; }
-.track-menu__content { position: relative; z-index: 2; -webkit-mask-image: linear-gradient(#000, #000); mask-image: linear-gradient(#000, #000); -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; animation: ak-mask-h 320ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+.track-menu__content { position: relative; z-index: 2; max-height: calc(100vh - 16px); overflow-y: auto; -webkit-mask-image: linear-gradient(#000, #000); mask-image: linear-gradient(#000, #000); -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; animation: ak-mask-h 320ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
 .track-menu__header { border-bottom: 1px solid #d1d5db; padding: 0.5rem 0.75rem; color: #000; }
 .track-menu__item { display: flex; width: 100%; align-items: center; gap: 0.625rem; padding: 0.65rem 0.75rem; color: #000; font-size: 0.75rem; font-weight: 700; text-align: left; text-transform: uppercase; letter-spacing: 0.1em; transition: background-color 180ms cubic-bezier(0.2, 0.8, 0.2, 1); }
 .track-menu__item:hover:not(:disabled) { background: #d1d5db; color: #000; }

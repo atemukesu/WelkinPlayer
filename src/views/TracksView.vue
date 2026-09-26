@@ -42,7 +42,7 @@ function playFirst() {
   player.playInQueue(sourceTracks.value, first);
 }
 function remove(track: Track) { if (activePlaylist.value && track.path) profile.removeFromPlaylist(activePlaylist.value.id, track.path); }
-function openContextMenu(event: MouseEvent, track: Track) { const width = 224; const height = 240; contextTrack.value = track; contextPosition.value = { x: Math.min(event.clientX, window.innerWidth - width - 8), y: Math.min(event.clientY, window.innerHeight - height - 8) }; }
+function openContextMenu(event: MouseEvent, track: Track) { contextTrack.value = track; contextPosition.value = { x: event.clientX, y: event.clientY }; }
 function downloadMetadata(track: Track) { emit("downloadMetadata", track); }
 </script>
 
