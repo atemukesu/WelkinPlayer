@@ -35,6 +35,7 @@ pub fn run() {
             commands::fonts::list_system_fonts,
             commands::webdav::load_webdav_password,
             commands::webdav::save_webdav_password,
+            commands::webdav::webdav_url_risk,
             commands::webdav::test_webdav_connection,
             commands::webdav::list_webdav_audio,
             commands::profile::load_local_profile,

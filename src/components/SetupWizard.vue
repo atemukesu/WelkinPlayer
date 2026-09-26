@@ -56,12 +56,20 @@ async function verifyWebdav() {
   connectionOk.value = false;
   writeOk.value = false;
   try {
+    const risk = await webdav.checkUrlRisk().catch(() => null);
+    if (risk?.safety === "insecurePublic" && !webdav.allowInsecure) {
+      pushToast("error", t("settings.webdav.insecurePublicBlocked"));
+      return;
+    }
     const { warning } = await webdav.persist();
     if (webdav.error) {
       pushToast("error", t("settings.webdav.saveFailed", { value: webdav.error }));
       return;
     }
     if (warning) pushToast("warning", t("settings.webdav.keychainUnavailable"));
+    if (risk?.safety === "insecurePrivate" && !webdav.allowInsecure) {
+      pushToast("warning", t("settings.webdav.insecureWarning"));
+    }
     await invoke<string>("test_webdav_connection");
     connectionOk.value = true;
     pushToast("success", t("settings.webdav.testOk"));
@@ -175,7 +183,8 @@ async function finish() {
             <label class="grid gap-2 text-[13px] font-semibold text-dim">
               {{ t("settings.webdav.password") }}
               <span class="flex items-stretch gap-2">
-                <input v-model="webdav.password" :type="showPassword ? 'text' : 'password'" autocomplete="current-password" class="h-10 min-w-0 flex-1 border border-line bg-bg px-3 text-sm text-fg outline-none focus:border-accent" @input="connectionOk = false; writeOk = false" />
+                <input v-model="webdav.password" :type="showPassword ? 'text' : 'password'" autocomplete="current-password" class="h-10 min-w-0 flex-1 border border-line bg-bg px-3 text-sm text-fg outline-none focus:border-accent" :placeholder="webdav.hasStoredPassword ? t('settings.webdav.passwordStored') : ''" @input="webdav.markPasswordTouched(); connectionOk = false; writeOk = false" />
+                <button v-if="webdav.hasStoredPassword" type="button" class="grid h-10 shrink-0 place-items-center border border-line px-3 text-[11px] text-dim hover:text-fg" @click="webdav.clearPassword()">{{ t("settings.webdav.passwordClear") }}</button>
                 <button type="button" class="grid h-10 w-10 place-items-center border border-line text-dim hover:text-fg" @click="showPassword = !showPassword">
                   <EyeOff v-if="showPassword" :size="16" />
                   <Eye v-else :size="16" />
@@ -183,6 +192,7 @@ async function finish() {
               </span>
             </label>
           </div>
+          <label class="flex items-center gap-2 text-[12px] font-semibold text-dim"><input v-model="webdav.allowInsecure" type="checkbox" class="ak-check" />{{ t("settings.webdav.allowInsecure") }}</label>
           <div class="flex flex-wrap items-center gap-3">
             <button type="button" class="ak-clip-tr flex h-10 items-center gap-2 border border-line px-4 text-[13px] font-semibold disabled:opacity-50" :disabled="testing || writeTesting" @click="verifyWebdav">
               <LoaderCircle v-if="testing || writeTesting" :size="15" class="animate-spin" />

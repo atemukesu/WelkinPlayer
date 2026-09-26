@@ -331,6 +331,47 @@ html[data-accent="blue"] {
     opacity: 1;
   }
 
+  .ak-check {
+    appearance: none;
+    -webkit-appearance: none;
+    position: relative;
+    width: 16px;
+    height: 16px;
+    flex: none;
+    border: 1px solid var(--fg);
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .ak-check::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: var(--accent);
+    clip-path: polygon(13% 46%, 0 64%, 40% 100%, 100% 16%, 84% 0, 38% 64%);
+    transform: scale(0.4);
+    opacity: 0;
+    transition: transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 140ms;
+  }
+
+  .ak-check:hover {
+    border-color: var(--accent);
+  }
+
+  .ak-check:checked {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+
+  .ak-check:checked::after {
+    transform: scale(1);
+    opacity: 1;
+  }
+
+  .ak-check:focus-visible {
+    box-shadow: 0 0 0 2px var(--accent-soft);
+  }
+
   .ak-switch {
     appearance: none;
     -webkit-appearance: none;

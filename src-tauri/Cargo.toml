@@ -39,6 +39,8 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 base64 = "0.22"
 # Content-addressed naming for standalone playlist cover files.
 sha2 = "0.10"
+# Cryptographically secure random bytes for the loopback streaming proxy token.
+getrandom = "0.2"
 # Enumerate installed font families for the lyrics font picker (loads the
 # platform font directories and parses each font's name table).
 fontdb = "0.24.0"

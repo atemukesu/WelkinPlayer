@@ -18,6 +18,7 @@ use tauri::AppHandle;
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
 use crate::commands::webdav::require_credentials;
+use crate::dav::resolve_under_base;
 
 /// Shared state handed to the frontend via the `stream_endpoint` command.
 pub struct StreamProxy {
@@ -139,10 +140,7 @@ fn handle(request: Request, app: &AppHandle, token: &str, client: &Client) {
         return;
     }
 
-    let mut headers = vec![
-        Header::from_bytes("Accept-Ranges", "bytes").unwrap(),
-        Header::from_bytes("Access-Control-Allow-Origin", "*").unwrap(),
-    ];
+    let mut headers = vec![Header::from_bytes("Accept-Ranges", "bytes").unwrap()];
     for (name, value) in upstream.headers() {
         let name = name.as_str();
         if name == "content-type" || name == "content-range" {
@@ -172,8 +170,8 @@ fn build_url(base: &str, remote_path: &str) -> Result<reqwest::Url, String> {
         normalized.push('/');
     }
     let base = reqwest::Url::parse(&normalized).map_err(|error| error.to_string())?;
-    base.join(remote_path.trim())
-        .map_err(|error| error.to_string())
+    // Same-origin guard: never forward Basic Auth to another host.
+    resolve_under_base(&base, remote_path).map_err(|error| error.to_string())
 }
 
 fn parse_query(url: &str) -> Vec<(String, String)> {
@@ -194,22 +192,27 @@ fn parse_query(url: &str) -> Vec<(String, String)> {
 }
 
 fn generate_token() -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
-    let mix = nanos ^ ((std::process::id() as u128) << 48) ^ ((&nanos as *const u128) as u128);
-    format!("{mix:032x}")
+    let mut bytes = [0u8; 32];
+    match getrandom::getrandom(&mut bytes) {
+        Ok(()) => bytes.iter().map(|byte| format!("{byte:02x}")).collect(),
+        Err(error) => {
+            // Should be unreachable; log loudly and fall back to a clock/pid mix
+            // rather than running with a predictable token.
+            log::error!("CSPRNG unavailable for proxy token: {error}");
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0);
+            let mix = nanos ^ ((std::process::id() as u128) << 48);
+            format!("{mix:032x}")
+        }
+    }
 }
 
 fn empty(status: u16) -> Response<Cursor<Vec<u8>>> {
     Response::new(
         StatusCode(status),
-        vec![
-            Header::from_bytes("Access-Control-Allow-Origin", "*").unwrap(),
-            Header::from_bytes("Access-Control-Allow-Headers", "Range").unwrap(),
-            Header::from_bytes("Access-Control-Allow-Methods", "GET, OPTIONS").unwrap(),
-        ],
+        vec![Header::from_bytes("Allow", "GET, OPTIONS").unwrap()],
         Cursor::new(Vec::new()),
         Some(0),
         None,
@@ -219,10 +222,7 @@ fn empty(status: u16) -> Response<Cursor<Vec<u8>>> {
 fn text(status: u16, message: &str) -> Response<Cursor<Vec<u8>>> {
     Response::new(
         StatusCode(status),
-        vec![
-            Header::from_bytes("Content-Type", "text/plain; charset=utf-8").unwrap(),
-            Header::from_bytes("Access-Control-Allow-Origin", "*").unwrap(),
-        ],
+        vec![Header::from_bytes("Content-Type", "text/plain; charset=utf-8").unwrap()],
         Cursor::new(message.as_bytes().to_vec()),
         Some(message.len()),
         None,

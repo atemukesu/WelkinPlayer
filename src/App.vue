@@ -185,24 +185,34 @@ async function bootstrap() {
   if (seeded) profile.clearLegacyPlayback();
   booted.value = true;
   void loadCachedLibrary();
-  if (!firstRun && webdav.password) void loadRemoteLibrary({ silent: true });
+  if (!firstRun && webdav.hasStoredPassword) void loadRemoteLibrary({ silent: true });
 }
 
 function onWizardFinish() {
-  if (webdav.password) void loadRemoteLibrary();
+  if (webdav.hasStoredPassword) void loadRemoteLibrary();
   else void loadCachedLibrary();
 }
 
 async function saveSettings() {
   if (webdav.saving) return;
   profile.setNickname(profile.nickname);
+
+  const risk = await webdav.checkUrlRisk().catch(() => null);
+  if (risk?.safety === "insecurePublic" && !webdav.allowInsecure) {
+    pushToast("error", t("settings.webdav.insecurePublicBlocked"));
+    return;
+  }
+
   const { warning } = await webdav.persist();
   if (webdav.error) { pushToast("error", t("settings.webdav.saveFailed", { value: webdav.error })); return; }
   if (warning) { pushToast("warning", t("settings.webdav.keychainUnavailable")); return; }
+  if (risk?.safety === "insecurePrivate" && !webdav.allowInsecure) {
+    pushToast("warning", t("settings.webdav.insecureWarning"));
+  }
   await profile.flush();
   pushToast("success", t("settings.saved")); await loadRemoteLibrary();
 }
-async function testConnection() { testing.value = true; try { await invoke<string>("test_webdav_connection"); pushToast("success", t("settings.webdav.testOk")); await loadRemoteLibrary(); } catch (error) { pushToast("error", friendlyError(error)); } finally { testing.value = false; } }
+async function testConnection() { testing.value = true; try { const risk = await webdav.checkUrlRisk().catch(() => null); if (risk?.safety === "insecurePrivate" && !webdav.allowInsecure) pushToast("warning", t("settings.webdav.insecureWarning")); await invoke<string>("test_webdav_connection"); pushToast("success", t("settings.webdav.testOk")); await loadRemoteLibrary(); } catch (error) { pushToast("error", friendlyError(error)); } finally { testing.value = false; } }
 function showError(error: unknown) { pushToast("error", friendlyError(error)); }
 async function downloadMetadata(track: Track) {
   downloadingTrackId.value = track.id;

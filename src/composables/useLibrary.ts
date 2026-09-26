@@ -11,6 +11,7 @@ const ERROR_KEYS: Record<string, string> = {
   UNAUTHORIZED: "errors.unauthorized", FORBIDDEN: "errors.forbidden", NOT_FOUND: "errors.notFound",
   TIMEOUT: "errors.timeout", DNS: "errors.dns", TLS: "errors.tls", CONNECTION: "errors.connection",
   HTTP: "errors.http", XML: "errors.xml", MISSING_CREDENTIALS: "errors.missingCredentials",
+  INSECURE_URL: "errors.insecureUrl",
   STORE: "errors.store", INVALID_ARGUMENT: "errors.invalidArgument",
 };
 

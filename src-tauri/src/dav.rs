@@ -105,16 +105,7 @@ impl WebDavClient {
     }
 
     fn resolve(&self, path: &str) -> Result<Url, AppError> {
-        let trimmed = path.trim();
-        if trimmed.is_empty() {
-            return Ok(self.base.clone());
-        }
-        // `Url::join` handles both cases correctly: an absolute path (leading
-        // `/`, as WebDAV hrefs are) keeps the host and replaces the path, while
-        // a relative path (a decoded directory name) resolves against the base.
-        self.base
-            .join(trimmed)
-            .map_err(|error| AppError::invalid_argument("path", format!("无效的路径：{error}")))
+        resolve_under_base(&self.base, path)
     }
 
     fn request(&self, method: Method, url: Url) -> reqwest::RequestBuilder {
@@ -231,22 +222,47 @@ impl WebDavClient {
     /// Parse a PROPFIND multistatus body into normalized entries.
     pub fn parse_multistatus(&self, xml: &str) -> Result<Vec<RemoteEntry>, AppError> {
         let raw = parse_raw(xml)?;
-        Ok(raw
-            .into_iter()
-            .map(|entry| {
-                let mut normalized = RemoteEntry::from_raw(entry);
-                normalized.local_path = self.local_path_for(&normalized.path);
-                if normalized.name.trim().is_empty() {
-                    normalized.name = normalized
-                        .local_path
-                        .rsplit('/')
-                        .next()
-                        .unwrap_or_default()
-                        .to_string();
+        let mut entries = Vec::with_capacity(raw.len());
+
+        for entry in raw {
+            let mut normalized = RemoteEntry::from_raw(entry);
+            // Never trust the server's `href`: keep only a same-origin path so a
+            // hostile listing can't make us send credentials to another host.
+            match self.normalize_href(&normalized.path) {
+                Some(path) => normalized.path = path,
+                None => {
+                    log::warn!(
+                        "ignoring WebDAV entry outside the configured server: {}",
+                        normalized.path
+                    );
+                    continue;
                 }
-                normalized
-            })
-            .collect())
+            }
+            normalized.local_path = self.local_path_for(&normalized.path);
+            if normalized.name.trim().is_empty() {
+                normalized.name = normalized
+                    .local_path
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or_default()
+                    .to_string();
+            }
+            entries.push(normalized);
+        }
+
+        Ok(entries)
+    }
+
+    /// Reduce a server-provided `href` to a same-origin path + query. Returns
+    /// `None` when it points outside the configured server or collection root.
+    fn normalize_href(&self, href: &str) -> Option<String> {
+        let resolved = resolve_under_base(&self.base, href).ok()?;
+        let mut safe = resolved.path().to_string();
+        if let Some(query) = resolved.query() {
+            safe.push('?');
+            safe.push_str(query);
+        }
+        Some(safe)
     }
 
     /// Recursively list audio files under `root` (one PROPFIND per directory).
@@ -326,6 +342,35 @@ impl WebDavClient {
 
 fn dav_method(name: &[u8]) -> Method {
     Method::from_bytes(name).expect("well-known WebDAV method token")
+}
+
+/// Resolve `path` against `base`, refusing to leave the configured origin or
+/// escape the collection root.
+///
+/// This is the guard that keeps Basic Auth from being sent to another host: an
+/// absolute URL (`http://evil/…`), a protocol-relative path (`//evil/…`) or a
+/// `..` traversal all resolve to a different origin or a path outside `base`,
+/// and are rejected. The `path` ultimately comes from the remote server's
+/// `href` and the webview, so neither is trusted.
+pub(crate) fn resolve_under_base(base: &Url, path: &str) -> Result<Url, AppError> {
+    let resolved = base
+        .join(path.trim())
+        .map_err(|error| AppError::invalid_argument("path", format!("无效的路径：{error}")))?;
+
+    let same_origin = resolved.scheme() == base.scheme()
+        && resolved.host_str() == base.host_str()
+        && resolved.port_or_known_default() == base.port_or_known_default();
+    let inside_root = resolved.path().starts_with(base.path());
+    let no_credentials = resolved.username().is_empty() && resolved.password().is_none();
+
+    if !same_origin || !inside_root || !no_credentials {
+        return Err(AppError::invalid_argument(
+            "path",
+            "解析结果超出了已配置的服务器或音乐库目录",
+        ));
+    }
+
+    Ok(resolved)
 }
 
 fn classify_status(status: StatusCode, message: &str) -> AppError {
@@ -507,5 +552,38 @@ mod tests {
         let client = WebDavClient::new("https://host/webdav", "user", "pass").unwrap();
         let url = client.resolve("Artist Name").unwrap();
         assert_eq!(url.as_str(), "https://host/webdav/Artist%20Name");
+    }
+
+    #[test]
+    fn refuses_paths_that_leave_the_configured_origin() {
+        let client = WebDavClient::new("https://host/webdav", "user", "pass").unwrap();
+        for path in [
+            "http://evil.example/x",
+            "//evil.example/x",
+            "https://evil.example/x",
+        ] {
+            assert!(client.resolve(path).is_err(), "{path} should be rejected");
+        }
+    }
+
+    #[test]
+    fn refuses_paths_outside_the_collection_root() {
+        let client = WebDavClient::new("https://host/webdav", "user", "pass").unwrap();
+        assert!(client.resolve("../secret").is_err());
+        assert!(client.resolve("%2e%2e/%2e%2e/secret").is_err());
+    }
+
+    #[test]
+    fn drops_multistatus_entries_outside_the_server() {
+        let client = WebDavClient::new("https://host/webdav", "user", "pass").unwrap();
+        let xml = r#"<?xml version="1.0"?><D:multistatus xmlns:D="DAV:">
+          <D:response><D:href>http://evil.example/x.mp3</D:href><D:propstat><D:prop>
+            <D:displayname>x.mp3</D:displayname></D:prop></D:propstat></D:response>
+          <D:response><D:href>/webdav/ok.mp3</D:href><D:propstat><D:prop>
+            <D:displayname>ok.mp3</D:displayname></D:prop></D:propstat></D:response>
+        </D:multistatus>"#;
+        let entries = client.parse_multistatus(xml).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, "/webdav/ok.mp3");
     }
 }

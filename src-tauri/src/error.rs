@@ -76,6 +76,11 @@ pub enum AppError {
     #[error("缺少 WebDAV 凭据：{0}")]
     MissingCredentials(String),
 
+    /// A plaintext HTTP connection to a public server was refused because the
+    /// user has not explicitly allowed insecure connections.
+    #[error("已阻止不安全的连接：{0}")]
+    InsecureUrl(String),
+
     /// Reading or writing the local settings store failed.
     #[error("读取本地设置失败：{0}")]
     Store(String),
@@ -101,6 +106,7 @@ impl AppError {
             AppError::Http { .. } => "HTTP",
             AppError::Xml(_) => "XML",
             AppError::MissingCredentials(_) => "MISSING_CREDENTIALS",
+            AppError::InsecureUrl(_) => "INSECURE_URL",
             AppError::Store(_) => "STORE",
         }
     }
