@@ -21,6 +21,7 @@ import { usePlayerStore } from "../stores/player";
 import { useLyricsStore } from "../stores/lyrics";
 import { currentTime, seekPercent, seekTo } from "../lib/audio";
 import { initial, percent } from "../lib/format";
+import { useWakeLock } from "../composables/useWakeLock";
 import type { View } from "../lib/app";
 
 const props = defineProps<{ returnView: View; active: boolean }>();
@@ -28,6 +29,9 @@ const emit = defineEmits<{ navigate: [view: View]; closed: [] }>();
 const { t } = useI18n();
 const player = usePlayerStore();
 const lyrics = useLyricsStore();
+
+/** Keep the display on for as long as this full-screen player is open. */
+useWakeLock(() => props.active);
 
 const positionMs = ref(0);
 const showRemaining = ref(false);
@@ -194,7 +198,7 @@ function onLyricSeek(timeMs: number) {
 <template>
   <div
     v-if="player.currentTrack"
-    class="amll-page fixed inset-0 z-50 overflow-hidden text-white"
+    class="amll-page fixed inset-x-0 bottom-0 top-14 z-50 overflow-hidden text-white md:top-0"
     :class="{ 'is-open': visible }"
     @transitionend="onTransitionEnd"
     :style="{

@@ -8,6 +8,7 @@ import { useLyricsStore } from "../stores/lyrics";
 import { currentTime } from "../lib/audio";
 import { initial } from "../lib/format";
 import { cssFontFamily } from "../lib/fonts";
+import { useWakeLock } from "../composables/useWakeLock";
 import PlayerBar from "../components/PlayerBar.vue";
 import type { View } from "../lib/app";
 
@@ -16,6 +17,10 @@ const emit = defineEmits<{ navigate: [view: View]; queue: [] }>();
 const { t } = useI18n();
 const player = usePlayerStore();
 const lyrics = useLyricsStore();
+
+/** Keep the display on for as long as this full-screen player is open. */
+useWakeLock();
+
 const lyricsScroll = ref<HTMLElement | null>(null);
 const lyricsTrack = ref<HTMLElement | null>(null);
 const scrollOffset = ref(0);
