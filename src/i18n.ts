@@ -272,9 +272,9 @@ const messages = {
         wordByWord: "（逐字）",
         lineByLine: "（逐行）",
         provider: {
-          qq: { name: "从 QQ 音乐获取", short: "QQ 音乐", desc: "歌词质量较差，支持逐字" },
+          qq: { name: "从 QQ 音乐获取", short: "QQ 音乐", desc: "歌词效果不完整，支持逐字" },
           local: { name: "从本地同文件名文件获取", short: "本地文件", desc: "需要自行准备" },
-          netease: { name: "从网易云音乐获取", short: "网易云音乐", desc: "歌词质量较差，部分歌曲不支持逐字" },
+          netease: { name: "从网易云音乐获取", short: "网易云音乐", desc: "歌词效果不完整，部分歌曲不支持逐字" },
           amll: { name: "从 AMLL 歌词库获取", short: "AMLL 歌词库", desc: "歌词质量最好，支持逐字，歌词数量有限" },
         },
         size: "歌词字号",
@@ -797,9 +797,9 @@ const messages = {
         wordByWord: " (word-by-word)",
         lineByLine: " (line-by-line)",
         provider: {
-          qq: { name: "Fetch from QQ Music", short: "QQ Music", desc: "Lower quality lyrics, supports word-by-word" },
+          qq: { name: "Fetch from QQ Music", short: "QQ Music", desc: "Incomplete lyrics effect, supports word-by-word" },
           local: { name: "Fetch from a same-named local file", short: "Local file", desc: "You need to prepare it yourself" },
-          netease: { name: "Fetch from NetEase Cloud Music", short: "NetEase Cloud Music", desc: "Lower quality lyrics, word-by-word unsupported for some songs" },
+          netease: { name: "Fetch from NetEase Cloud Music", short: "NetEase Cloud Music", desc: "Incomplete lyrics effect, word-by-word unsupported for some songs" },
           amll: { name: "Fetch from the AMLL lyrics library", short: "AMLL lyrics library", desc: "Best quality lyrics, supports word-by-word, limited selection" },
         },
         size: "Lyric font size",
