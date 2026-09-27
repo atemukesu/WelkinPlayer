@@ -5,7 +5,7 @@ import type { Track } from "../stores/player";
 import { initial } from "../lib/format";
 
 withDefaults(defineProps<{ track: Track; active?: boolean; playing?: boolean; removable?: boolean; selectable?: boolean; selected?: boolean }>(), { removable: false, selectable: false, selected: false });
-const emit = defineEmits<{ play: [track: Track]; menu: [event: MouseEvent, track: Track]; remove: [track: Track]; toggle: [track: Track, event: MouseEvent] }>();
+const emit = defineEmits<{ play: [track: Track]; menu: [event: MouseEvent, track: Track]; remove: [track: Track]; openArtist: [artist: string]; toggle: [track: Track, event: MouseEvent] }>();
 const { t } = useI18n();
 </script>
 
@@ -29,6 +29,7 @@ const { t } = useI18n();
       <span v-if="active && playing && !selectable" class="absolute left-2 top-2 grid h-6 w-6 place-items-center bg-accent text-accent-fg"><span class="ak-eq"><i></i><i></i><i></i></span></span>
     </div>
     <p class="mt-3 truncate text-sm font-semibold tracking-wide" :class="active ? 'text-accent' : ''">{{ track.title }}</p>
-    <p class="truncate text-xs text-muted">{{ track.artist }}</p>
+    <button v-if="track.artist" type="button" class="block w-full truncate text-left text-xs text-muted transition-colors hover:text-accent" :title="t('library.openArtist')" @click.stop="emit('openArtist', track.artist)">{{ track.artist }}</button>
+    <p v-else class="truncate text-xs text-muted">{{ track.artist }}</p>
   </article>
 </template>

@@ -11,11 +11,37 @@ export type GroupKind = "artists" | "albums";
 export const UNKNOWN_ARTIST = "\u0000welkin:unknown-artist";
 export const UNKNOWN_ALBUM = "\u0000welkin:unknown-album";
 
-/** The grouping key for a track: its trimmed tag, or a shared sentinel. */
+/**
+ * Separators used between multiple artists in a single tag. Covers ASCII and
+ * fullwidth commas, the CJK enumeration comma and semicolons, so collaborations
+ * like "A, B" or "A、B" land under both artists instead of one combined name.
+ */
+const ARTIST_SEPARATORS = /[,，、;；]+/;
+
+/** Splits a raw artist tag into individual names, preserving order. */
+export function splitArtists(artist: string): string[] {
+  const parts = artist.split(ARTIST_SEPARATORS).map((part) => part.trim()).filter(Boolean);
+  return parts.length > 0 ? parts : [artist.trim()];
+}
+
+/** The first named artist of a tag, used as the target when navigating from a track. */
+export function primaryArtist(artist: string): string {
+  return splitArtists(artist)[0] ?? "";
+}
+
+/** All grouping keys a track belongs to; a collaboration track can appear under several artists. */
+export function groupKeys(track: Track, kind: GroupKind): string[] {
+  if (kind === "artists") {
+    const keys = splitArtists(track.artist ?? "").map((name) => name || UNKNOWN_ARTIST);
+    return [...new Set(keys)];
+  }
+  const album = (track.album ?? "").trim();
+  return [album || UNKNOWN_ALBUM];
+}
+
+/** The primary grouping key for a track: its first trimmed tag, or a shared sentinel. */
 export function groupKey(track: Track, kind: GroupKind): string {
-  const raw = (kind === "artists" ? track.artist : track.album)?.trim();
-  if (raw) return raw;
-  return kind === "artists" ? UNKNOWN_ARTIST : UNKNOWN_ALBUM;
+  return groupKeys(track, kind)[0];
 }
 
 /** True for the sentinel keys above, so the UI can localize "Unknown". */
@@ -32,10 +58,11 @@ export interface TrackGroup {
 export function groupTracks(tracks: Track[], kind: GroupKind): TrackGroup[] {
   const map = new Map<string, Track[]>();
   for (const track of tracks) {
-    const key = groupKey(track, kind);
-    const list = map.get(key);
-    if (list) list.push(track);
-    else map.set(key, [track]);
+    for (const key of groupKeys(track, kind)) {
+      const list = map.get(key);
+      if (list) list.push(track);
+      else map.set(key, [track]);
+    }
   }
   return [...map.entries()]
     .map(([key, list]) => ({ key, tracks: list }))
