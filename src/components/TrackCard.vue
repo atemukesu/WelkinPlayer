@@ -29,7 +29,7 @@ const { t } = useI18n();
       <span v-if="active && playing && !selectable" class="absolute left-2 top-2 grid h-6 w-6 place-items-center bg-accent text-accent-fg"><span class="ak-eq"><i></i><i></i><i></i></span></span>
     </div>
     <p class="mt-3 truncate text-sm font-semibold tracking-wide" :class="active ? 'text-accent' : ''">{{ track.title }}</p>
-    <button v-if="track.artist" type="button" class="block w-full truncate text-left text-xs text-muted transition-colors hover:text-accent" :title="t('library.openArtist')" @click.stop="emit('openArtist', track.artist)">{{ track.artist }}</button>
+    <button v-if="track.artist" type="button" class="block w-fit max-w-full truncate text-left text-xs text-muted transition-colors hover:text-accent" :title="t('library.openArtist')" @click.stop="emit('openArtist', track.artist)">{{ track.artist }}</button>
     <p v-else class="truncate text-xs text-muted">{{ track.artist }}</p>
   </article>
 </template>

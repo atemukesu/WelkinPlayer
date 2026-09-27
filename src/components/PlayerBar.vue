@@ -18,7 +18,7 @@ import { usePlayerStore } from "../stores/player";
 import { initial, percent } from "../lib/format";
 import { seekPercent } from "../lib/audio";
 
-const emit = defineEmits<{ open: []; queue: [] }>();
+const emit = defineEmits<{ open: []; queue: []; openArtist: [artist: string]; openAlbum: [album: string] }>();
 
 const { t } = useI18n();
 const player = usePlayerStore();
@@ -46,10 +46,12 @@ function onSeek(event: Event) {
       @input="onSeek"
     />
     <div class="flex h-[72px] items-center gap-4 px-4">
-      <button class="flex min-w-0 flex-1 items-center gap-3 text-left md:w-[220px] md:flex-none" @click="emit('open')">
-        <span
-          class="grid h-11 w-11 shrink-0 place-items-center overflow-hidden text-lg font-black text-white/90"
+      <div class="grid min-w-0 flex-1 grid-cols-[44px_minmax(0,1fr)] items-center gap-x-3 gap-y-0.5 md:w-[220px] md:flex-none">
+        <button
+          type="button"
+          class="row-span-2 grid h-11 w-11 place-items-center overflow-hidden text-lg font-black text-white/90"
           :style="{ backgroundColor: player.currentTrack?.color }"
+          @click="emit('open')"
         >
           <img
             v-if="player.currentTrack?.cover"
@@ -59,12 +61,14 @@ function onSeek(event: Event) {
             class="h-full w-full object-cover"
           />
           <template v-else>{{ player.currentTrack ? initial(player.currentTrack) : "" }}</template>
-        </span>
-        <span class="grid min-w-0 gap-0.5">
-          <strong class="truncate text-[13px] font-semibold tracking-wide">{{ player.currentTrack?.title }}</strong>
-          <small class="truncate text-[13px] text-muted">{{ player.currentTrack?.artist }}</small>
-        </span>
-      </button>
+        </button>
+        <button type="button" class="min-w-0 truncate text-left text-[13px] font-semibold tracking-wide transition-colors hover:text-accent" @click="emit('open')">{{ player.currentTrack?.title }}</button>
+        <div class="flex min-w-0 items-center gap-1 text-[13px]">
+          <button v-if="player.currentTrack?.artist" type="button" class="min-w-0 truncate text-left text-muted transition-colors hover:text-accent" :title="t('library.openArtist')" @click.stop="emit('openArtist', player.currentTrack?.artist ?? '')">{{ player.currentTrack.artist }}</button>
+          <span v-if="player.currentTrack?.artist && player.currentTrack?.album" class="shrink-0 text-dim">·</span>
+          <button v-if="player.currentTrack?.album" type="button" class="min-w-0 truncate text-left text-dim transition-colors hover:text-accent" :title="t('library.openAlbum')" @click.stop="emit('openAlbum', player.currentTrack?.album ?? '')">{{ player.currentTrack.album }}</button>
+        </div>
+      </div>
 
       <div class="absolute left-1/2 hidden -translate-x-1/2 items-center gap-2 md:flex">
         <button class="grid h-9 w-9 place-items-center" :class="player.shuffle ? 'text-accent' : 'text-muted'" :title="shuffleTitle" @click="player.toggleShuffle()">

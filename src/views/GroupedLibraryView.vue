@@ -5,12 +5,16 @@ import { useI18n } from "vue-i18n";
 import { usePlayerStore } from "../stores/player";
 import type { Track } from "../stores/player";
 import { groupTracks, isUnknownGroup, type GroupKind } from "../lib/grouping";
+import { sortGroups, useGroupSort } from "../lib/sort";
+import GroupSortMenu from "../components/GroupSortMenu.vue";
 
 const props = withDefaults(defineProps<{ kind: GroupKind; loading?: boolean }>(), { loading: false });
 const emit = defineEmits<{ open: [key: string] }>();
 const { t } = useI18n();
 const player = usePlayerStore();
 const query = ref("");
+// Each grid page keeps its own persistent choice; the component remounts per kind.
+const { key: sortKey, dir: sortDir } = useGroupSort(props.kind);
 
 const isArtists = computed(() => props.kind === "artists");
 const allGroups = computed(() => groupTracks(player.tracks, props.kind));
@@ -19,6 +23,7 @@ const total = computed(() => allGroups.value.length);
 interface GroupCard {
   key: string;
   name: string;
+  count: number;
   coverTrack?: Track;
   secondary: string;
 }
@@ -30,11 +35,13 @@ const cards = computed<GroupCard[]>(() => {
       ? t(isArtists.value ? "library.collections.unknownArtist" : "library.collections.unknownAlbum")
       : group.key;
     const coverTrack = group.tracks.find((track) => track.cover) ?? group.tracks[0];
-    const count = t("library.collections.trackCount", { count: group.tracks.length });
-    const secondary = !isArtists.value && coverTrack?.artist ? `${coverTrack.artist} · ${count}` : count;
-    return { key: group.key, name, coverTrack, secondary };
+    const count = group.tracks.length;
+    const label = t("library.collections.trackCount", { count });
+    const secondary = !isArtists.value && coverTrack?.artist ? `${coverTrack.artist} · ${label}` : label;
+    return { key: group.key, name, count, coverTrack, secondary };
   });
-  return value ? list.filter((card) => card.name.toLocaleLowerCase().includes(value)) : list;
+  const filtered = value ? list.filter((card) => card.name.toLocaleLowerCase().includes(value)) : list;
+  return sortGroups(filtered, sortKey.value, sortDir.value);
 });
 </script>
 
@@ -47,6 +54,7 @@ const cards = computed<GroupCard[]>(() => {
         <p class="mt-3 text-sm text-muted">{{ t(isArtists ? "library.collections.artistsSubtitle" : "library.collections.albumsSubtitle") }}</p>
         <div class="mt-5 flex flex-wrap items-center gap-3">
           <label class="flex h-10 min-w-0 flex-1 items-center gap-2 border border-line bg-surface px-3 sm:w-64 sm:flex-none"><Search :size="16" class="text-dim" /><input v-model="query" class="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-dim" :placeholder="t(isArtists ? 'library.collections.searchArtist' : 'library.collections.searchAlbum')" /></label>
+          <GroupSortMenu :context="kind" />
           <span class="font-mono text-sm uppercase tracking-[0.2em] text-dim">{{ t(isArtists ? "library.collections.artistCount" : "library.collections.albumCount", { count: total }) }}</span>
         </div>
       </header>

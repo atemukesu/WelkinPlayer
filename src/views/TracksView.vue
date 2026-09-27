@@ -14,7 +14,7 @@ import ViewModeToggle from "../components/ViewModeToggle.vue";
 import PlaylistCover from "../components/PlaylistCover.vue";
 
 const props = withDefaults(defineProps<{ playlistId?: string | null; artist?: string | null; album?: string | null; loading: boolean; enriching: boolean; refreshing?: boolean; enrichDone: number; enrichTotal: number; downloadingTrackId?: number | null }>(), { playlistId: null, artist: null, album: null, refreshing: false, downloadingTrackId: null });
-const emit = defineEmits<{ refresh: []; edit: [id: string]; openArtist: [artist: string]; downloadMetadata: [track: Track]; editLyrics: [track: Track]; editInfo: [track: Track]; showInfo: [track: Track] }>();
+const emit = defineEmits<{ refresh: []; edit: [id: string]; openArtist: [artist: string]; openAlbum: [album: string]; downloadMetadata: [track: Track]; editLyrics: [track: Track]; editInfo: [track: Track]; showInfo: [track: Track] }>();
 const { t } = useI18n();
 const player = usePlayerStore();
 const profile = useProfileStore();
@@ -100,11 +100,11 @@ function downloadMetadata(track: Track) { emit("downloadMetadata", track); }
             </template>
 
             <div class="mt-auto flex flex-wrap items-center gap-3 pt-4">
-              <div class="order-1 flex w-full min-w-0 items-center gap-3 @2xl:order-2 @2xl:ml-auto @2xl:w-auto">
+              <div class="flex w-full min-w-0 items-center gap-3 @2xl:order-2 @2xl:ml-auto @2xl:w-auto" :class="activePlaylist ? 'order-2' : 'order-1'">
                 <label class="flex h-10 min-w-0 flex-1 items-center gap-2 border border-line bg-surface px-3 @2xl:w-64 @2xl:flex-none"><Search :size="16" class="text-dim" /><input v-model="query" class="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-dim" :placeholder="t('library.search')" aria-label="Search library" /></label>
                 <button v-if="!activePlaylist && !isGroup" type="button" class="grid h-10 w-10 shrink-0 place-items-center border border-line text-dim transition-colors hover:border-accent hover:text-accent disabled:opacity-50" :title="t('library.refresh')" :disabled="refreshing" @click="emit('refresh')"><RefreshCw :size="16" :stroke-width="2" :class="refreshing ? 'animate-spin' : ''" /></button>
               </div>
-              <div v-if="activePlaylist || isGroup" class="order-2 flex items-center gap-3 @2xl:order-1">
+              <div v-if="activePlaylist || isGroup" class="flex items-center gap-3 @2xl:order-1" :class="activePlaylist ? 'order-1' : 'order-2'">
                 <template v-if="activePlaylist">
                   <button type="button" class="ak-clip-tr flex h-10 shrink-0 items-center gap-2 bg-accent px-4 text-[13px] font-bold text-accent-fg transition-transform hover:scale-[1.02] active:scale-95 disabled:opacity-50" :disabled="!tracks.length" @click="playFirst"><Play :size="15" :stroke-width="2.2" />{{ t("library.play") }}</button>
                   <button type="button" class="ak-clip-tr flex h-10 shrink-0 items-center gap-2 border border-line px-4 text-[13px] font-semibold transition-colors hover:border-accent hover:text-accent" @click="emit('edit', activePlaylist.id)"><Pencil :size="15" />{{ t("library.edit") }}</button>
@@ -127,7 +127,7 @@ function downloadMetadata(track: Track) { emit("downloadMetadata", track); }
         <template v-if="loading"><span class="ak-pulse"></span><p class="text-sm font-semibold uppercase tracking-[0.2em] text-muted">{{ t("library.loading") }}</p></template>
         <template v-else><p class="max-w-md text-sm text-muted">{{ t("library.emptyDesc") }}</p></template>
       </div>
-      <div v-else class="min-h-0 flex-1"><TrackList v-model:selected="selected" :tracks="tracks" :scroller="scrollEl" empty-key="library.playlists.noTracks" :selectable="selectMode" @play="play" @menu="openContextMenu" @open-artist="emit('openArtist', $event)" /></div>
+      <div v-else class="min-h-0 flex-1"><TrackList v-model:selected="selected" :tracks="tracks" :scroller="scrollEl" empty-key="library.playlists.noTracks" :selectable="selectMode" @play="play" @menu="openContextMenu" @open-artist="emit('openArtist', $event)" @open-album="emit('openAlbum', $event)" /></div>
 
       <TrackContextMenu v-if="contextTrack" :track="contextTrack" :x="contextPosition.x" :y="contextPosition.y" :selected-paths="[...selected]" :playlist-id="activePlaylist?.id ?? null" :downloading="downloadingTrackId === contextTrack.id" @close="contextTrack = null" @download-metadata="downloadMetadata" @edit-lyrics="emit('editLyrics', $event)" @edit-info="emit('editInfo', $event)" @show-info="emit('showInfo', $event)" />
     </div>

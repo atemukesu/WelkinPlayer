@@ -29,6 +29,11 @@ export function primaryArtist(artist: string): string {
   return splitArtists(artist)[0] ?? "";
 }
 
+/** The album key used to open an album collection; empty tags have no collection to open. */
+export function albumKey(album: string): string {
+  return album.trim();
+}
+
 /** All grouping keys a track belongs to; a collaboration track can appear under several artists. */
 export function groupKeys(track: Track, kind: GroupKind): string[] {
   if (kind === "artists") {

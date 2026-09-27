@@ -13,7 +13,7 @@ import PlayerBar from "../components/PlayerBar.vue";
 import type { View } from "../lib/app";
 
 defineProps<{ returnView: View }>();
-const emit = defineEmits<{ navigate: [view: View]; queue: [] }>();
+const emit = defineEmits<{ navigate: [view: View]; queue: []; openArtist: [artist: string]; openAlbum: [album: string] }>();
 const { t } = useI18n();
 const player = usePlayerStore();
 const lyrics = useLyricsStore();
@@ -253,14 +253,14 @@ watch(
         </div>
         <div class="mx-auto mt-6 w-full max-w-[420px]">
           <h1 class="mt-3 text-2xl font-black leading-none tracking-tight lg:text-3xl">{{ player.currentTrack.title }}</h1>
-          <p class="mt-4 text-lg text-muted">{{ player.currentTrack.album }}</p>
-          <p class="mt-2 text-base text-dim">{{ player.currentTrack.artist }}</p>
+          <button v-if="player.currentTrack.album" type="button" class="mt-4 block w-fit max-w-full truncate text-left text-lg text-muted transition-colors hover:text-accent" :title="t('library.openAlbum')" @click="emit('openAlbum', player.currentTrack.album)">{{ player.currentTrack.album }}</button>
+          <button v-if="player.currentTrack.artist" type="button" class="mt-2 block w-fit max-w-full truncate text-left text-base text-dim transition-colors hover:text-accent" :title="t('library.openArtist')" @click="emit('openArtist', player.currentTrack.artist)">{{ player.currentTrack.artist }}</button>
         </div>
       </div>
       <div class="flex min-h-0 min-w-0 flex-col justify-center">
         <div class="mb-5 md:hidden">
           <h1 class="mt-2 truncate text-xl font-black leading-none tracking-tight">{{ player.currentTrack.title }}</h1>
-          <p class="mt-2 truncate text-sm text-muted">{{ player.currentTrack.album }}</p>
+          <button v-if="player.currentTrack.album" type="button" class="mt-2 block w-fit max-w-full truncate text-left text-sm text-muted transition-colors hover:text-accent" :title="t('library.openAlbum')" @click="emit('openAlbum', player.currentTrack.album)">{{ player.currentTrack.album }}</button>
         </div>
         <div ref="lyricsScroll" class="lyrics-scroll min-h-0 flex-1 overflow-hidden border-l border-line pl-6 md:max-h-[76vh] md:pl-10" :style="{ '--active-index': lyrics.activeIndex, '--line-size': `${lyrics.classic.lineSize}px`, '--translation-size': `${lyrics.classic.translationSize}px`, '--line-spacing': `${lyrics.classic.lineSpacing}px`, '--line-weight': lyrics.classic.fontWeight, '--line-weight-active': lyricActiveWeight, fontFamily: lyricFontFamily }" @wheel.prevent="onWheel">
           <div ref="lyricsTrack" class="lyrics-track" :class="{ 'is-manual': manualScroll }" :style="{ transform: `translate3d(0, ${-scrollOffset}px, 0)` }">

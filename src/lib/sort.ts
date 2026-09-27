@@ -95,3 +95,64 @@ export function sortTracks(tracks: Track[], key: TrackSortKey, dir: TrackSortDir
     .sort((a, b) => compare(a.track, b.track, key) * factor || a.index - b.index)
     .map((entry) => entry.track);
 }
+
+// --- Grouped library (歌手 / 专辑 grid) sorting ---
+
+/** Cards on the artist and album grid pages sort by display name or track count only. */
+export type GroupSortKey = "default" | "name" | "count";
+export type GroupSortContext = "artists" | "albums";
+
+function groupKeyStorage(context: GroupSortContext) {
+  return `welkin-group-sort-${context}-key`;
+}
+function groupDirStorage(context: GroupSortContext) {
+  return `welkin-group-sort-${context}-dir`;
+}
+
+function normalizeGroupKey(value: string | null): GroupSortKey {
+  return value === "name" || value === "count" ? value : "default";
+}
+
+export interface GroupSortState {
+  key: Ref<GroupSortKey>;
+  dir: Ref<TrackSortDir>;
+}
+
+function createGroupState(context: GroupSortContext): GroupSortState {
+  const key = ref<GroupSortKey>(normalizeGroupKey(localStorage.getItem(groupKeyStorage(context))));
+  const dir = ref<TrackSortDir>(localStorage.getItem(groupDirStorage(context)) === "desc" ? "desc" : "asc");
+  watch(key, (value) => localStorage.setItem(groupKeyStorage(context), value));
+  watch(dir, (value) => localStorage.setItem(groupDirStorage(context), value));
+  return { key, dir };
+}
+
+// Created eagerly so `useGroupSort` is a pure lookup and safe to call from computeds.
+const groupRegistry: Record<GroupSortContext, GroupSortState> = {
+  artists: createGroupState("artists"),
+  albums: createGroupState("albums"),
+};
+
+/** Returns the persistent, reactive sort state for a grid page; the same context shares one instance. */
+export function useGroupSort(context: GroupSortContext): GroupSortState {
+  return groupRegistry[context];
+}
+
+/** The minimal shape a grid card needs to be sortable by name or track count. */
+export interface SortableGroup {
+  name: string;
+  count: number;
+}
+
+/** Returns a new array sorted by display name or track count; "default" returns the source untouched. */
+export function sortGroups<T extends SortableGroup>(groups: T[], key: GroupSortKey, dir: TrackSortDir): T[] {
+  if (key === "default") return groups;
+  const factor = dir === "desc" ? -1 : 1;
+  return groups
+    .map((group, index) => ({ group, index }))
+    // Fall back to the original position so equal rows keep their order.
+    .sort((a, b) => {
+      const result = key === "count" ? a.group.count - b.group.count : collator.compare(a.group.name, b.group.name);
+      return result * factor || a.index - b.index;
+    })
+    .map((entry) => entry.group);
+}
