@@ -147,15 +147,69 @@ function activeLineOffset(): number {
   return Math.min(maxOffset, Math.max(0, target));
 }
 
-function onWheel(event: WheelEvent) {
+/** Maximum scroll offset (px) before the track would leave the viewport. */
+function scrollLimit(): number {
   const container = lyricsScroll.value;
   const track = lyricsTrack.value;
-  if (!container || !track) return;
+  if (!container || !track) return 0;
+  return Math.max(0, track.offsetHeight - container.clientHeight);
+}
+
+/** Clamp an offset to the valid scroll range. */
+function clampOffset(value: number): number {
+  return Math.min(scrollLimit(), Math.max(0, value));
+}
+
+/** Suspend auto-scroll and schedule the return to the active line. */
+function holdManualScroll(resumeMs: number) {
   manualScroll.value = true;
   window.clearTimeout(manualTimer);
-  manualTimer = window.setTimeout(() => { manualScroll.value = false; }, 160);
-  const maxOffset = Math.max(0, track.offsetHeight - container.clientHeight);
-  scrollOffset.value = Math.min(maxOffset, Math.max(0, scrollOffset.value + event.deltaY));
+  manualTimer = window.setTimeout(() => { manualScroll.value = false; }, resumeMs);
+}
+
+function onWheel(event: WheelEvent) {
+  if (!lyricsScroll.value || !lyricsTrack.value) return;
+  holdManualScroll(160);
+  scrollOffset.value = clampOffset(scrollOffset.value + event.deltaY);
+}
+
+/**
+ * Touch (and pen) drag scrolling. The track is moved through a CSS transform,
+ * so the browser never scrolls the overflow-hidden container itself and there
+ * is no native momentum to piggyback on — the pointer stream is tracked by
+ * hand. `touch-action: none` on `.lyrics-scroll` keeps the browser from
+ * hijacking the gesture and cancelling our pointer events.
+ */
+let touchActive = false;
+let touchStartY = 0;
+let touchStartOffset = 0;
+const TOUCH_RESUME_MS = 2500;
+
+function onTouchStart(event: PointerEvent) {
+  if (event.pointerType === "mouse") return;
+  const container = lyricsScroll.value;
+  if (!container) return;
+  touchActive = true;
+  touchStartY = event.clientY;
+  touchStartOffset = scrollOffset.value;
+  holdManualScroll(TOUCH_RESUME_MS);
+  container.setPointerCapture(event.pointerId);
+}
+
+function onTouchMove(event: PointerEvent) {
+  if (!touchActive) return;
+  event.preventDefault();
+  const delta = event.clientY - touchStartY;
+  scrollOffset.value = clampOffset(touchStartOffset - delta);
+  holdManualScroll(TOUCH_RESUME_MS);
+}
+
+function onTouchEnd(event: PointerEvent) {
+  if (!touchActive) return;
+  touchActive = false;
+  holdManualScroll(TOUCH_RESUME_MS);
+  const container = lyricsScroll.value;
+  if (container?.hasPointerCapture(event.pointerId)) container.releasePointerCapture(event.pointerId);
 }
 
 onMounted(() => {
@@ -191,10 +245,17 @@ watch(
   (index) => {
     if (index < 0 || index === lastScrolledIndex) return;
     lastScrolledIndex = index;
+    // Don't yank the view back to the active line while the user is dragging.
+    if (manualScroll.value) return;
     void nextTick(() => { scrollOffset.value = activeLineOffset(); });
   },
   { flush: "pre" },
 );
+
+/** Once a manual drag settles, glide back to the active line. */
+watch(manualScroll, (manual) => {
+  if (!manual) scrollOffset.value = activeLineOffset();
+});
 
 /**
  * The animation loop only writes `--word-progress` for elements that are
@@ -262,7 +323,7 @@ watch(
           <h1 class="mt-2 truncate text-xl font-black leading-none tracking-tight">{{ player.currentTrack.title }}</h1>
           <button v-if="player.currentTrack.album" type="button" class="mt-2 block w-fit max-w-full truncate text-left text-sm text-muted transition-colors hover:text-accent" :title="t('library.openAlbum')" @click="emit('openAlbum', player.currentTrack.album)">{{ player.currentTrack.album }}</button>
         </div>
-        <div ref="lyricsScroll" class="lyrics-scroll min-h-0 flex-1 overflow-hidden border-l border-line pl-6 md:max-h-[76vh] md:pl-10" :style="{ '--active-index': lyrics.activeIndex, '--line-size': `${lyrics.classic.lineSize}px`, '--translation-size': `${lyrics.classic.translationSize}px`, '--line-spacing': `${lyrics.classic.lineSpacing}px`, '--line-weight': lyrics.classic.fontWeight, '--line-weight-active': lyricActiveWeight, fontFamily: lyricFontFamily }" @wheel.prevent="onWheel">
+        <div ref="lyricsScroll" class="lyrics-scroll min-h-0 flex-1 overflow-hidden border-l border-line pl-6 md:max-h-[76vh] md:pl-10" :style="{ '--active-index': lyrics.activeIndex, '--line-size': `${lyrics.classic.lineSize}px`, '--translation-size': `${lyrics.classic.translationSize}px`, '--line-spacing': `${lyrics.classic.lineSpacing}px`, '--line-weight': lyrics.classic.fontWeight, '--line-weight-active': lyricActiveWeight, fontFamily: lyricFontFamily }" @wheel.prevent="onWheel" @pointerdown="onTouchStart" @pointermove="onTouchMove" @pointerup="onTouchEnd" @pointercancel="onTouchEnd">
           <div ref="lyricsTrack" class="lyrics-track" :class="{ 'is-manual': manualScroll }" :style="{ transform: `translate3d(0, ${-scrollOffset}px, 0)` }">
           <div class="pt-[30vh] pb-[50vh]">
             <p v-if="lyrics.status === 'loading'" class="text-muted">{{ t("lyrics.loading") }}</p>
@@ -312,6 +373,9 @@ watch(
 
 .lyrics-scroll {
   scrollbar-width: none;
+  /* Dragging the lyrics is handled by pointer events, so stop the browser
+     from claiming the vertical gesture (which would cancel our pointermove). */
+  touch-action: none;
   --lyric-ease: cubic-bezier(0.22, 1, 0.36, 1);
   --lyric-duration: 560ms;
   -webkit-mask-image: linear-gradient(to bottom, transparent 0%, #000 5%, #000 95%, transparent 100%);

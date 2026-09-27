@@ -77,3 +77,24 @@ pub fn initialize() -> Result<(), String> {
 
     Ok(())
 }
+
+/// Install the Keystore-backed keyring store, or explain why it cannot be used.
+///
+/// The `keyring` crate has no Android backend of its own, so when this setup is
+/// skipped keyring silently falls back to an in-memory mock: it accepts writes
+/// and reports success, but drops the secret as soon as the process exits. The
+/// caller records the returned reason so the WebDAV commands fail loudly instead
+/// of pretending a credential was saved.
+pub fn initialize_keychain() -> Option<String> {
+    if let Err(error) = initialize() {
+        log::error!("Android JNI context unavailable; system keychain disabled: {error}");
+        return Some(format!("Android JNI 上下文不可用：{error}"));
+    }
+
+    if let Err(error) = android_keyring::set_android_keyring_credential_builder() {
+        log::error!("failed to initialize android-keyring credential store: {error}");
+        return Some(format!("android-keyring 初始化失败：{error}"));
+    }
+
+    None
+}

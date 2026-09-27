@@ -201,15 +201,21 @@ export const usePlayerStore = defineStore("player", () => {
         .map((track) => (track.path ? byPath.get(track.path) : undefined))
         .filter((track): track is Track => !!track);
 
-    if (baseQueue.value.length === 0) baseQueue.value = nextTracks.filter((track) => track.path);
+    // A fresh library load must honour the persisted shuffle state so launching
+    // with shuffle already on starts with a shuffled queue (the resume watcher
+    // only re-points `currentTrack`, it never rebuilds the order). Only the
+    // first population/fallback re-shuffles; refreshes keep the running order
+    // because `queue` is non-empty by then.
+    const source = nextTracks.filter((track) => track.path);
+    if (baseQueue.value.length === 0) baseQueue.value = [...source];
     else {
       const remapped = remap(baseQueue.value);
-      baseQueue.value = remapped.length > 0 ? remapped : nextTracks.filter((track) => track.path);
+      baseQueue.value = remapped.length > 0 ? remapped : [...source];
     }
-    if (queue.value.length === 0) queue.value = nextTracks.filter((track) => track.path);
+    if (queue.value.length === 0) queue.value = shuffle.value ? shuffled(source) : [...source];
     else {
       const remapped = remap(queue.value);
-      queue.value = remapped.length > 0 ? remapped : nextTracks.filter((track) => track.path);
+      queue.value = remapped.length > 0 ? remapped : shuffle.value ? shuffled(source) : [...source];
     }
 
     // Keep the current selection (and its restored position/playing state)

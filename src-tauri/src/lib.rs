@@ -13,20 +13,12 @@ use tauri::Manager;
 pub fn run() {
     logging::init();
 
-    // Android has no keyring backend; this installs the Keystore-backed one.
-    // android-keyring reads the ndk-context global, which tao no longer sets,
-    // so publish the JNI context first and skip the backend if that fails.
+    // Android has no keyring backend; install the Keystore-backed one before
+    // anything touches the keychain. A failure is recorded so the WebDAV
+    // commands report an unavailable keychain instead of silently writing to
+    // keyring's non-persistent mock store.
     #[cfg(target_os = "android")]
-    match android::initialize() {
-        Ok(()) => {
-            if let Err(error) = android_keyring::set_android_keyring_credential_builder() {
-                log::error!("failed to initialize android-keyring credential store: {error}");
-            }
-        }
-        Err(error) => {
-            log::error!("Android JNI context unavailable; system keychain disabled: {error}");
-        }
-    }
+    commands::webdav::set_keychain_init_error(android::initialize_keychain());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())

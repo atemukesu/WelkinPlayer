@@ -134,13 +134,14 @@ export const useWebdavStore = defineStore("webdav", () => {
       await settingsFile.set(ALLOW_INSECURE_KEY, allowInsecure.value);
       await settingsFile.save();
 
+      // An untouched field means "keep whatever is already stored". Sending ""
+      // here would delete a credential the keychain may still hold, which is how
+      // a failed keychain read used to wipe a perfectly valid password.
       const passwordArg = password.value
         ? password.value
         : passwordTouched.value
           ? ""
-          : hasStoredPassword.value
-            ? null
-            : "";
+          : null;
 
       const result = await invoke<KeychainStatus>("save_webdav_password", {
         username: username.value,

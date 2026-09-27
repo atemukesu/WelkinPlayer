@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  API level 30 and lower backup rules (android:fullBackupContent).
+
+  The WebDAV password is stored in SharedPreferences, encrypted with a key that
+  lives in the AndroidKeyStore. That key is device-bound and is never backed up,
+  so restoring the ciphertext onto another device (or after a factory reset)
+  produces an entry that can never be decrypted. Exclude the whole shared-prefs
+  directory so a restored install starts from a clean "no credentials" state
+  instead of a silently unusable one.
+-->
+<full-backup-content>
+    <exclude domain="sharedpref" path="." />
+</full-backup-content>

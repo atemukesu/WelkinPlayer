@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  API level 31+ backup rules (android:dataExtractionRules).
+
+  Same rationale as backup_rules.xml: the WebDAV ciphertext in SharedPreferences
+  is useless without its device-bound AndroidKeyStore key, so it must be excluded
+  from both cloud backup and device-to-device transfer.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="." />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="." />
+    </device-transfer>
+</data-extraction-rules>

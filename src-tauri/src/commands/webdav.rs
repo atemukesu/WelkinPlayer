@@ -6,6 +6,7 @@
 //! Credential Manager, macOS Keychain, or Linux Secret Service.
 
 use std::net::IpAddr;
+use std::sync::OnceLock;
 
 use serde::Serialize;
 use tauri::AppHandle;
@@ -22,6 +23,28 @@ const SETTINGS_FILE: &str = "settings.json";
 const SETTINGS_URL_KEY: &str = "webdav.url";
 const SETTINGS_USERNAME_KEY: &str = "webdav.username";
 const SETTINGS_ALLOW_INSECURE_KEY: &str = "webdav.allowInsecure";
+
+/// Why the platform keychain backend is unavailable, recorded once at startup.
+///
+/// The `keyring` crate ships no Android backend of its own, so a failed
+/// Keystore-backed setup would leave it silently using an in-memory mock that
+/// accepts writes but never persists them. Recording the failure here lets the
+/// commands report `available: false` instead of a false success.
+static KEYCHAIN_INIT_ERROR: OnceLock<Option<String>> = OnceLock::new();
+
+/// Record the one-time platform keychain setup result.
+///
+/// `Some` means no credential can be persisted. Desktop builds never call this,
+/// so the state stays unset and [`keychain_init_error`] is `None`.
+#[allow(dead_code)] // only invoked by the Android startup path
+pub(crate) fn set_keychain_init_error(error: Option<String>) {
+    let _ = KEYCHAIN_INIT_ERROR.set(error);
+}
+
+/// The startup keychain failure, when the backend is known to be unusable.
+fn keychain_init_error() -> Option<&'static str> {
+    KEYCHAIN_INIT_ERROR.get().and_then(|error| error.as_deref())
+}
 
 /// Outcome of a keychain read/write, returned to the frontend.
 ///
@@ -50,10 +73,15 @@ impl KeychainStatus {
 
     fn unavailable(error: keyring::Error) -> Self {
         log::error!("system keychain unavailable: {error}");
+        Self::unavailable_reason(error.to_string())
+    }
+
+    /// `available: false` for a backend that never initialized, with the reason.
+    fn unavailable_reason(reason: impl Into<String>) -> Self {
         Self {
             available: false,
             has_password: false,
-            warning: Some(error.to_string()),
+            warning: Some(reason.into()),
         }
     }
 }
@@ -86,6 +114,15 @@ fn new_entry(username: &str) -> Result<keyring::Entry, keyring::Error> {
     keyring::Entry::new(SERVICE, username)
 }
 
+/// Short-circuit a command when no persistent keychain backend was installed.
+///
+/// Without this the `keyring` mock store reports a successful save and drops
+/// the secret when the process exits — the "credentials randomly disappear"
+/// symptom this guard exists to surface.
+fn keychain_unavailable() -> Option<KeychainStatus> {
+    keychain_init_error().map(|reason| KeychainStatus::unavailable_reason(reason))
+}
+
 /// Remove the credential for `username`, treating "not found" as success.
 fn delete_credential(username: &str) -> Result<(), keyring::Error> {
     if username.is_empty() {
@@ -101,6 +138,10 @@ fn delete_credential(username: &str) -> Result<(), keyring::Error> {
 /// Report whether a password is stored for `username` (never the secret).
 #[tauri::command]
 pub fn load_webdav_password(username: String) -> Result<KeychainStatus, AppError> {
+    if let Some(status) = keychain_unavailable() {
+        return Ok(status);
+    }
+
     let username = username.trim();
     if username.is_empty() {
         return Ok(KeychainStatus::available(false));
@@ -145,6 +186,10 @@ pub fn save_webdav_password(
     previous_username: Option<String>,
     password: Option<String>,
 ) -> Result<KeychainStatus, AppError> {
+    if let Some(status) = keychain_unavailable() {
+        return Ok(status);
+    }
+
     let username = username.trim().to_string();
     let previous = previous_username
         .map(|value| value.trim().to_string())
@@ -370,6 +415,11 @@ pub(crate) fn load_saved_credentials(
 
     // Refuse to send credentials over an unconfirmed plaintext public link.
     enforce_url_policy(app, &url)?;
+
+    // Never read from keyring's non-persistent mock: fail loudly instead.
+    if let Some(reason) = keychain_init_error() {
+        return Err(AppError::Store(format!("系统钥匙串不可用：{reason}")));
+    }
 
     let password = match keyring::Entry::new(SERVICE, username.trim()) {
         Ok(entry) => match entry.get_password() {
