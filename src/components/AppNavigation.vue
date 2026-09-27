@@ -2,12 +2,12 @@
 import { ref } from "vue";
 import { Activity, ChevronLeft, ChevronRight, Ellipsis, Heart, Library, ListMusic, ListPlus, Music2, Plus, Settings2, X } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
-import { navItems } from "../lib/app";
+import { classificationNavItems, navItems } from "../lib/app";
 import type { View } from "../lib/app";
 import { useProfileStore } from "../stores/profile";
 import PlaylistCover from "./PlaylistCover.vue";
 
-const props = withDefaults(defineProps<{ activeView: View; placement: "header" | "sidebar" | "mobile"; collapsed?: boolean; activePlaylistId?: string | null }>(), { collapsed: false, activePlaylistId: null });
+const props = withDefaults(defineProps<{ activeView: View; placement: "header" | "sidebar" | "mobile"; collapsed?: boolean; activePlaylistId?: string | null; activeArtist?: string | null; activeAlbum?: string | null }>(), { collapsed: false, activePlaylistId: null, activeArtist: null, activeAlbum: null });
 const emit = defineEmits<{ navigate: [view: View]; toggle: []; createPlaylist: []; openPlaylist: [id: string] }>();
 const { t } = useI18n();
 const profile = useProfileStore();
@@ -29,10 +29,15 @@ function createMobilePlaylist() { closeMobileSheet(); emit("createPlaylist"); }
 function onMobileTab(key: string) { if (key === "playlists" || key === "more") toggleMobileSheet(key); else navigateMobile(key as View); }
 function isMobileTabActive(key: string): boolean {
   if (key === "library") return props.activeView === "library";
-  if (key === "tracks") return props.activeView === "tracks" && !props.activePlaylistId;
+  if (key === "tracks") return props.activeView === "tracks" && !props.activePlaylistId && !props.activeArtist && !props.activeAlbum;
   if (key === "favorites") return props.activeView === "favorites";
   if (key === "playlists") return props.activeView === "playlist-new" || (props.activeView === "tracks" && !!props.activePlaylistId);
-  return props.activeView === "stats" || props.activeView === "settings";
+  return props.activeView === "stats" || props.activeView === "settings" || props.activeView === "artists" || props.activeView === "albums" || !!props.activeArtist || !!props.activeAlbum;
+}
+function isClassificationActive(id: View): boolean {
+  if (id === "artists") return props.activeView === "artists" || !!props.activeArtist;
+  if (id === "albums") return props.activeView === "albums" || !!props.activeAlbum;
+  return false;
 }
 function isActivePlaylist(id: string): boolean { return props.activePlaylistId === id; }
 </script>
@@ -52,7 +57,8 @@ function isActivePlaylist(id: string): boolean { return props.activePlaylistId =
       </div>
       <button class="relative mt-3 flex h-11 w-full items-center border border-transparent text-left text-[13px] font-semibold uppercase tracking-[0.2em] transition-colors" :class="[collapsed ? 'justify-center px-0' : 'gap-2 px-3', activeView === 'playlist-new' ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg']" :title="collapsed ? t('library.playlists.new') : undefined" @click="emit('createPlaylist')"><Plus :size="16" :stroke-width="2" /><span class="sidebar-nav-label truncate">{{ t("library.playlists.new") }}</span></button>
       <div class="my-3 border-t border-line"></div>
-      <button class="relative flex h-11 w-full items-center border border-transparent text-left text-[13px] font-semibold uppercase tracking-[0.2em] transition-colors" :class="[collapsed ? 'justify-center px-0' : 'gap-2 px-3', activeView === 'tracks' && !activePlaylistId ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg']" :title="collapsed ? t('nav.tracks') : undefined" @click="emit('navigate', 'tracks')"><ListMusic :size="16" :stroke-width="1.8" /><span class="sidebar-nav-label truncate">{{ t("nav.tracks") }}</span></button>
+      <button class="relative flex h-11 w-full items-center border border-transparent text-left text-[13px] font-semibold uppercase tracking-[0.2em] transition-colors" :class="[collapsed ? 'justify-center px-0' : 'gap-2 px-3', activeView === 'tracks' && !activePlaylistId && !activeArtist && !activeAlbum ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg']" :title="collapsed ? t('nav.tracks') : undefined" @click="emit('navigate', 'tracks')"><ListMusic :size="16" :stroke-width="1.8" /><span class="sidebar-nav-label truncate">{{ t("nav.tracks") }}</span></button>
+      <button v-for="item in classificationNavItems" :key="item.id" class="relative mt-1.5 flex h-11 w-full items-center border border-transparent text-left text-[13px] font-semibold uppercase tracking-[0.2em] transition-colors" :class="[collapsed ? 'justify-center px-0' : 'gap-2 px-3', isClassificationActive(item.id) ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg']" :title="collapsed ? t(item.labelKey) : undefined" @click="emit('navigate', item.id)"><component :is="item.icon" :size="16" :stroke-width="1.8" /><span class="sidebar-nav-label truncate">{{ t(item.labelKey) }}</span></button>
       <button class="relative mt-1.5 flex h-11 w-full items-center border border-transparent text-left text-[13px] font-semibold uppercase tracking-[0.2em] transition-colors" :class="[collapsed ? 'justify-center px-0' : 'gap-2 px-3', activeView === 'stats' ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg']" :title="collapsed ? t('nav.stats') : undefined" @click="emit('navigate', 'stats')"><Activity :size="16" :stroke-width="1.8" /><span class="sidebar-nav-label truncate">{{ t("nav.stats") }}</span></button>
     </div>
     <div class="mt-auto border-t border-line pt-3">
@@ -82,6 +88,7 @@ function isActivePlaylist(id: string): boolean { return props.activePlaylistId =
             </div>
           </template>
           <div v-else class="grid gap-px px-3 pb-2">
+            <button v-for="item in classificationNavItems" :key="item.id" type="button" class="flex h-11 items-center gap-3 px-2 text-left text-[13px] font-semibold uppercase tracking-[0.15em] transition-colors" :class="isClassificationActive(item.id) ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg'" @click="navigateMobile(item.id)"><component :is="item.icon" :size="16" :stroke-width="1.8" /><span>{{ t(item.labelKey) }}</span></button>
             <button type="button" class="flex h-11 items-center gap-3 px-2 text-left text-[13px] font-semibold uppercase tracking-[0.15em] transition-colors" :class="activeView === 'stats' ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg'" @click="navigateMobile('stats')"><Activity :size="16" :stroke-width="1.8" /><span>{{ t("nav.stats") }}</span></button>
             <button type="button" class="flex h-11 items-center gap-3 px-2 text-left text-[13px] font-semibold uppercase tracking-[0.15em] transition-colors" :class="activeView === 'playlist-new' ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg'" @click="createMobilePlaylist"><Plus :size="16" :stroke-width="2" /><span>{{ t("library.playlists.new") }}</span></button>
             <button type="button" class="flex h-11 items-center gap-3 px-2 text-left text-[13px] font-semibold uppercase tracking-[0.15em] transition-colors" :class="activeView === 'settings' ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg'" @click="navigateMobile('settings')"><Settings2 :size="16" :stroke-width="1.8" /><span>{{ t("nav.settings") }}</span></button>

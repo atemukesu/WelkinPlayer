@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import { VList } from "virtua/vue";
 import { X } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { usePlayerStore } from "../stores/player";
@@ -8,6 +9,8 @@ import { initial, pad } from "../lib/format";
 const emit = defineEmits<{ close: [] }>();
 const { t } = useI18n();
 const player = usePlayerStore();
+
+const QUEUE_ROW_HEIGHT = 52;
 
 const upcoming = computed(() => {
   if (player.queue.length === 0 || player.queueIndex < 0) return [];
@@ -49,33 +52,35 @@ function playFromQueue(index: number) {
       </div>
     </div>
 
-    <div class="min-h-0 flex-1 overflow-y-auto">
-      <div v-if="upcoming.length === 0" class="px-5 py-10 text-center text-sm text-muted">
+    <div v-if="upcoming.length === 0" class="min-h-0 flex-1 overflow-y-auto">
+      <div class="px-5 py-10 text-center text-sm text-muted">
         {{ t("nowPlaying.emptyQueue") }}
       </div>
-      <template v-else>
-        <p class="px-5 pt-3 pb-2 font-mono text-[10px] uppercase tracking-[0.3em] text-dim">{{ t("nowPlaying.nextUp", { count: upcoming.length }) }}</p>
-        <button
-          v-for="(track, i) in upcoming"
-          :key="`q-${i}-${track.id}`"
-          type="button"
-          class="flex w-full items-center gap-3 px-5 py-2 text-left transition-colors hover:bg-fg/5"
-          @click="playFromQueue(player.queueIndex + 1 + i)"
-        >
-          <span class="w-6 shrink-0 text-right font-mono text-[11px] tabular-nums text-dim">{{ pad(i + 1) }}</span>
-          <span
-            class="grid h-9 w-9 shrink-0 place-items-center overflow-hidden text-sm font-black text-white/90"
-            :style="{ backgroundColor: track.color }"
-          >
-            <img v-if="track.cover" :src="track.cover" alt="" loading="lazy" decoding="async" class="h-full w-full object-cover" />
-            <template v-else>{{ initial(track) }}</template>
-          </span>
-          <span class="min-w-0 flex-1">
-            <strong class="block truncate text-[12px] font-semibold">{{ track.title }}</strong>
-            <small class="block truncate text-[11px] text-muted">{{ track.artist }}</small>
-          </span>
-        </button>
-      </template>
     </div>
+    <template v-else>
+      <p class="shrink-0 px-5 pt-3 pb-2 font-mono text-[10px] uppercase tracking-[0.3em] text-dim">{{ t("nowPlaying.nextUp", { count: upcoming.length }) }}</p>
+      <VList :data="upcoming" :item-size="QUEUE_ROW_HEIGHT" class="min-h-0 flex-1">
+        <template #default="{ item: track, index }">
+          <button
+            type="button"
+            class="flex w-full items-center gap-3 px-5 py-2 text-left transition-colors hover:bg-fg/5"
+            @click="playFromQueue(player.queueIndex + 1 + index)"
+          >
+            <span class="w-6 shrink-0 text-right font-mono text-[11px] tabular-nums text-dim">{{ pad(index + 1) }}</span>
+            <span
+              class="grid h-9 w-9 shrink-0 place-items-center overflow-hidden text-sm font-black text-white/90"
+              :style="{ backgroundColor: track.color }"
+            >
+              <img v-if="track.cover" :src="track.cover" alt="" loading="lazy" decoding="async" class="h-full w-full object-cover" />
+              <template v-else>{{ initial(track) }}</template>
+            </span>
+            <span class="min-w-0 flex-1">
+              <strong class="block truncate text-[12px] font-semibold">{{ track.title }}</strong>
+              <small class="block truncate text-[11px] text-muted">{{ track.artist }}</small>
+            </span>
+          </button>
+        </template>
+      </VList>
+    </template>
   </div>
 </template>

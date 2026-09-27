@@ -10,6 +10,7 @@ import {
 } from "../lib/preferences";
 import type { LyricDisplaySettings, LyricProvider } from "../lib/preferences";
 import { readLyricSource, tagLyric } from "../lib/lyricTag";
+import { applyLyricOffset, readLyricOffset } from "../lib/lyricOffset";
 import {
   LyricResolver,
   lyricFromAmll,
@@ -318,12 +319,29 @@ export const useLyricsStore = defineStore("lyrics", () => {
   ) {
     const tagged = tagLyric(content, { source: provider, sourceId });
     try {
-      await invoke("save_track_lyrics", { path, content: tagged });
-      lyricLog(
-        "info",
-        `persisted from ${provider}`,
-        `${tagged.length} chars -> local cache + WebDAV sidecar`,
+      const result = await invoke<{ uploaded: boolean; uploadError: string | null }>(
+        "save_track_lyrics",
+        { path, content: tagged },
       );
+      if (result.uploadError) {
+        lyricLog(
+          "warn",
+          `persisted from ${provider}`,
+          `${tagged.length} chars -> local cache only (WebDAV: ${result.uploadError})`,
+        );
+      } else if (!result.uploaded) {
+        lyricLog(
+          "info",
+          `persisted from ${provider}`,
+          `${tagged.length} chars -> local cache only (WebDAV not configured)`,
+        );
+      } else {
+        lyricLog(
+          "info",
+          `persisted from ${provider}`,
+          `${tagged.length} chars -> local cache + WebDAV sidecar`,
+        );
+      }
     } catch (error) {
       lyricLog("error", `persist failed from ${provider}`, error);
     }
@@ -342,7 +360,12 @@ export const useLyricsStore = defineStore("lyrics", () => {
 
   /** Parse lyric text and load it; returns false when there are no lines. */
   function applyContent(content: string): boolean {
-    const parsed = parseLyric(content, { applyOffset: true });
+    const parsed = parseLyric(content, { applyOffset: true, extractMetadata: true });
+    // `lyric-kit` applies `[offset]` for LRC-family payloads, but keeps the TTML
+    // offset tag as inert metadata — shift it here so both formats behave alike.
+    if (detectFormat(content) === "ttml") {
+      applyLyricOffset(parsed.lines, readLyricOffset(content));
+    }
     if (parsed.lines.length === 0) return false;
     load(parsed.lines);
     return true;

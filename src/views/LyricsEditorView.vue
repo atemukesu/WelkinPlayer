@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { ArrowLeft, Download, ExternalLink, Eye, EyeOff, FileText, PenLine, RotateCcw, Save, Search, X } from "@lucide/vue";
+import { ArrowLeft, Download, ExternalLink, Eye, EyeOff, FileText, PenLine, RotateCcw, Save, Search, Timer, X } from "@lucide/vue";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { describeError, invoke } from "../api";
 import { detectFormat } from "lyric-kit";
 import { readLyricSource, tagLyric } from "../lib/lyricTag";
+import { readLyricOffset, supportsLyricOffset, writeLyricOffset } from "../lib/lyricOffset";
 import { lyricPlatformLink, lyricSidecarPath, parseAmllAddress, parseNeteaseId, parseQqIds } from "../lib/lyricLink";
 import { lyricFromAmll, lyricFromNetease, lyricFromQqBest, LyricResolver, searchNetease, searchQq } from "../lib/lyricSources";
 import { pushToast } from "../lib/toast";
@@ -16,6 +17,9 @@ import { useLyricsStore } from "../stores/lyrics";
 import LayeredSelect from "../components/LayeredSelect.vue";
 
 import type { LyricFetchResult } from "../lib/lyricSources";
+
+/** Mirrors the Rust `LyricSaveResult` returned by `save_track_lyrics`. */
+type LyricSaveResult = { uploaded: boolean; uploadError: string | null };
 
 const props = defineProps<{ path: string | null }>();
 const emit = defineEmits<{ back: []; friendlyError: [error: unknown] }>();
@@ -41,6 +45,8 @@ const tag = computed(() => readLyricSource(content.value));
 const source = computed(() => tag.value?.source?.trim().toLowerCase() || "local");
 /** Local lyrics are never tagged, so an absent tag means the sidecar is local. */
 const isLocal = computed(() => !tag.value || source.value === "local");
+/** Whether any lyric text is present at all. */
+const hasLyrics = computed(() => content.value.trim().length > 0);
 const format = computed(() => {
   try {
     return detectFormat(content.value);
@@ -53,6 +59,10 @@ const sidecarPath = computed(() => lyricSidecarPath(props.path));
 const platformLink = computed(() => lyricPlatformLink(source.value, tag.value?.sourceId));
 const dirty = computed(() => content.value !== savedSnapshot.value);
 const disabled = computed(() => !!props.path && profile.isLyricsDisabled(props.path));
+const offset = computed(() => readLyricOffset(content.value));
+const offsetSupported = computed(() => supportsLyricOffset(format.value));
+const negativeOffsetSteps = [-1000, -100, -10];
+const positiveOffsetSteps = [10, 100, 1000];
 
 /** Suppress or restore lyrics for this track, reflecting playback immediately. */
 function toggleDisabled() {
@@ -115,10 +125,17 @@ async function save() {
   if (!props.path || saving.value) return;
   saving.value = true;
   try {
-    await invoke("save_track_lyrics", { path: props.path, content: content.value });
+    const result = await invoke<LyricSaveResult>("save_track_lyrics", {
+      path: props.path,
+      content: content.value,
+    });
     savedSnapshot.value = content.value;
     loadError.value = "";
-    pushToast("success", t("lyricsEditor.saved"));
+    if (result.uploadError) {
+      pushToast("warning", t("lyricsEditor.uploadFailed", { value: result.uploadError }));
+    } else {
+      pushToast("success", t("lyricsEditor.saved"));
+    }
   } catch (error) {
     emit("friendlyError", error);
   } finally {
@@ -128,6 +145,30 @@ async function save() {
 
 function reset() {
   content.value = savedSnapshot.value;
+}
+
+/** Write the offset into the lyrics; saving happens via the section's button. */
+function setOffset(value: number) {
+  if (!offsetSupported.value) return;
+  const ms = Number.isFinite(value) ? Math.trunc(value) : 0;
+  const next = writeLyricOffset(content.value, ms);
+  if (next === content.value) return;
+  content.value = next;
+}
+
+function nudgeOffset(delta: number) {
+  setOffset(offset.value + delta);
+}
+
+function onOffsetInput(event: Event) {
+  setOffset(Number((event.target as HTMLInputElement).value));
+}
+
+/** Save the current lyrics and refresh playback when this track is playing. */
+async function saveOffset() {
+  await save();
+  const current = player.currentTrack;
+  if (current && current.path === props.path) void lyrics.loadForTrack(current);
 }
 
 function openSource() {
@@ -171,12 +212,16 @@ async function downloadLyrics() {
 
     // Tag with the origin so the "来源" section and platform link keep working.
     const tagged = tagLyric(hit.content, { source: downloadProvider.value, sourceId: hit.sourceId });
-    await invoke("save_track_lyrics", { path: props.path, content: tagged });
+    const result = await invoke<LyricSaveResult>("save_track_lyrics", { path: props.path, content: tagged });
     content.value = tagged;
     savedSnapshot.value = tagged;
     loadError.value = "";
     editorOpen.value = true;
-    pushToast("success", t("lyricsEditor.downloaded"));
+    if (result.uploadError) {
+      pushToast("warning", t("lyricsEditor.uploadFailed", { value: result.uploadError }));
+    } else {
+      pushToast("success", t("lyricsEditor.downloaded"));
+    }
   } catch (error) {
     emit("friendlyError", error);
   } finally {
@@ -265,28 +310,31 @@ watch(() => props.path, loadLyrics, { immediate: true });
         <section class="ak-frame border border-line bg-surface p-6">
           <h2 class="flex items-center gap-2 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("lyricsEditor.source") }}</h2>
           <p class="mt-3 text-xs text-muted">{{ t("lyricsEditor.sourceHint") }}</p>
-          <p class="mt-4 text-2xl font-black tracking-tight">{{ providerLabel }}</p>
-          <dl class="mt-4 grid gap-3">
-            <div v-if="tag?.sourceId">
-              <dt class="text-[11px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("lyricsEditor.sourceId") }}</dt>
-              <dd class="mt-1 break-all font-mono text-xs">{{ tag.sourceId }}</dd>
+          <template v-if="hasLyrics">
+            <p class="mt-4 text-2xl font-black tracking-tight">{{ providerLabel }}</p>
+            <dl class="mt-4 grid gap-3">
+              <div v-if="tag?.sourceId">
+                <dt class="text-[11px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("lyricsEditor.sourceId") }}</dt>
+                <dd class="mt-1 break-all font-mono text-xs">{{ tag.sourceId }}</dd>
+              </div>
+              <div v-if="tag?.fetched">
+                <dt class="text-[11px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("lyricsEditor.fetched") }}</dt>
+                <dd class="mt-1 font-mono text-xs">{{ tag.fetched }}</dd>
+              </div>
+              <div v-if="format">
+                <dt class="text-[11px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("lyricsEditor.format") }}</dt>
+                <dd class="mt-1 font-mono text-xs uppercase">{{ format }}</dd>
+              </div>
+            </dl>
+            <div v-if="platformLink" class="mt-4">
+              <p class="text-[11px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("lyricsEditor.linkUrl") }}</p>
+              <p class="mt-1 break-all font-mono text-xs">{{ platformLink }}</p>
+              <button type="button" class="ak-clip-tr mt-3 flex h-10 items-center gap-2 bg-accent px-4 text-[13px] font-bold text-accent-fg transition-transform hover:scale-[1.02] active:scale-95" @click="openSource"><ExternalLink :size="15" />{{ t("lyricsEditor.openSource") }}</button>
             </div>
-            <div v-if="tag?.fetched">
-              <dt class="text-[11px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("lyricsEditor.fetched") }}</dt>
-              <dd class="mt-1 font-mono text-xs">{{ tag.fetched }}</dd>
-            </div>
-            <div v-if="format">
-              <dt class="text-[11px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("lyricsEditor.format") }}</dt>
-              <dd class="mt-1 font-mono text-xs uppercase">{{ format }}</dd>
-            </div>
-          </dl>
-          <div v-if="platformLink" class="mt-4">
-            <p class="text-[11px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("lyricsEditor.linkUrl") }}</p>
-            <p class="mt-1 break-all font-mono text-xs">{{ platformLink }}</p>
-            <button type="button" class="ak-clip-tr mt-3 flex h-10 items-center gap-2 bg-accent px-4 text-[13px] font-bold text-accent-fg transition-transform hover:scale-[1.02] active:scale-95" @click="openSource"><ExternalLink :size="15" />{{ t("lyricsEditor.openSource") }}</button>
-          </div>
-          <p v-else-if="isLocal" class="mt-4 border-l-2 border-line-strong pl-3 text-xs text-muted">{{ t("lyricsEditor.localNote") }}</p>
-          <p v-else class="mt-4 border-l-2 border-line-strong pl-3 text-xs text-muted">{{ t("lyricsEditor.noLink") }}</p>
+            <p v-else-if="isLocal" class="mt-4 border-l-2 border-line-strong pl-3 text-xs text-muted">{{ t("lyricsEditor.localNote") }}</p>
+            <p v-else class="mt-4 border-l-2 border-line-strong pl-3 text-xs text-muted">{{ t("lyricsEditor.noLink") }}</p>
+          </template>
+          <p v-else class="mt-4 border-l-2 border-line-strong pl-3 text-xs text-muted">{{ t("lyricsEditor.noLyrics") }}</p>
         </section>
       </div>
 
@@ -302,6 +350,28 @@ watch(() => props.path, loadLyrics, { immediate: true });
           </div>
         </div>
         <p v-if="disabled" class="mt-4 border-l-2 border-accent/60 pl-3 text-xs text-muted">{{ t("lyricsEditor.disabledNote") }}</p>
+      </section>
+
+      <section v-if="hasLyrics" class="ak-frame mt-4 border border-line bg-surface p-6">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 class="flex items-center gap-2 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim"><Timer :size="15" />{{ t("lyricsEditor.offset") }}</h2>
+            <p class="mt-2 text-xs text-muted">{{ t("lyricsEditor.offsetHint") }}</p>
+          </div>
+          <span class="font-mono text-2xl font-black tracking-tight" :class="offset ? 'text-accent' : 'text-dim'">{{ offset > 0 ? `+${offset}` : offset }}<span class="ml-1 text-[11px] font-semibold uppercase tracking-[0.2em] text-dim">ms</span></span>
+        </div>
+        <div class="mt-4 flex flex-wrap items-center gap-2">
+          <button v-for="step in negativeOffsetSteps" :key="step" type="button" class="ak-clip-tr h-9 min-w-[3.5rem] border border-line px-2 font-mono text-xs font-semibold transition-colors hover:border-accent hover:text-accent disabled:opacity-40" :disabled="!offsetSupported || !props.path" @click="nudgeOffset(step)">{{ step }}</button>
+          <input :value="offset" type="number" step="10" :disabled="!offsetSupported || !props.path" class="h-9 w-24 border border-line bg-bg px-2 text-center font-mono text-xs outline-none focus:border-accent disabled:opacity-40" @change="onOffsetInput" />
+          <button v-for="step in positiveOffsetSteps" :key="step" type="button" class="ak-clip-tr h-9 min-w-[3.5rem] border border-line px-2 font-mono text-xs font-semibold transition-colors hover:border-accent hover:text-accent disabled:opacity-40" :disabled="!offsetSupported || !props.path" @click="nudgeOffset(step)">+{{ step }}</button>
+          <button type="button" class="ak-clip-tr h-9 border border-line px-3 text-[13px] font-semibold transition-colors hover:border-accent hover:text-accent disabled:opacity-40" :disabled="!offsetSupported || !props.path || !offset" @click="setOffset(0)">{{ t("lyricsEditor.offsetClear") }}</button>
+        </div>
+        <p v-if="!offsetSupported" class="mt-3 border-l-2 border-accent/60 pl-3 text-xs text-muted">{{ t("lyricsEditor.offsetUnsupported") }}</p>
+        <p v-else class="mt-3 border-l-2 border-line-strong pl-3 text-xs text-muted">{{ t("lyricsEditor.offsetNote") }}</p>
+        <div class="mt-4 flex flex-wrap items-center gap-3">
+          <span v-if="dirty" class="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.2em] text-accent"><span class="h-1.5 w-1.5 bg-accent"></span>{{ t("lyricsEditor.dirty") }}</span>
+          <button type="button" class="ak-clip-tr ml-auto flex h-10 items-center gap-2 bg-accent px-5 text-[13px] font-bold text-accent-fg transition-transform hover:scale-[1.02] active:scale-95 disabled:opacity-50" :disabled="saving || !props.path || !dirty" @click="saveOffset"><Save :size="15" />{{ saving ? t("lyricsEditor.saving") : t("lyricsEditor.save") }}</button>
+        </div>
       </section>
 
       <section class="ak-frame mt-4 border border-line bg-surface p-6">

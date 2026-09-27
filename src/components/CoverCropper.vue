@@ -103,7 +103,7 @@ async function confirm() {
 
       <div class="mt-4 flex items-center gap-3">
         <span class="text-[11px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("playlistEditor.zoom") }}</span>
-        <input v-model.number="zoom" type="range" min="1" max="4" step="0.01" class="ak-slider flex-1" @input="clamp" />
+        <input v-model.number="zoom" type="range" min="1" max="4" step="0.01" class="ak-slider flex-1" :style="{ '--fill': `${((zoom - 1) / 3) * 100}%` }" @input="clamp" />
         <button type="button" class="grid h-8 w-8 place-items-center text-dim hover:text-fg" :title="t('playlistEditor.reset')" @click="reset"><RotateCcw :size="15" /></button>
       </div>
 

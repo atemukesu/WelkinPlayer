@@ -82,16 +82,29 @@ pub async fn lyric_http_get(url: String, referer: Option<String>) -> Result<Stri
     Ok(body)
 }
 
+/// Outcome of [`save_track_lyrics`]: the local cache always succeeds, while the
+/// WebDAV sidecar upload is best-effort and reported so the UI can warn.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LyricSaveResult {
+    /// Whether the `.lrc` sidecar was uploaded to WebDAV.
+    pub uploaded: bool,
+    /// Upload error message when WebDAV is configured but the write failed.
+    pub upload_error: Option<String>,
+}
+
 /// Persist a fetched lyric: local cache first, then the WebDAV sidecar.
 ///
 /// The WebDAV upload is best-effort — a missing server or a failed write must
-/// never break playback, because the local cache already holds the lyrics.
+/// never break playback, because the local cache already holds the lyrics. The
+/// result reports that failure so the caller can warn instead of pretending the
+/// write went through.
 #[tauri::command]
 pub async fn save_track_lyrics(
     app: AppHandle,
     path: String,
     content: String,
-) -> Result<(), AppError> {
+) -> Result<LyricSaveResult, AppError> {
     let dir = resolve_cache_dir(&app);
     write_lyric(&dir, &cover_hash(&path), &content)?;
     log::info!(
@@ -100,11 +113,28 @@ pub async fn save_track_lyrics(
     );
 
     match upload_sidecar(&app, &path, &content).await {
-        Ok(true) => log::info!("lyrics sidecar uploaded for {path}"),
-        Ok(false) => log::info!("WebDAV not configured; lyrics cached locally only for {path}"),
-        Err(error) => log::warn!("failed to upload lyrics for {path}: {error}"),
+        Ok(true) => {
+            log::info!("lyrics sidecar uploaded for {path}");
+            Ok(LyricSaveResult {
+                uploaded: true,
+                upload_error: None,
+            })
+        }
+        Ok(false) => {
+            log::info!("WebDAV not configured; lyrics cached locally only for {path}");
+            Ok(LyricSaveResult {
+                uploaded: false,
+                upload_error: None,
+            })
+        }
+        Err(error) => {
+            log::warn!("failed to upload lyrics for {path}: {error}");
+            Ok(LyricSaveResult {
+                uploaded: false,
+                upload_error: Some(error.to_string()),
+            })
+        }
     }
-    Ok(())
 }
 
 /// Upload the same-named `.lrc` file; `Ok(false)` when WebDAV is not configured.
