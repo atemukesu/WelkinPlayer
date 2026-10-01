@@ -18,14 +18,19 @@ use tauri::AppHandle;
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
 use crate::backend::{content_type_for, safe_join};
+use crate::commands::media::asset_hash;
 use crate::commands::webdav::{enforce_url_policy, source_password};
 use crate::dav::resolve_under_base;
 use crate::sources::find_source;
+use crate::stream_cache::{
+    read_cache_limit_mb, write_cache_limit_mb, StreamCache, TotalState,
+};
 
 /// Shared state handed to the frontend via the `stream_endpoint` command.
 pub struct StreamProxy {
     pub port: u16,
     pub token: String,
+    pub cache: Arc<StreamCache>,
 }
 
 #[derive(Serialize)]
@@ -45,8 +50,10 @@ pub fn start(app: AppHandle) -> Result<StreamProxy, String> {
         .map(|addr| addr.port())
         .ok_or_else(|| "could not determine proxy port".to_string())?;
     let token = generate_token();
+    let cache = Arc::new(StreamCache::new(&app)?);
 
     let thread_token = token.clone();
+    let thread_cache = cache.clone();
     std::thread::spawn(move || {
         let client = match Client::builder().build() {
             Ok(client) => Arc::new(client),
@@ -60,11 +67,12 @@ pub fn start(app: AppHandle) -> Result<StreamProxy, String> {
             let app = app.clone();
             let token = thread_token.clone();
             let client = client.clone();
-            std::thread::spawn(move || handle(request, &app, &token, &client));
+            let cache = thread_cache.clone();
+            std::thread::spawn(move || handle(request, &app, &token, &client, &cache));
         }
     });
 
-    Ok(StreamProxy { port, token })
+    Ok(StreamProxy { port, token, cache })
 }
 
 /// Address of the streaming proxy for the frontend.
@@ -76,7 +84,13 @@ pub fn stream_endpoint(proxy: tauri::State<StreamProxy>) -> StreamEndpoint {
     }
 }
 
-fn handle(request: Request, app: &AppHandle, token: &str, client: &Client) {
+fn handle(
+    request: Request,
+    app: &AppHandle,
+    token: &str,
+    client: &Client,
+    cache: &Arc<StreamCache>,
+) {
     if request.method() == &Method::Options {
         let _ = request.respond(empty(204));
         return;
@@ -126,7 +140,98 @@ fn handle(request: Request, app: &AppHandle, token: &str, client: &Client) {
         return;
     }
 
-    serve_webdav(request, app, client, &source, &remote_path, range.as_deref());
+    serve_stream(
+        request,
+        app,
+        client,
+        cache,
+        &source,
+        &remote_path,
+        range.as_deref(),
+    );
+}
+
+/// Serve a WebDAV track from the aggressive read-ahead cache. The first request
+/// starts the background downloader; playback still begins on the first byte.
+fn serve_stream(
+    request: Request,
+    app: &AppHandle,
+    client: &Client,
+    cache: &Arc<StreamCache>,
+    source: &crate::sources::SourceConfig,
+    remote_path: &str,
+    range: Option<&str>,
+) {
+    let key = asset_hash(&source.id, remote_path);
+    let entry = cache.ensure(&key);
+    cache.touch(&key);
+
+    let requested_start = range.and_then(parse_range_start).unwrap_or(0);
+    cache.ensure_stream(app, source, remote_path, &entry, requested_start);
+
+    let total = match cache.wait_total(&entry, crate::stream_cache::TOTAL_WAIT) {
+        TotalState::Known(total) => total,
+        TotalState::Failed(status, message) => {
+            let _ = request.respond(text(status, &message));
+            return;
+        }
+        TotalState::Unknown => {
+            // No usable upstream headers (or no range support reported yet):
+            // fall back to the direct streaming proxy so playback still works.
+            serve_webdav(request, app, client, source, remote_path, range);
+            return;
+        }
+    };
+
+    let (start, end, ranged) = match range.and_then(|value| parse_range(value, total)) {
+        Some((start, end)) => (start, end, true),
+        None => {
+            if range.is_some() {
+                let _ = request.respond(text(416, "range not satisfiable"));
+                return;
+            }
+            (0, total.saturating_sub(1), false)
+        }
+    };
+
+    // Ensure the downloader covers the requested offset (handles seeks).
+    cache.ensure_stream(app, source, remote_path, &entry, start);
+
+    let content_type = content_type_for(remote_path)
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+    let mut headers = vec![Header::from_bytes("Accept-Ranges", "bytes").unwrap()];
+    if let Ok(header) = Header::from_bytes("Content-Type", content_type.as_bytes()) {
+        headers.push(header);
+    }
+    if ranged {
+        if let Ok(header) = Header::from_bytes(
+            "Content-Range",
+            format!("bytes {start}-{end}/{total}").as_bytes(),
+        ) {
+            headers.push(header);
+        }
+    }
+
+    let length = end.saturating_sub(start) + 1;
+    let reader = cache.reader(&entry, start, end);
+    let status = if ranged { 206 } else { 200 };
+    let _ = request.respond(Response::new(
+        StatusCode(status),
+        headers,
+        reader,
+        Some(length as usize),
+        None,
+    ));
+}
+
+/// Extract the start offset of a `Range` header, ignoring suffix ranges.
+fn parse_range_start(value: &str) -> Option<u64> {
+    let spec = value.trim().strip_prefix("bytes=")?;
+    let (start, _) = spec.split_once('-')?;
+    if start.is_empty() {
+        return None;
+    }
+    start.trim().parse().ok()
 }
 
 /// The directory of a local source, validated to exist.
@@ -308,7 +413,7 @@ fn serve_webdav(
     ));
 }
 
-fn build_url(base: &str, remote_path: &str) -> Result<reqwest::Url, String> {
+pub(crate) fn build_url(base: &str, remote_path: &str) -> Result<reqwest::Url, String> {
     let mut normalized = base.trim().to_string();
     if normalized.is_empty() {
         return Err("server URL is not configured".to_string());
@@ -371,4 +476,60 @@ fn text(status: u16, message: &str) -> Response<Cursor<Vec<u8>>> {
         Some(message.len()),
         None,
     )
+}
+
+/// Aggressively prefetch a track's bytes into the stream cache. Called for the
+/// current track and, shortly before it ends, for the next queue entry.
+#[tauri::command]
+pub fn prefetch_track(
+    proxy: tauri::State<StreamProxy>,
+    app: AppHandle,
+    source_id: String,
+    path: String,
+) -> Result<(), crate::error::AppError> {
+    let source = find_source(&app, &source_id)?;
+    if !source.is_local() {
+        proxy.cache.prefetch(&app, source, &path);
+    }
+    Ok(())
+}
+
+/// Report the playhead so the cache can keep its lead window ahead of it.
+#[tauri::command]
+pub fn report_stream_progress(
+    proxy: tauri::State<StreamProxy>,
+    source_id: String,
+    path: String,
+    position_secs: f64,
+    duration_secs: f64,
+) -> Result<(), crate::error::AppError> {
+    proxy
+        .cache
+        .report(&source_id, &path, position_secs, duration_secs);
+    Ok(())
+}
+
+/// Current stream cache budget in mebibytes.
+#[tauri::command]
+pub fn get_stream_cache_limit(app: AppHandle) -> Result<u64, crate::error::AppError> {
+    Ok(read_cache_limit_mb(&app))
+}
+
+/// Persist a new stream cache budget (MiB) and evict down to it.
+#[tauri::command]
+pub fn set_stream_cache_limit(
+    proxy: tauri::State<StreamProxy>,
+    app: AppHandle,
+    limit_mb: u64,
+) -> Result<u64, crate::error::AppError> {
+    write_cache_limit_mb(&app, limit_mb).map_err(crate::error::AppError::Store)?;
+    proxy.cache.set_limit_bytes(limit_mb.saturating_mul(1024 * 1024));
+    Ok(limit_mb)
+}
+
+/// Drop every cached stream (files on disk are removed).
+#[tauri::command]
+pub fn clear_stream_cache(proxy: tauri::State<StreamProxy>) -> Result<(), crate::error::AppError> {
+    proxy.cache.clear();
+    Ok(())
 }

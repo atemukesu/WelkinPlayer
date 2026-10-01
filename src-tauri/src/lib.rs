@@ -8,6 +8,7 @@ mod logging;
 mod metadata;
 mod proxy;
 mod sources;
+mod stream_cache;
 
 use tauri::Manager;
 
@@ -96,7 +97,12 @@ pub fn run() {
             commands::media::load_library_cache,
             commands::media::save_library_cache,
             commands::media::refresh_source_library,
-            proxy::stream_endpoint
+            proxy::stream_endpoint,
+            proxy::prefetch_track,
+            proxy::report_stream_progress,
+            proxy::get_stream_cache_limit,
+            proxy::set_stream_cache_limit,
+            proxy::clear_stream_cache
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

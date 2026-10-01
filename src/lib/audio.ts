@@ -45,6 +45,66 @@ let lastRecoveryAt = 0;
 let stallRecoveries = 0;
 /** Stall watchdog interval id. */
 let watchdogTimer = 0;
+/** Report the playhead to the Rust stream cache at most this often. */
+const PROGRESS_REPORT_INTERVAL_MS = 3000;
+/** Prefetch the next queue entry once this many seconds remain. */
+const NEXT_PREFETCH_LEAD_SECS = 60;
+/** Source generation whose following track was already prefetched. */
+let prefetchedNextGeneration = -1;
+/** Timestamp of the last progress report sent to the Rust cache. */
+let lastProgressReportAt = 0;
+
+/**
+ * Ask Rust to aggressively download a track into its read-ahead cache. Rust
+ * ignores local sources, so this is safe to call for every track.
+ */
+function prefetchTrack(track: { sourceId?: string; path?: string } | null): void {
+  if (!track?.path || !track.sourceId) return;
+  void invoke("prefetch_track", { sourceId: track.sourceId, path: track.path }).catch(() => {});
+}
+
+/** The queue entry that will follow the current one, if any. */
+function nextQueueTrack(): { sourceId?: string; path?: string } | null {
+  const player = usePlayerStore();
+  if (player.repeat === "one") return null;
+  const queue = player.queue;
+  const index = player.queueIndex;
+  if (index < 0 || queue.length === 0) return null;
+  let nextIndex = index + 1;
+  if (nextIndex >= queue.length) {
+    if (player.repeat !== "all") return null;
+    nextIndex = 0;
+  }
+  return queue[nextIndex] ?? null;
+}
+
+/** Feed the playhead to the Rust cache so it can keep its lead window ahead. */
+function reportStreamProgress(generation: number) {
+  if (!audio || generation !== sourceGeneration) return;
+  const now = performance.now();
+  if (now - lastProgressReportAt < PROGRESS_REPORT_INTERVAL_MS) return;
+  const track = usePlayerStore().currentTrack;
+  if (!track?.path || !track.sourceId) return;
+  lastProgressReportAt = now;
+  const duration = audio.duration;
+  void invoke("report_stream_progress", {
+    sourceId: track.sourceId,
+    path: track.path,
+    positionSecs: audio.currentTime,
+    durationSecs: Number.isFinite(duration) && duration > 0 ? duration : 0,
+  }).catch(() => {});
+}
+
+/** Warm the next queue entry shortly before the current track ends. */
+function maybePrefetchNext(generation: number) {
+  if (!audio || generation !== sourceGeneration) return;
+  if (prefetchedNextGeneration === generation) return;
+  const duration = audio.duration;
+  if (!(duration > 0)) return;
+  if (duration - audio.currentTime > NEXT_PREFETCH_LEAD_SECS) return;
+  prefetchedNextGeneration = generation;
+  prefetchTrack(nextQueueTrack());
+}
 
 /** Localization keys for the `AppError` codes a stream probe can return. */
 const PROBE_ERROR_KEYS: Record<string, string> = {
@@ -182,11 +242,14 @@ function setSource(path: string, sourceId?: string) {
   lastProgressAt = performance.now();
   lastRecoveryAt = 0;
   stallRecoveries = 0;
+  prefetchedNextGeneration = -1;
+  lastProgressReportAt = 0;
   audio.src = url;
   audio.load();
   player.setPosition(0);
   player.setDuration(0);
   player.setBufferedProgress(0);
+  prefetchTrack({ path, sourceId });
   if (player.isPlaying) play();
 }
 
@@ -278,7 +341,13 @@ async function bootstrapAudio(): Promise<void> {
     }
   });
   audio.addEventListener("durationchange", () => { player.setDuration(audio?.duration ?? 0); syncBuffered(); });
-  audio.addEventListener("timeupdate", () => { player.setPosition(audio?.currentTime ?? 0); syncBuffered(); lastProgressAt = performance.now(); });
+  audio.addEventListener("timeupdate", () => {
+    player.setPosition(audio?.currentTime ?? 0);
+    syncBuffered();
+    lastProgressAt = performance.now();
+    reportStreamProgress(sourceGeneration);
+    maybePrefetchNext(sourceGeneration);
+  });
   audio.addEventListener("progress", syncBuffered);
   audio.addEventListener("play", () => { lastProgressAt = performance.now(); if (!player.isPlaying) player.setPlaying(true); });
   audio.addEventListener("pause", () => { if (player.isPlaying) player.setPlaying(false); });
@@ -322,6 +391,7 @@ async function bootstrapAudio(): Promise<void> {
           sourceGeneration += 1;
           lastRecoveryAt = 0;
           stallRecoveries = 0;
+          prefetchedNextGeneration = -1;
           audio.removeAttribute("src");
           audio.load();
           return;

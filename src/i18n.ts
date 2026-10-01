@@ -426,6 +426,10 @@ const messages = {
         dir: "缓存目录",
         save: "保存缓存目录",
         saved: "缓存目录已保存",
+        limit: "流缓存上限 (MB)",
+        limitDesc: "流式播放时后台预取的音频缓存上限；超出后按最近最少使用自动清理。",
+        limitSave: "保存缓存上限",
+        limitSaved: "缓存上限已保存",
       },
       ipc: {
         title: "系统 / IPC",
@@ -1079,6 +1083,10 @@ const messages = {
         dir: "Cache directory",
         save: "Save cache directory",
         saved: "Cache directory saved",
+        limit: "Stream cache limit (MB)",
+        limitDesc: "Upper bound for the read-ahead audio cache; least-recently-used tracks are evicted beyond it.",
+        limitSave: "Save cache limit",
+        limitSaved: "Cache limit saved",
       },
       ipc: {
         title: "System / IPC",

@@ -20,8 +20,13 @@ const appVersion = pkg.version;
 const profile = useProfileStore();
 const sources = useSourcesStore();
 const cacheDir = ref("");
+const cacheLimit = ref(1024);
 async function saveCacheDir() { try { cacheDir.value = await invoke<string>("set_cache_dir", { dir: cacheDir.value }); pushToast("success", t("settings.cache.saved")); } catch (error) { emit("friendlyError", error); } }
-onMounted(() => { void invoke<string>("get_cache_dir").then((dir) => (cacheDir.value = dir)).catch(() => {}); });
+async function saveCacheLimit() { try { cacheLimit.value = await invoke<number>("set_stream_cache_limit", { limitMb: cacheLimit.value }); pushToast("success", t("settings.cache.limitSaved")); } catch (error) { emit("friendlyError", error); } }
+onMounted(() => {
+  void invoke<string>("get_cache_dir").then((dir) => (cacheDir.value = dir)).catch(() => {});
+  void invoke<number>("get_stream_cache_limit").then((limit) => (cacheLimit.value = limit)).catch(() => {});
+});
 </script>
 
 <style scoped>
@@ -99,7 +104,7 @@ button.text-dim:hover:not(:disabled) {
 
       <section class="ak-frame grid gap-6 border border-line bg-surface p-6 lg:grid-cols-[1fr_1.3fr]">
         <div><h2 class="text-sm font-bold uppercase tracking-[0.2em]">{{ t("settings.cache.title") }}</h2><p class="mt-2 text-sm text-muted">{{ t("settings.cache.desc") }}</p></div>
-        <div class="grid gap-4"><label class="grid gap-2 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.cache.dir") }}<input v-model="cacheDir" class="h-10 border border-line bg-bg px-3 text-sm font-normal normal-case tracking-normal text-fg outline-none focus:border-accent" /></label><div class="flex justify-end"><button type="button" class="ak-clip-tr h-10 border border-line px-5 text-[13px] font-semibold uppercase tracking-[0.25em]" @click="saveCacheDir">{{ t("settings.cache.save") }}</button></div></div>
+        <div class="grid gap-4"><label class="grid gap-2 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.cache.dir") }}<input v-model="cacheDir" class="h-10 border border-line bg-bg px-3 text-sm font-normal normal-case tracking-normal text-fg outline-none focus:border-accent" /></label><label class="grid gap-2 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.cache.limit") }}<input v-model.number="cacheLimit" type="number" min="128" step="128" class="h-10 border border-line bg-bg px-3 text-sm font-normal normal-case tracking-normal text-fg outline-none focus:border-accent" /></label><p class="text-[11px] normal-case text-dim">{{ t("settings.cache.limitDesc") }}</p><div class="flex justify-end gap-2"><button type="button" class="ak-clip-tr h-10 border border-line px-5 text-[13px] font-semibold uppercase tracking-[0.25em]" @click="saveCacheDir">{{ t("settings.cache.save") }}</button><button type="button" class="ak-clip-tr h-10 border border-line px-5 text-[13px] font-semibold uppercase tracking-[0.25em]" @click="saveCacheLimit">{{ t("settings.cache.limitSave") }}</button></div></div>
       </section>
 
       <section class="ak-frame grid gap-6 border border-line bg-surface p-6 lg:grid-cols-[1fr_1.3fr]">
