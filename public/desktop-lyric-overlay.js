@@ -68,8 +68,6 @@
     syncAppTheme();
     state.settings = settings;
     var root = document.documentElement.style;
-    root.setProperty("--pad-x", (settings.paddingX == null ? 28 : settings.paddingX) + "px");
-    root.setProperty("--pad-y", (settings.paddingY == null ? 18 : settings.paddingY) + "px");
     root.setProperty("--opacity", Math.max(0, Math.min(1, settings.opacity / 100)));
     root.setProperty("--font-size", settings.fontSize + "px");
     root.setProperty("--translation-size", settings.translationSize + "px");
@@ -78,12 +76,15 @@
     root.setProperty("--active-color", settings.activeColor);
     root.setProperty("--translation-color", settings.translationColor);
     root.setProperty("--stroke-width", settings.stroke ? "1px" : "0px");
+    root.setProperty("--stroke-scale", settings.stroke ? "1" : "0");
     root.setProperty("--stroke-color", settings.stroke ? settings.strokeColor || "#000000" : "transparent");
     body.style.fontFamily = cssFontFamily(settings.fontFamilies) || "";
     body.classList.toggle("karaoke", !!settings.karaoke);
+    body.classList.toggle("has-stroke", !!settings.stroke);
     applyLocked(!!settings.locked);
     if (win) {
-      if (typeof win.setAlwaysOnTop === "function") win.setAlwaysOnTop(!!settings.alwaysOnTop).catch(function () {});
+      // Always-on-top is a fixed property of the floating layer now.
+      if (typeof win.setAlwaysOnTop === "function") win.setAlwaysOnTop(true).catch(function () {});
       if (typeof win.setSkipTaskbar === "function") win.setSkipTaskbar(!!settings.skipTaskbar).catch(function () {});
     }
     if (state.currentNode) updateProgress(state.positionMs);
@@ -99,9 +100,40 @@
         ? '<svg viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="10" rx="1"/><path d="M8 10V7a4 4 0 0 1 8 0"/></svg>'
         : '<svg viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="10" rx="1"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>';
     }
-    if (win && typeof win.setIgnoreCursorEvents === "function") win.setIgnoreCursorEvents(locked).catch(function () {});
+    // On desktop the window intentionally stays interactive while locked so the
+    // small padlock can be hovered/clicked to unlock. Android goes click-through
+    // (the padlock there is unreachable; unlock via the notification instead).
     if (window.AndroidDesktopLyric && window.AndroidDesktopLyric.setLocked) {
       try { window.AndroidDesktopLyric.setLocked(locked); } catch (error) {}
+    }
+  }
+
+  function updateTrack(payload) {
+    var element = document.getElementById("track");
+    if (!element) return;
+    var title = payload && payload.title ? payload.title : "";
+    var artist = payload && payload.artist ? payload.artist : "";
+    element.textContent = title && artist ? title + " - " + artist : title || artist;
+  }
+
+  function updatePlayButton() {
+    var button = document.getElementById("play");
+    if (!button) return;
+    var playing = !!state.playing;
+    button.title = playing ? "暂停" : "播放";
+    button.setAttribute("aria-label", button.title);
+    button.innerHTML = playing
+      ? '<svg viewBox="0 0 24 24"><path d="M8 5h3v14H8z"/><path d="M13 5h3v14h-3z"/></svg>'
+      : '<svg viewBox="0 0 24 24"><path d="M7 5v14l12-7z"/></svg>';
+  }
+
+  function sendControl(action) {
+    if (isAndroid && window.AndroidDesktopLyric && typeof window.AndroidDesktopLyric.control === "function") {
+      try { window.AndroidDesktopLyric.control(action); } catch (error) {}
+      return;
+    }
+    if (tauri && tauri.event && typeof tauri.event.emit === "function") {
+      try { tauri.event.emit("desktop-lyric:control", action); } catch (error) {}
     }
   }
 
@@ -147,6 +179,7 @@
       var element = document.createElement("span");
       element.className = "word";
       element.textContent = words[i].text;
+      element.setAttribute("data-text", words[i].text == null ? "" : words[i].text);
       fragment.appendChild(element);
       elements.push(element);
     }
@@ -351,7 +384,7 @@
     if (state.baseHeight == null) return;
     var base = state.currentBaseElement ? state.currentBaseElement.getBoundingClientRect().height : 0;
     if (base <= 0) return;
-    var padY = state.settings && state.settings.paddingY != null ? state.settings.paddingY : 18;
+    var padY = 18;
     var offset = Math.max(padY, Math.round((state.baseHeight - base) / 2));
     document.documentElement.style.setProperty("--stage-top", offset + "px");
   }
@@ -412,6 +445,7 @@
   function setLines(payload) {
     if (!payload) return;
     state.lines = Array.isArray(payload.lines) ? payload.lines : [];
+    updateTrack(payload);
     if (payload.settings) applySettings(payload.settings);
     resetBlock();
     renderCurrent(false);
@@ -429,7 +463,11 @@
     if (!payload) return;
     state.positionMs = payload.positionMs || 0;
     state.lastTickAt = performance.now();
-    state.playing = !!payload.playing;
+    var playing = !!payload.playing;
+    if (playing !== state.playing) {
+      state.playing = playing;
+      updatePlayButton();
+    }
     state.activeIndex = Number.isFinite(payload.activeIndex) ? payload.activeIndex : -1;
     state.activeIndices = Array.isArray(payload.activeIndices) ? payload.activeIndices : [];
     var visible = payload.visible !== false;
@@ -462,7 +500,8 @@
     try { return JSON.parse(localStorage.getItem("welkin-desktop-lyric-geometry") || "null"); } catch (error) { return null; }
   }
 
-  if (window.AndroidDesktopLyric) document.documentElement.classList.add("android");
+  var isAndroid = !!window.AndroidDesktopLyric;
+  if (isAndroid) document.documentElement.classList.add("android");
 
   if (win) {
     body.classList.add("desktop");
@@ -551,7 +590,6 @@
   });
   stage.addEventListener("pointerleave", function () { stage.style.cursor = ""; });
 
-  document.getElementById("drag").addEventListener("pointerdown", startDragging);
   document.getElementById("resize").addEventListener("pointerdown", function (event) {
     if (!win || typeof win.startResizeDragging !== "function" || event.button !== 0) return;
     event.preventDefault();
@@ -563,6 +601,7 @@
     });
   });
   stage.addEventListener("pointerdown", function (event) {
+    if (isAndroid) return;
     if (!state.settings || state.settings.locked || event.target.closest("button")) return;
     if (event.button === 0) {
       var direction = resizeDirectionAt(event);
@@ -579,7 +618,120 @@
     }
     startDragging(event);
   });
-  document.getElementById("close").addEventListener("click", function () { if (win && typeof win.close === "function") win.close().catch(function () {}); });
-  document.getElementById("lock").addEventListener("click", function () { if (state.settings) { state.settings.locked = !state.settings.locked; applyLocked(state.settings.locked); } });
+
+  // Android has no hover, and its overlay window is moved through a native JNI
+  // call rather than `startDragging`. A tap reveals the controls, a drag moves
+  // the window.
+  var androidDragging = false;
+  var androidMoved = false;
+  var androidLastX = 0;
+  var androidLastY = 0;
+  var androidDownX = 0;
+  var androidDownY = 0;
+  var androidDownAt = 0;
+  var controlsTimer = 0;
+
+  function showControls() {
+    if (state.settings && state.settings.locked) return;
+    body.classList.add("controls-visible");
+    window.clearTimeout(controlsTimer);
+    controlsTimer = window.setTimeout(function () { body.classList.remove("controls-visible"); }, 6000);
+  }
+
+  function hideControls() {
+    window.clearTimeout(controlsTimer);
+    body.classList.remove("controls-visible");
+  }
+
+  function androidMoveBy(dx, dy) {
+    if (!window.AndroidDesktopLyric || typeof window.AndroidDesktopLyric.moveBy !== "function") return;
+    try { window.AndroidDesktopLyric.moveBy(Math.round(dx), Math.round(dy)); } catch (error) {}
+  }
+
+  var androidActive = false;
+
+  function endAndroidDrag(event) {
+    if (!androidActive) return;
+    androidActive = false;
+    androidDragging = false;
+    body.classList.remove("dragging");
+    try { stage.releasePointerCapture(event.pointerId); } catch (error) {}
+    if (!androidMoved && performance.now() - androidDownAt < 400) {
+      if (state.settings && state.settings.locked) {
+        // Locked: a tap anywhere reveals the white padlock so it can be unlocked.
+        body.classList.toggle("controls-visible");
+      } else if (body.classList.contains("controls-visible")) {
+        hideControls();
+      } else {
+        showControls();
+      }
+    }
+  }
+
+  if (isAndroid) {
+    stage.addEventListener("pointerdown", function (event) {
+      if (event.target.closest("button")) return;
+      if (event.pointerType === "mouse" && event.button !== 0) return;
+      androidActive = true;
+      androidMoved = false;
+      androidDragging = false;
+      androidLastX = event.clientX;
+      androidLastY = event.clientY;
+      androidDownX = event.clientX;
+      androidDownY = event.clientY;
+      androidDownAt = performance.now();
+      if (!(state.settings && state.settings.locked)) {
+        androidDragging = true;
+        body.classList.add("dragging");
+        try { stage.setPointerCapture(event.pointerId); } catch (error) {}
+      }
+      event.preventDefault();
+    });
+
+    stage.addEventListener("pointermove", function (event) {
+      if (!androidDragging) return;
+      var dx = event.clientX - androidLastX;
+      var dy = event.clientY - androidLastY;
+      androidLastX = event.clientX;
+      androidLastY = event.clientY;
+      if (Math.abs(event.clientX - androidDownX) > 6 || Math.abs(event.clientY - androidDownY) > 6) androidMoved = true;
+      if (dx || dy) androidMoveBy(dx, dy);
+    });
+
+    stage.addEventListener("pointerup", endAndroidDrag);
+    stage.addEventListener("pointercancel", function (event) {
+      if (!androidActive) return;
+      androidActive = false;
+      androidDragging = false;
+      body.classList.remove("dragging");
+      try { stage.releasePointerCapture(event.pointerId); } catch (error) {}
+    });
+  }
+
+  document.getElementById("close").addEventListener("click", function () {
+    // Tell the main window so its toggle reflects the real state...
+    sendControl("close");
+    // ...and tear the layer down here right away for immediate feedback.
+    if (isAndroid && window.AndroidDesktopLyric && typeof window.AndroidDesktopLyric.close === "function") {
+      try { window.AndroidDesktopLyric.close(); return; } catch (error) {}
+    }
+    if (win && typeof win.close === "function") win.close().catch(function () {});
+  });
+  document.getElementById("lock").addEventListener("click", function () {
+    if (!state.settings) return;
+    state.settings.locked = !state.settings.locked;
+    applyLocked(state.settings.locked);
+    sendControl(state.settings.locked ? "lock" : "unlock");
+  });
+  document.getElementById("prev").addEventListener("click", function () { sendControl("previous"); });
+  document.getElementById("play").addEventListener("click", function () { sendControl("toggle"); });
+  document.getElementById("next").addEventListener("click", function () { sendControl("next"); });
+  document.getElementById("unlock").addEventListener("click", function () {
+    if (!state.settings) return;
+    state.settings.locked = false;
+    applyLocked(false);
+    body.classList.remove("controls-visible");
+    sendControl("unlock");
+  });
 
 })();

@@ -136,6 +136,7 @@ pub fn run() {
             commands::desktop_lyric::desktop_lyric_tick,
             commands::desktop_lyric::desktop_lyric_set_settings,
             commands::desktop_lyric::desktop_lyric_status,
+            commands::desktop_lyric::desktop_lyric_take_control,
             commands::desktop_lyric::desktop_lyric_request_permission
         ])
         .run(tauri::generate_context!())

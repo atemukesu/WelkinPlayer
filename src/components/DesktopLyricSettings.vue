@@ -68,7 +68,6 @@ function reset() {
       <div class="grid gap-4 border border-line bg-bg/40 p-4">
         <DesktopLyricField v-model="settings.fontSize" type="slider" :label="t('settings.desktopLyrics.fontSize')" :min="14" :max="96" :step="1" unit="px" />
         <DesktopLyricField v-model="settings.translationSize" type="slider" :label="t('settings.desktopLyrics.translationSize')" :min="10" :max="56" :step="1" unit="px" />
-        <DesktopLyricField v-model="settings.lineSpacing" type="slider" :label="t('settings.desktopLyrics.lineSpacing')" :min="0" :max="64" :step="1" unit="px" />
         <DesktopLyricField v-model="settings.fontWeight" type="slider" :label="t('settings.desktopLyrics.fontWeight')" :min="100" :max="900" :step="100" />
         <div class="grid gap-2 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">
           <span>{{ t("settings.desktopLyrics.fontFamilies") }}</span>
@@ -91,16 +90,8 @@ function reset() {
         <DesktopLyricField v-model="settings.strokeColor" type="color" :label="t('settings.desktopLyrics.strokeColor')" />
       </div>
 
-      <!-- Layout -->
-      <div class="grid gap-4 border border-line bg-bg/40 p-4">
-        <DesktopLyricField v-model="settings.paddingX" type="slider" :label="t('settings.desktopLyrics.paddingX')" :min="0" :max="80" :step="1" unit="px" />
-        <DesktopLyricField v-model="settings.paddingY" type="slider" :label="t('settings.desktopLyrics.paddingY')" :min="0" :max="80" :step="1" unit="px" />
-      </div>
-
       <!-- Behaviour -->
       <div class="grid gap-4 border border-line bg-bg/40 p-4">
-        <DesktopLyricField v-model="settings.hideOnPause" type="toggle" :label="t('settings.desktopLyrics.hideOnPause')" />
-        <DesktopLyricField v-model="settings.hideWhenNoLyrics" type="toggle" :label="t('settings.desktopLyrics.hideWhenNoLyrics')" />
         <DesktopLyricField
           :model-value="String(settings.autoHideMs)"
           type="select"
@@ -113,7 +104,6 @@ function reset() {
       <!-- Desktop window behaviour -->
       <div v-if="!isAndroid" class="grid gap-4 border border-line bg-bg/40 p-4">
         <DesktopLyricField v-model="settings.locked" type="toggle" :label="t('settings.desktopLyrics.locked')" :hint="t('settings.desktopLyrics.lockedHint')" />
-        <DesktopLyricField v-model="settings.alwaysOnTop" type="toggle" :label="t('settings.desktopLyrics.alwaysOnTop')" />
         <DesktopLyricField v-model="settings.skipTaskbar" type="toggle" :label="t('settings.desktopLyrics.skipTaskbar')" />
       </div>
 

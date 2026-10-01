@@ -15,7 +15,6 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.view.Gravity
-import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.webkit.JavascriptInterface
@@ -39,10 +38,6 @@ class DesktopLyricService : Service() {
     private val pending = ArrayDeque<String>()
     private var pageReady = false
     private var locked = false
-    private var touchStartX = 0
-    private var touchStartY = 0
-    private var touchRawX = 0f
-    private var touchRawY = 0f
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -59,10 +54,14 @@ class DesktopLyricService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_TOGGLE_LOCK -> {
-                setLocked(!locked)
+                val next = !locked
+                setLocked(next)
+                // Keep the main window's toggle in sync with the notification.
+                DesktopLyricBridge.control(if (next) "lock" else "unlock")
                 return START_NOT_STICKY
             }
             ACTION_CLOSE -> {
+                DesktopLyricBridge.control("close")
                 stopSelf()
                 return START_NOT_STICKY
             }
@@ -111,6 +110,9 @@ class DesktopLyricService : Service() {
         main.post {
             val view = webView ?: return@post
             val layout = params ?: return@post
+            // Locked means click-through: the full-width overlay would otherwise
+            // swallow touches meant for the app behind it. Unlock happens via
+            // the notification action (the hover padlock is a desktop affordance).
             layout.flags = if (value) {
                 layout.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
             } else {
@@ -128,6 +130,31 @@ class DesktopLyricService : Service() {
         main.post {
             webView?.visibility = if (value) View.VISIBLE else View.GONE
         }
+    }
+
+    /**
+     * Move the overlay by a touch delta coming from the renderer. The position
+     * is clamped to the display so the layer (and the right-aligned duet text)
+     * can never be dragged off-screen.
+     */
+    private fun moveBy(dx: Int, dy: Int) {
+        main.post {
+            val view = webView ?: return@post
+            val layout = params ?: return@post
+            val metrics = resources.displayMetrics
+            val maxX = (metrics.widthPixels - view.width).coerceAtLeast(0)
+            val maxY = (metrics.heightPixels - view.height).coerceAtLeast(0)
+            layout.x = (layout.x + dx).coerceIn(0, maxX)
+            layout.y = (layout.y + dy).coerceIn(0, maxY)
+            try {
+                windowManager?.updateViewLayout(view, layout)
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
+    private fun closeOverlay() {
+        main.post { stopSelf() }
     }
 
     private fun createOverlay() {
@@ -154,28 +181,6 @@ class DesktopLyricService : Service() {
             }
         }
         view.addJavascriptInterface(BridgeInterface(), "AndroidDesktopLyric")
-        view.setOnTouchListener { _, event ->
-            val layout = params ?: return@setOnTouchListener false
-            when (event.action) {
-                MotionEvent.ACTION_DOWN -> {
-                    touchStartX = layout.x
-                    touchStartY = layout.y
-                    touchRawX = event.rawX
-                    touchRawY = event.rawY
-                    true
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    layout.x = touchStartX + (event.rawX - touchRawX).toInt()
-                    layout.y = touchStartY + (event.rawY - touchRawY).toInt()
-                    try {
-                        windowManager?.updateViewLayout(view, layout)
-                    } catch (_: Throwable) {
-                    }
-                    true
-                }
-                else -> false
-            }
-        }
 
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -226,6 +231,15 @@ class DesktopLyricService : Service() {
 
         @JavascriptInterface
         fun setVisible(value: Boolean) = this@DesktopLyricService.setVisible(value)
+
+        @JavascriptInterface
+        fun moveBy(dx: Int, dy: Int) = this@DesktopLyricService.moveBy(dx, dy)
+
+        @JavascriptInterface
+        fun close() = this@DesktopLyricService.closeOverlay()
+
+        @JavascriptInterface
+        fun control(action: String) = DesktopLyricBridge.control(action)
     }
 
     private fun createChannel() {

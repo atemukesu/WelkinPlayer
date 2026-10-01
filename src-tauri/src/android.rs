@@ -250,6 +250,30 @@ pub fn desktop_lyric_stop() -> Result<(), String> {
     Ok(())
 }
 
+/// Drain a playback action queued by the overlay WebView, if any.
+pub fn desktop_lyric_take_control() -> Result<Option<String>, String> {
+    let java_vm = JAVA_VM
+        .get()
+        .ok_or_else(|| "JNI_OnLoad has not run yet".to_string())?;
+    let mut env = java_vm
+        .attach_current_thread()
+        .map_err(|error| error.to_string())?;
+    let class = bridge_class(&mut env)?;
+    let value = env
+        .call_static_method(class, "takeControl", "()Ljava/lang/String;", &[])
+        .map_err(|error| error.to_string())?
+        .l()
+        .map_err(|error| error.to_string())?;
+    if value.is_null() {
+        return Ok(None);
+    }
+    let text: String = env
+        .get_string(&jni::objects::JString::from(value))
+        .map_err(|error| error.to_string())?
+        .into();
+    Ok(Some(text))
+}
+
 /// Forward one document (`load` / `tick` / `settings`) to the overlay WebView.
 pub fn desktop_lyric_update(method: &str, json: &str) -> Result<(), String> {
     let java_vm = JAVA_VM

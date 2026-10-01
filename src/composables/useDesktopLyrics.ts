@@ -6,6 +6,7 @@ import { findActiveLyricIndices, pickPrimaryIndex } from "lyric-kit";
 import { invoke } from "../api";
 import { currentTime } from "../lib/audio";
 import type { DesktopLyricLine, DesktopLyricLoadPayload, DesktopLyricTickPayload } from "../lib/desktopLyric";
+import { isAndroid } from "../lib/desktopLyric";
 import { useDesktopLyricsStore } from "../stores/desktopLyrics";
 import { useLyricsStore } from "../stores/lyrics";
 import { usePlayerStore } from "../stores/player";
@@ -22,6 +23,21 @@ let timer = 0;
 let scope: EffectScope | null = null;
 let lastKey = "";
 let unlistenReady: UnlistenFn | null = null;
+let unlistenControl: UnlistenFn | null = null;
+let unlistenClosed: UnlistenFn | null = null;
+let controlTimer = 0;
+
+/** Run a command requested from the floating layer, keeping state in sync. */
+function handleControl(action: string) {
+  const player = usePlayerStore();
+  const dl = useDesktopLyricsStore();
+  if (action === "toggle") player.togglePlayback();
+  else if (action === "next") player.next();
+  else if (action === "previous") player.previous();
+  else if (action === "lock") dl.update({ locked: true });
+  else if (action === "unlock") dl.update({ locked: false });
+  else if (action === "close") dl.update({ enabled: false });
+}
 
 /** Flatten the parsed lyric lines into the renderer's transfer shape. */
 function toLines(): DesktopLyricLine[] {
@@ -44,13 +60,10 @@ function trackKey(): string {
 }
 
 /** Whether the floating layer should currently be painted. */
-function shouldShow(hasLines: boolean): boolean {
+function shouldShow(): boolean {
   const dl = useDesktopLyricsStore();
-  const player = usePlayerStore();
   const lyrics = useLyricsStore();
   if (!dl.settings.enabled || lyrics.suppressed) return false;
-  if (!hasLines && dl.settings.hideWhenNoLyrics) return false;
-  if (dl.settings.hideOnPause && !player.isPlaying) return false;
   return true;
 }
 
@@ -87,7 +100,7 @@ function tick() {
     playing: player.isPlaying,
     activeIndex,
     activeIndices,
-    visible: shouldShow(lines.length > 0),
+    visible: shouldShow(),
   };
   void invoke("desktop_lyric_tick", { payload }).catch(() => {});
 }
@@ -151,6 +164,32 @@ export function startDesktopLyrics() {
     unlistenReady = unlisten;
   });
 
+  // Playback buttons in the floating layer. Desktop emits an event; Android
+  // parks the action in a native bridge that this poll drains.
+  void listen<string>("desktop-lyric:control", (event) => {
+    handleControl(String(event.payload));
+  }).then((unlisten) => {
+    unlistenControl = unlisten;
+  });
+  // The desktop layer tells us when its window is gone, so a close from outside
+  // the settings toggle still flips `enabled` off.
+  void listen("desktop-lyric:closed", () => {
+    const store = useDesktopLyricsStore();
+    store.active = false;
+    if (store.settings.enabled) store.update({ enabled: false });
+  }).then((unlisten) => {
+    unlistenClosed = unlisten;
+  });
+  if (isAndroid()) {
+    controlTimer = window.setInterval(() => {
+      void invoke<string | null>("desktop_lyric_take_control")
+        .then((action) => {
+          if (action) handleControl(action);
+        })
+        .catch(() => {});
+    }, 250);
+  }
+
   timer = window.setInterval(tick, TICK_INTERVAL_MS);
 }
 
@@ -164,6 +203,12 @@ export function stopDesktopLyrics() {
   timer = 0;
   unlistenReady?.();
   unlistenReady = null;
+  unlistenControl?.();
+  unlistenControl = null;
+  unlistenClosed?.();
+  unlistenClosed = null;
+  window.clearInterval(controlTimer);
+  controlTimer = 0;
   lastKey = "";
 }
 

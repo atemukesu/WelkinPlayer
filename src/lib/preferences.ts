@@ -33,8 +33,6 @@ export interface DesktopLyricSettings {
   enabled: boolean;
   /** When locked the window is click-through and ignores the cursor. */
   locked: boolean;
-  /** Keep the floating window above every other window (desktop only). */
-  alwaysOnTop: boolean;
   /** Hide the floating window from the taskbar / dock (desktop only). */
   skipTaskbar: boolean;
   /** Render the translated sub-line under each primary line. */
@@ -46,7 +44,6 @@ export interface DesktopLyricSettings {
   fontSize: number;
   /** Sub-line (translation) size in px. */
   translationSize: number;
-  lineSpacing: number;
   /** CSS font weight (100–900). */
   fontWeight: number;
   /** Ordered `font-family` fallback list; empty uses the app font. */
@@ -63,13 +60,6 @@ export interface DesktopLyricSettings {
   stroke: boolean;
   /** Outline colour used when `stroke` is enabled. */
   strokeColor: string;
-  /** Horizontal / vertical inset inside the floating window. */
-  paddingX: number;
-  paddingY: number;
-  /** Hide the layer while playback is paused. */
-  hideOnPause: boolean;
-  /** Hide the layer while the current track has no lyrics. */
-  hideWhenNoLyrics: boolean;
   /** Auto-hide after this many ms while paused; 0 keeps it visible. */
   autoHideMs: number;
 }
@@ -77,7 +67,6 @@ export interface DesktopLyricSettings {
 export const DEFAULT_DESKTOP_LYRIC: DesktopLyricSettings = {
   enabled: false,
   locked: false,
-  alwaysOnTop: true,
   skipTaskbar: true,
   translation: true,
   karaoke: true,
@@ -86,7 +75,6 @@ export const DEFAULT_DESKTOP_LYRIC: DesktopLyricSettings = {
   contextLines: 0,
   fontSize: 38,
   translationSize: 17,
-  lineSpacing: 12,
   fontWeight: 700,
   fontFamilies: [],
   textColor: "#f5f5f5",
@@ -95,10 +83,6 @@ export const DEFAULT_DESKTOP_LYRIC: DesktopLyricSettings = {
   opacity: 100,
   stroke: false,
   strokeColor: "#000000",
-  paddingX: 28,
-  paddingY: 18,
-  hideOnPause: false,
-  hideWhenNoLyrics: true,
   autoHideMs: 0,
 };
 

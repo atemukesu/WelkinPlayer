@@ -158,6 +158,17 @@ pub async fn desktop_lyric_open(app: AppHandle) -> Result<DesktopLyricStatus, Ap
             .build()
             .map_err(|error| AppError::other(format!("create desktop lyric window failed: {error}")))?;
 
+            // Tell the main window when the layer goes away (closed from its own
+            // button, the window manager, ...) so the enable toggle stays in sync.
+            let app_for_close = app.clone();
+            window.on_window_event(move |event| {
+                if matches!(event, tauri::WindowEvent::Destroyed) {
+                    if let Some(main) = app_for_close.get_webview_window("main") {
+                        let _ = main.emit("desktop-lyric:closed", ());
+                    }
+                }
+            });
+
             place_default(&window);
         }
     }
@@ -240,6 +251,19 @@ pub fn desktop_lyric_set_settings(app: AppHandle, settings: serde_json::Value) -
 #[tauri::command]
 pub fn desktop_lyric_status(app: AppHandle) -> Result<DesktopLyricStatus, AppError> {
     Ok(status(&app))
+}
+
+/// Android: drain a playback action requested from the overlay WebView.
+///
+/// The overlay cannot invoke commands, so it parks the action in the Kotlin
+/// bridge; the main window polls this on a short interval.
+#[tauri::command]
+pub fn desktop_lyric_take_control() -> Result<Option<String>, AppError> {
+    #[cfg(target_os = "android")]
+    let control = crate::android::desktop_lyric_take_control().map_err(AppError::other)?;
+    #[cfg(not(target_os = "android"))]
+    let control: Option<String> = None;
+    Ok(control)
 }
 
 /// Android only: open the system "display over other apps" settings screen.

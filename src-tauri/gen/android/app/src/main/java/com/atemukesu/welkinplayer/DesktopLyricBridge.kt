@@ -37,6 +37,27 @@ object DesktopLyricBridge {
     private var pendingLoad: String? = null
     private var pendingSettings: String? = null
 
+    /** Newest playback action ("toggle" / "previous" / "next") from the overlay. */
+    private var pendingControl: String? = null
+
+    /** Called from the overlay WebView when a media button is tapped. */
+    @Synchronized
+    fun control(action: String) {
+        pendingControl = action
+    }
+
+    /**
+     * Polled by the Rust backend on a short interval; returns and clears the
+     * pending action so the main window can drive the player.
+     */
+    @Synchronized
+    @JvmStatic
+    fun takeControl(): String? {
+        val value = pendingControl ?: return null
+        pendingControl = null
+        return value
+    }
+
     /** Hand the freshly created service any documents queued before it existed. */
     @Synchronized
     fun attachService(instance: DesktopLyricService) {

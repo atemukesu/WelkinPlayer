@@ -29,13 +29,10 @@ function asColor(value: unknown, fallback: string): string {
 type BooleanKey =
   | "enabled"
   | "locked"
-  | "alwaysOnTop"
   | "skipTaskbar"
   | "translation"
   | "karaoke"
-  | "stroke"
-  | "hideOnPause"
-  | "hideWhenNoLyrics";
+  | "stroke";
 
 /** Merge an untrusted stored blob over the defaults, clamping every field. */
 export function normalizeDesktopLyric(raw: unknown): DesktopLyricSettings {
@@ -46,7 +43,6 @@ export function normalizeDesktopLyric(raw: unknown): DesktopLyricSettings {
   return {
     enabled: bool("enabled"),
     locked: bool("locked"),
-    alwaysOnTop: bool("alwaysOnTop"),
     skipTaskbar: bool("skipTaskbar"),
     translation: bool("translation"),
     karaoke: bool("karaoke"),
@@ -55,7 +51,6 @@ export function normalizeDesktopLyric(raw: unknown): DesktopLyricSettings {
     contextLines: clampNumber(data.contextLines, 0, 5, fallback.contextLines),
     fontSize: clampNumber(data.fontSize, 14, 96, fallback.fontSize),
     translationSize: clampNumber(data.translationSize, 10, 56, fallback.translationSize),
-    lineSpacing: clampNumber(data.lineSpacing, 0, 64, fallback.lineSpacing),
     fontWeight: clampWeight(data.fontWeight, fallback.fontWeight),
     fontFamilies: Array.isArray(data.fontFamilies)
       ? data.fontFamilies.filter((item): item is string => typeof item === "string")
@@ -66,10 +61,6 @@ export function normalizeDesktopLyric(raw: unknown): DesktopLyricSettings {
     opacity: clampNumber(data.opacity, 10, 100, fallback.opacity),
     stroke: bool("stroke"),
     strokeColor: asColor(data.strokeColor, fallback.strokeColor),
-    paddingX: clampNumber(data.paddingX, 0, 80, fallback.paddingX),
-    paddingY: clampNumber(data.paddingY, 0, 80, fallback.paddingY),
-    hideOnPause: bool("hideOnPause"),
-    hideWhenNoLyrics: bool("hideWhenNoLyrics"),
     autoHideMs: clampNumber(data.autoHideMs, 0, 300_000, fallback.autoHideMs),
   };
 }
