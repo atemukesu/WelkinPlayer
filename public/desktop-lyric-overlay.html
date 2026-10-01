@@ -6,37 +6,39 @@
     <title>Welkin Desktop Lyrics</title>
     <style>
       :root {
-        --line-spacing: 18px;
-        --pad-x: 22px;
-        --pad-y: 12px;
+        --pad-x: 28px;
+        --pad-y: 18px;
         --opacity: 1;
-        --font-size: 34px;
-        --translation-size: 20px;
+        --font-size: 38px;
+        --translation-size: 17px;
         --font-weight: 700;
-        --text-color: #ffffff;
+        --text-color: #f5f5f5;
         --active-color: #f0a500;
-        --translation-color: #d0d3d8;
-        --stroke-width: 2px;
-        --stroke-color: #000000;
+        --translation-color: #b9bec8;
+        --stroke-width: 0px;
+        --stroke-color: transparent;
         --align: center;
+        --surface: rgba(19, 21, 25, 0.78);
+        --line: rgba(255, 255, 255, 0.18);
+        --line-strong: rgba(255, 255, 255, 0.34);
+        --dim: rgba(255, 255, 255, 0.58);
+        --ui-accent: #f0a500;
       }
 
-      * {
-        box-sizing: border-box;
-      }
+      * { box-sizing: border-box; }
 
       html,
       body {
         width: 100%;
         height: 100%;
         margin: 0;
-        padding: 0;
         overflow: hidden;
         background: transparent;
-        color-scheme: light dark;
+        color-scheme: dark;
       }
 
       body {
+        color: var(--text-color);
         font-family: "Noto Sans SC Variable", "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
         user-select: none;
         -webkit-user-select: none;
@@ -49,183 +51,187 @@
         visibility: hidden;
       }
 
-      /* The panel clips the scrolling track. `padding` here is the panels inset;
-         the track is translated inside it, so lines can move smoothly. */
       #stage {
         position: absolute;
         inset: 0;
+        display: grid;
+        place-items: center;
         padding: var(--pad-y) var(--pad-x);
         overflow: hidden;
         text-align: var(--align);
-        background: transparent;
         opacity: var(--opacity);
-        transition: opacity 200ms ease;
+        cursor: grab;
+        transition: opacity 180ms ease;
       }
 
-      #track {
-        position: relative;
+      #stage:active { cursor: grabbing; }
+
+      #stage::before {
+        content: "";
+        position: absolute;
+        inset: 18% 12%;
+        z-index: -1;
+        pointer-events: none;
+        background: radial-gradient(ellipse, rgba(0, 0, 0, 0.32), transparent 68%);
+        filter: blur(18px);
+        opacity: 0.72;
+      }
+
+      #current {
         width: 100%;
-        transition: transform 520ms cubic-bezier(0.22, 1, 0.36, 1);
-        will-change: transform;
+        max-height: 100%;
+        overflow: hidden;
+        transition: opacity 180ms ease, transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+        will-change: opacity, transform;
       }
 
-      .line {
-        margin-bottom: var(--line-spacing);
-        opacity: 0.42;
-        transition: opacity 420ms ease;
+      #current.is-leaving {
+        opacity: 0;
+        transform: translateY(-6px);
       }
 
-      .line.is-active {
-        opacity: 1;
+      #current.is-entering {
+        animation: lyric-enter 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
       }
 
-      .primary {
-        position: relative;
+      @keyframes lyric-enter {
+        from { opacity: 0; transform: translateY(7px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+
+      .lyric-block {
+        display: grid;
+        justify-items: var(--align);
+        gap: 7px;
+        width: 100%;
+      }
+
+      .lyric-line {
+        max-width: 100%;
         margin: 0;
+        overflow-wrap: anywhere;
+      }
+
+      .lyric-line.primary {
         font-size: var(--font-size);
         font-weight: var(--font-weight);
-        line-height: 1.28;
-      }
-
-      /*
-       * Two identical text layers: the outline underneath and the fill on top.
-       * `-webkit-text-stroke` is centred on the glyph, so the fill layer (same
-       * text, same wrapping) covers its inner half exactly — only the outer
-       * outline shows. This holds for solid and karaoke-gradient fills alike.
-       */
-      .primary .outline {
-        position: absolute;
-        inset: 0;
-        color: transparent;
-        -webkit-text-stroke: var(--stroke-width) var(--stroke-color);
-        pointer-events: none;
-        z-index: 0;
-      }
-
-      .primary .fill {
-        position: relative;
-        z-index: 1;
-        color: var(--text-color);
-        transition: color 200ms ease;
-      }
-
-      .line.is-bg .primary {
-        font-size: calc(var(--font-size) * 0.68);
-        opacity: 0.78;
-      }
-
-      .line.is-active .primary .fill {
+        line-height: 1.2;
         color: var(--active-color);
       }
 
-      .line.is-duet .primary {
-        text-align: right;
+      .lyric-line.secondary {
+        font-size: calc(var(--font-size) * 0.62);
+        font-weight: 600;
+        line-height: 1.2;
+        color: var(--dim);
       }
 
-      .translation {
-        margin: 0.12em 0 0;
-        font-size: var(--translation-size);
-        line-height: 1.35;
-        color: var(--translation-color);
-      }
-
+      .translation,
       .roman {
-        margin: 0.08em 0 0;
-        font-size: calc(var(--translation-size) * 0.9);
+        max-width: 100%;
+        margin: 0;
+        font-size: var(--translation-size);
+        font-weight: 500;
         line-height: 1.3;
         color: var(--translation-color);
-        opacity: 0.82;
       }
 
-      /* Karaoke: a gradient sweeps each word as it is sung. */
-      .karaoke .line.is-active .fill .word {
+      .roman { opacity: 0.76; }
+
+      .word {
+        white-space: pre-wrap;
+        text-shadow:
+          var(--stroke-width) 0 var(--stroke-color),
+          calc(-1 * var(--stroke-width)) 0 var(--stroke-color),
+          0 var(--stroke-width) var(--stroke-color),
+          0 calc(-1 * var(--stroke-width)) var(--stroke-color),
+          var(--stroke-width) var(--stroke-width) var(--stroke-color),
+          calc(-1 * var(--stroke-width)) var(--stroke-width) var(--stroke-color),
+          var(--stroke-width) calc(-1 * var(--stroke-width)) var(--stroke-color),
+          calc(-1 * var(--stroke-width)) calc(-1 * var(--stroke-width)) var(--stroke-color);
+      }
+
+      .primary .word { color: var(--active-color); }
+
+      .primary .word.is-unplayed {
+        color: color-mix(in srgb, var(--active-color) 38%, var(--text-color));
+      }
+
+      .secondary .word { color: var(--translation-color); }
+
+      .karaoke .primary .word {
         --p: 0%;
-        background-image: linear-gradient(
-          90deg,
-          var(--active-color) 0 var(--p),
-          var(--text-color) var(--p) 100%
-        );
+        color: transparent;
+        background-image: linear-gradient(90deg, var(--active-color) 0 var(--p), var(--text-color) var(--p) 100%);
         -webkit-background-clip: text;
         background-clip: text;
-        color: transparent;
         -webkit-text-fill-color: transparent;
       }
 
-      .karaoke .line.is-bg.is-active .fill .word {
-        --p: 0%;
-        background-image: linear-gradient(
-          90deg,
-          var(--active-color) 0 var(--p),
-          var(--translation-color) var(--p) 100%
-        );
+      .karaoke .primary .word.is-unplayed {
+        background-image: linear-gradient(90deg, var(--active-color) 0 var(--p), color-mix(in srgb, var(--active-color) 38%, var(--text-color)) var(--p) 100%);
       }
 
-      /* Toolbar: appears on hover, never when locked. */
+      .line-bg { opacity: 0.72; }
+
       #tools {
         position: fixed;
-        top: 4px;
-        left: 50%;
-        transform: translateX(-50%) translateY(-8px);
+        top: 8px;
+        right: 10px;
         display: flex;
-        gap: 4px;
+        gap: 1px;
         padding: 3px;
-        border-radius: 999px;
-        background: rgba(20, 22, 26, 0.72);
-        backdrop-filter: blur(8px);
+        border: 1px solid var(--line);
+        border-top: 2px solid var(--ui-accent);
+        background: var(--surface);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.26);
         opacity: 0;
         pointer-events: none;
-        transition: opacity 160ms ease, transform 160ms ease;
+        transform: translateY(-5px);
+        transition: opacity 140ms ease, transform 140ms ease;
         z-index: 10;
+        clip-path: polygon(0 0, calc(100% - 7px) 0, 100% 7px, 100% 100%, 0 100%);
       }
 
-      body:not(.locked):hover #tools {
+      body:not(.locked):hover #tools,
+      #tools:focus-within {
         opacity: 1;
         pointer-events: auto;
-        transform: translateX(-50%) translateY(0);
+        transform: translateY(0);
       }
 
-      body.locked #tools {
-        display: none;
-      }
+      body.locked #tools { display: none; }
 
       #tools button {
         display: grid;
         place-items: center;
-        width: 26px;
-        height: 26px;
-        border: 0;
-        border-radius: 999px;
-        background: transparent;
-        color: #fff;
-        font-size: 14px;
-        line-height: 1;
+        width: 30px;
+        height: 28px;
+        border: 1px solid transparent;
+        color: var(--dim);
         cursor: pointer;
-        transition: background 140ms ease;
+        transition: color 120ms ease, background-color 120ms ease, border-color 120ms ease;
       }
 
-      #tools button:hover {
-        background: rgba(255, 255, 255, 0.18);
+      #tools button:hover,
+      #tools button:focus-visible {
+        border-color: var(--line-strong);
+        background: rgba(255, 255, 255, 0.08);
+        color: var(--ui-accent);
       }
 
-      #drag {
-        cursor: grab;
-        letter-spacing: 1px;
-      }
-
-      #drag:active {
-        cursor: grabbing;
-      }
+      #tools svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
     </style>
   </head>
   <body>
-    <div id="stage"><div id="track"></div></div>
-    <div id="tools">
-      <button id="drag" type="button" title="拖动">⠿</button>
-      <button id="fontDown" type="button" title="减小字号">A-</button>
-      <button id="fontUp" type="button" title="增大字号">A+</button>
-      <button id="lock" type="button" title="锁定/解锁">🔓</button>
-      <button id="close" type="button" title="关闭桌面歌词">✕</button>
-    </div>
+    <main id="stage"><div id="current" aria-live="polite"></div></main>
+    <nav id="tools" aria-label="Desktop lyric controls">
+      <button id="drag" type="button" title="拖动" aria-label="拖动"><svg viewBox="0 0 24 24"><path d="M9 5h6M9 12h6M9 19h6"/><path d="M5 5h.01M5 12h.01M5 19h.01M19 5h.01M19 12h.01M19 19h.01"/></svg></button>
+      <button id="fontDown" type="button" title="减小字号" aria-label="减小字号"><svg viewBox="0 0 24 24"><path d="M5 12h14"/></svg></button>
+      <button id="fontUp" type="button" title="增大字号" aria-label="增大字号"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+      <button id="lock" type="button" title="锁定/解锁" aria-label="锁定/解锁"><svg viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="10" rx="1"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></button>
+      <button id="close" type="button" title="关闭桌面歌词" aria-label="关闭桌面歌词"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+    </nav>
     <script src="/desktop-lyric-overlay.js"></script>
   </body>
 </html>

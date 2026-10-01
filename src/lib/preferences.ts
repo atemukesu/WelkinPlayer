@@ -46,7 +46,7 @@ export interface DesktopLyricSettings {
   translation: boolean;
   /** Draw a word-by-word karaoke sweep instead of plain line highlighting. */
   karaoke: boolean;
-  /** How many context lines to draw around the active block (1–5). */
+  /** Legacy storage field; the desktop overlay only renders the active block. */
   contextLines: number;
   /** Text alignment inside the window. */
   align: DesktopLyricAlign;
@@ -88,20 +88,22 @@ export const DEFAULT_DESKTOP_LYRIC: DesktopLyricSettings = {
   skipTaskbar: true,
   translation: true,
   karaoke: true,
-  contextLines: 2,
+  // Kept in the type and storage normalizer for backwards compatibility;
+  // the single-line overlay no longer renders surrounding context.
+  contextLines: 0,
   align: "center",
-  fontSize: 34,
-  translationSize: 20,
-  lineSpacing: 18,
+  fontSize: 38,
+  translationSize: 17,
+  lineSpacing: 12,
   fontWeight: 700,
   fontFamilies: [],
-  textColor: "#ffffff",
+  textColor: "#f5f5f5",
   activeColor: "#f0a500",
-  translationColor: "#d0d3d8",
+  translationColor: "#b9bec8",
   opacity: 100,
-  stroke: true,
-  paddingX: 22,
-  paddingY: 12,
+  stroke: false,
+  paddingX: 28,
+  paddingY: 18,
   hideOnPause: false,
   hideWhenNoLyrics: true,
   autoHideMs: 0,

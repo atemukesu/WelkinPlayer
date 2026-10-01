@@ -76,15 +76,6 @@ function reset() {
         <DesktopLyricField v-model="settings.translation" type="toggle" :label="t('settings.desktopLyrics.translation')" />
         <DesktopLyricField v-model="settings.karaoke" type="toggle" :label="t('settings.desktopLyrics.karaoke')" :hint="t('settings.desktopLyrics.karaokeHint')" />
         <DesktopLyricField
-          v-model="settings.contextLines"
-          type="slider"
-          :label="t('settings.desktopLyrics.contextLines')"
-          :hint="t('settings.desktopLyrics.contextLinesHint')"
-          :min="0"
-          :max="5"
-          :step="1"
-        />
-        <DesktopLyricField
           :model-value="settings.align"
           type="select"
           :label="t('settings.desktopLyrics.align')"

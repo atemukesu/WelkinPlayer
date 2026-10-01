@@ -56,6 +56,8 @@ export function normalizeDesktopLyric(raw: unknown): DesktopLyricSettings {
     skipTaskbar: bool("skipTaskbar"),
     translation: bool("translation"),
     karaoke: bool("karaoke"),
+    // Legacy field retained so existing preferences remain readable. The
+    // current overlay intentionally never renders surrounding lyric lines.
     contextLines: clampNumber(data.contextLines, 0, 5, fallback.contextLines),
     align: pickEnum<DesktopLyricAlign>(data.align, ["left", "center", "right"], fallback.align),
     fontSize: clampNumber(data.fontSize, 14, 96, fallback.fontSize),
