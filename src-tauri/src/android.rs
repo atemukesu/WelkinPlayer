@@ -15,10 +15,16 @@ use jni::JavaVM;
 /// Kotlin bridge that owns the floating overlay service (binary name).
 const BRIDGE_CLASS_NAME: &str = "com.atemukesu.welkinplayer.DesktopLyricBridge";
 
+/// Kotlin bridge that owns the system media-notification service (binary name).
+const MEDIA_BRIDGE_CLASS_NAME: &str = "com.atemukesu.welkinplayer.MediaControlBridge";
+
 /// Cached global reference to the bridge class. A plain `FindClass` only reaches
 /// the system class loader from an attached worker thread, so the app class is
 /// resolved once through the Application's class loader instead.
 static BRIDGE_CLASS: OnceLock<GlobalRef> = OnceLock::new();
+
+/// Cached global reference to the media-control bridge class.
+static MEDIA_BRIDGE_CLASS: OnceLock<GlobalRef> = OnceLock::new();
 
 /// Whether the floating overlay service is currently running.
 static DESKTOP_LYRIC_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -115,13 +121,17 @@ pub fn desktop_lyric_has_permission() -> bool {
     }
 }
 
-/// Resolve the Kotlin bridge class through the application class loader.
+/// Resolve a Kotlin bridge class through the application class loader.
 ///
 /// `FindClass` on an attached worker thread only reaches the system class
 /// loader, which cannot see app classes, so the class is loaded once via the
 /// `Application`'s loader and cached as a global reference.
-fn bridge_class<'local>(env: &mut jni::JNIEnv<'local>) -> Result<&'static GlobalRef, String> {
-    if let Some(class) = BRIDGE_CLASS.get() {
+fn class_through_loader<'local>(
+    env: &mut jni::JNIEnv<'local>,
+    name: &str,
+    cell: &'static OnceLock<GlobalRef>,
+) -> Result<&'static GlobalRef, String> {
+    if let Some(class) = cell.get() {
         return Ok(class);
     }
     let context_raw = ndk_context::android_context().context();
@@ -131,10 +141,7 @@ fn bridge_class<'local>(env: &mut jni::JNIEnv<'local>) -> Result<&'static Global
         .map_err(|error| error.to_string())?
         .l()
         .map_err(|error| error.to_string())?;
-    let name = JObject::from(
-        env.new_string(BRIDGE_CLASS_NAME)
-            .map_err(|error| error.to_string())?,
-    );
+    let name = JObject::from(env.new_string(name).map_err(|error| error.to_string())?);
     let class = env
         .call_method(
             &loader,
@@ -148,10 +155,17 @@ fn bridge_class<'local>(env: &mut jni::JNIEnv<'local>) -> Result<&'static Global
     let global = env
         .new_global_ref(class)
         .map_err(|error| error.to_string())?;
-    let _ = BRIDGE_CLASS.set(global);
-    BRIDGE_CLASS
-        .get()
-        .ok_or_else(|| "desktop lyric bridge class unavailable".to_string())
+    let _ = cell.set(global);
+    cell.get()
+        .ok_or_else(|| "bridge class unavailable".to_string())
+}
+
+fn bridge_class<'local>(env: &mut jni::JNIEnv<'local>) -> Result<&'static GlobalRef, String> {
+    class_through_loader(env, BRIDGE_CLASS_NAME, &BRIDGE_CLASS)
+}
+
+fn media_bridge_class<'local>(env: &mut jni::JNIEnv<'local>) -> Result<&'static GlobalRef, String> {
+    class_through_loader(env, MEDIA_BRIDGE_CLASS_NAME, &MEDIA_BRIDGE_CLASS)
 }
 
 fn overlay_permission() -> Result<bool, String> {
@@ -294,6 +308,92 @@ pub fn desktop_lyric_update(method: &str, json: &str) -> Result<(), String> {
     )
     .map_err(|error| error.to_string())?;
     Ok(())
+}
+
+/// Start (or refresh) the foreground media-notification service.
+pub fn media_control_start() -> Result<(), String> {
+    let java_vm = JAVA_VM
+        .get()
+        .ok_or_else(|| "JNI_OnLoad has not run yet".to_string())?;
+    let mut env = java_vm
+        .attach_current_thread()
+        .map_err(|error| error.to_string())?;
+    let context_raw = ndk_context::android_context().context();
+    let context = unsafe { JObject::from_raw(context_raw as jni::sys::jobject) };
+    let class = media_bridge_class(&mut env)?;
+    env.call_static_method(
+        class,
+        "start",
+        "(Landroid/content/Context;)V",
+        &[JValue::Object(&context)],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+/// Push a metadata/playback snapshot to the native MediaSession.
+pub fn media_control_update(json: &str) -> Result<(), String> {
+    let java_vm = JAVA_VM
+        .get()
+        .ok_or_else(|| "JNI_OnLoad has not run yet".to_string())?;
+    let mut env = java_vm
+        .attach_current_thread()
+        .map_err(|error| error.to_string())?;
+    let json = JObject::from(env.new_string(json).map_err(|error| error.to_string())?);
+    let class = media_bridge_class(&mut env)?;
+    env.call_static_method(
+        class,
+        "update",
+        "(Ljava/lang/String;)V",
+        &[JValue::Object(&json)],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+/// Stop the media-notification service and clear its MediaSession.
+pub fn media_control_stop() -> Result<(), String> {
+    let java_vm = JAVA_VM
+        .get()
+        .ok_or_else(|| "JNI_OnLoad has not run yet".to_string())?;
+    let mut env = java_vm
+        .attach_current_thread()
+        .map_err(|error| error.to_string())?;
+    let context_raw = ndk_context::android_context().context();
+    let context = unsafe { JObject::from_raw(context_raw as jni::sys::jobject) };
+    let class = media_bridge_class(&mut env)?;
+    env.call_static_method(
+        class,
+        "stop",
+        "(Landroid/content/Context;)V",
+        &[JValue::Object(&context)],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+/// Drain a transport action queued by the native MediaSession, if any.
+pub fn media_control_take_control() -> Result<Option<String>, String> {
+    let java_vm = JAVA_VM
+        .get()
+        .ok_or_else(|| "JNI_OnLoad has not run yet".to_string())?;
+    let mut env = java_vm
+        .attach_current_thread()
+        .map_err(|error| error.to_string())?;
+    let class = media_bridge_class(&mut env)?;
+    let value = env
+        .call_static_method(class, "takeControl", "()Ljava/lang/String;", &[])
+        .map_err(|error| error.to_string())?
+        .l()
+        .map_err(|error| error.to_string())?;
+    if value.is_null() {
+        return Ok(None);
+    }
+    let text: String = env
+        .get_string(&jni::objects::JString::from(value))
+        .map_err(|error| error.to_string())?
+        .into();
+    Ok(Some(text))
 }
 
 /// Classify the active Android network via `ConnectivityManager`.

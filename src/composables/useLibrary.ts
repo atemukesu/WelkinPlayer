@@ -109,6 +109,7 @@ export function useLibrary() {
         }
         const url = coverUrl(entry?.coverPath, track.modified);
         if (url) patch.cover = url;
+        if (meta?.coverHash) patch.coverHash = meta.coverHash;
         patches.push({ id: track.id, patch });
       }
     }
@@ -125,6 +126,7 @@ export function useLibrary() {
 
     const resolved: Partial<Track> = { metaLoaded: true };
     if (meta.coverHash) {
+      resolved.coverHash = meta.coverHash;
       const path = await invoke<string | null>("cover_path", { hash: meta.coverHash });
       const url = coverUrl(path, track.modified);
       if (url) resolved.cover = url;

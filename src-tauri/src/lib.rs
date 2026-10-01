@@ -5,6 +5,7 @@ mod commands;
 mod dav;
 mod error;
 mod logging;
+mod media_control;
 mod metadata;
 mod network;
 mod proxy;
@@ -30,6 +31,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .manage(commands::desktop_lyric::DesktopLyricCache::default())
+        .manage(media_control::MediaControlState::default())
         .setup(|app| {
             // Mint the per-install identifier on first launch so it is stable
             // from the very first run; later launches just read it back.
@@ -70,6 +72,9 @@ pub fn run() {
                         }
                     });
                 }
+                // OS transport controls need the main window (Windows SMTC uses
+                // its HWND) and must be created on the main thread.
+                media_control::init(app.handle());
             }
             Ok(())
         })
@@ -139,7 +144,11 @@ pub fn run() {
             commands::desktop_lyric::desktop_lyric_set_settings,
             commands::desktop_lyric::desktop_lyric_status,
             commands::desktop_lyric::desktop_lyric_take_control,
-            commands::desktop_lyric::desktop_lyric_request_permission
+            commands::desktop_lyric::desktop_lyric_request_permission,
+            media_control::media_control_update,
+            media_control::media_control_position,
+            media_control::media_control_clear,
+            media_control::media_control_take_control
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

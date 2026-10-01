@@ -9,6 +9,7 @@ import { albumKey, primaryArtist } from "./lib/grouping";
 import { trackKey } from "./lib/sources";
 import { useLibrary } from "./composables/useLibrary";
 import { startDesktopLyrics, stopDesktopLyrics } from "./composables/useDesktopLyrics";
+import { startMediaControl, stopMediaControl } from "./lib/mediaControl";
 
 /** The floating lyrics layer must never be able to break app boot. */
 function bootDesktopLyrics() {
@@ -16,6 +17,15 @@ function bootDesktopLyrics() {
     startDesktopLyrics();
   } catch (error) {
     console.warn("[welkin] desktop lyrics failed to start", error);
+  }
+}
+
+/** OS media controls are best-effort; a failure must not break app boot. */
+function bootMediaControl() {
+  try {
+    startMediaControl();
+  } catch (error) {
+    console.warn("[welkin] media controls failed to start", error);
   }
 }
 import { pushToast } from "./lib/toast";
@@ -259,8 +269,8 @@ function onGlobalKeydown(event: KeyboardEvent) {
   player.togglePlayback();
 }
 
-onMounted(() => { window.addEventListener("hashchange", syncViewFromHash); window.addEventListener("keydown", onGlobalKeydown); window.addEventListener("beforeunload", savePlaybackPositionOnLeave); window.addEventListener("pagehide", savePlaybackPositionOnLeave); window.addEventListener("focus", recheckLicense); document.addEventListener("visibilitychange", onVisibilityChange); void initAudio(); void network.start(); void cache.start(); bootDesktopLyrics(); void invoke<string>("ping").catch((error) => console.warn("[welkin] ping failed", describeError(error))); void bootstrap(); });
-onUnmounted(() => { savePlaybackPosition(true); stopDesktopLyrics(); window.removeEventListener("hashchange", syncViewFromHash); window.removeEventListener("keydown", onGlobalKeydown); window.removeEventListener("beforeunload", savePlaybackPositionOnLeave); window.removeEventListener("pagehide", savePlaybackPositionOnLeave); window.removeEventListener("focus", recheckLicense); document.removeEventListener("visibilitychange", onVisibilityChange); void profile.flush(); });
+onMounted(() => { window.addEventListener("hashchange", syncViewFromHash); window.addEventListener("keydown", onGlobalKeydown); window.addEventListener("beforeunload", savePlaybackPositionOnLeave); window.addEventListener("pagehide", savePlaybackPositionOnLeave); window.addEventListener("focus", recheckLicense); document.addEventListener("visibilitychange", onVisibilityChange); void initAudio(); void network.start(); void cache.start(); bootDesktopLyrics(); bootMediaControl(); void invoke<string>("ping").catch((error) => console.warn("[welkin] ping failed", describeError(error))); void bootstrap(); });
+onUnmounted(() => { savePlaybackPosition(true); stopDesktopLyrics(); stopMediaControl(); window.removeEventListener("hashchange", syncViewFromHash); window.removeEventListener("keydown", onGlobalKeydown); window.removeEventListener("beforeunload", savePlaybackPositionOnLeave); window.removeEventListener("pagehide", savePlaybackPositionOnLeave); window.removeEventListener("focus", recheckLicense); document.removeEventListener("visibilitychange", onVisibilityChange); void profile.flush(); });
 </script>
 
 <template>

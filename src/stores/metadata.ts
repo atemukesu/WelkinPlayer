@@ -141,6 +141,7 @@ export const useMetadataStore = defineStore("metadata", () => {
       if (meta.durationSecs) patch.duration = formatDuration(meta.durationSecs);
       const url = coverUrl(result?.coverPath, current?.modified ?? track.modified);
       if (url) patch.cover = url;
+      if (meta.coverHash) patch.coverHash = meta.coverHash;
       patches.push({ id, patch });
     }
     player.updateTracks(patches);

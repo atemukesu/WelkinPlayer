@@ -63,6 +63,12 @@ keyring = { version = "3", features = ["apple-native"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
 
+# System media controls on desktop: Windows SMTC, macOS Now Playing and Linux
+# MPRIS behind one API. Android implements its own native MediaSession, so the
+# crate is only pulled in for the three desktop targets.
+[target.'cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))'.dependencies]
+souvlaki = "0.8"
+
 # Android has no keyring backend of its own. `android-keyring` installs a
 # Keystore-backed credential builder over the plain `keyring` crate.
 # `jni`/`ndk-context` are used to publish the Android context that

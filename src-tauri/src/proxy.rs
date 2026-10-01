@@ -119,6 +119,19 @@ fn handle(
         return;
     }
 
+    // Cached cover thumbnails, for OS media controls that cannot read local
+    // files (notably Windows SMTC from an unpackaged app). Gated by the same
+    // per-launch token, and only ever serves files inside the cover cache.
+    if request.url().starts_with("/cover") {
+        let hash = params
+            .iter()
+            .find(|(key, _)| key == "hash")
+            .map(|(_, value)| value.as_str())
+            .unwrap_or_default();
+        serve_cover(request, app, hash);
+        return;
+    }
+
     let remote_path = params
         .iter()
         .find(|(key, _)| key == "path")
@@ -163,6 +176,28 @@ fn handle(
         &remote_path,
         range.as_deref(),
     );
+}
+
+/// Serve a cached cover thumbnail addressed by its hex cache id.
+fn serve_cover(request: Request, app: &AppHandle, hash: &str) {
+    if hash.is_empty() || !hash.chars().all(|character| character.is_ascii_hexdigit()) {
+        let _ = request.respond(text(400, "invalid hash"));
+        return;
+    }
+    let dir = crate::commands::media::resolve_cache_dir(app);
+    let file = crate::commands::media::cover_file(&dir, hash);
+    let bytes = match std::fs::read(&file) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            let _ = request.respond(text(404, "not found"));
+            return;
+        }
+    };
+    let mut response = Response::from_data(bytes);
+    if let Ok(header) = Header::from_bytes("Content-Type", "image/jpeg") {
+        let _ = response.add_header(header);
+    }
+    let _ = request.respond(response);
 }
 
 /// Serve a WebDAV track: whole file from the smart cache when present, else the
