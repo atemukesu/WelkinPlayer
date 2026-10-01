@@ -4,6 +4,7 @@ import { useI18n } from "vue-i18n";
 import { useDesktopLyricsStore } from "../stores/desktopLyrics";
 import { requestDesktopLyricPermission } from "../composables/useDesktopLyrics";
 import { DEFAULT_DESKTOP_LYRIC } from "../lib/preferences";
+import { DESKTOP_LYRIC_GEOMETRY_KEY } from "../lib/desktopLyric";
 import type { DesktopLyricAlign, DesktopLyricWheelAction } from "../lib/preferences";
 import { useSystemFonts } from "../lib/fonts";
 import DesktopLyricField from "./DesktopLyricField.vue";
@@ -36,6 +37,13 @@ const autoHideOptions = computed(() => [
 
 function reset() {
   Object.assign(store.settings, { ...DEFAULT_DESKTOP_LYRIC, fontFamilies: [] });
+  // Forget the remembered floating-window bounds too, so a window that was
+  // resized too small snaps back to the multi-line default next time it opens.
+  try {
+    localStorage.removeItem(DESKTOP_LYRIC_GEOMETRY_KEY);
+  } catch {
+    /* ignore */
+  }
 }
 </script>
 
@@ -106,21 +114,13 @@ function reset() {
         <DesktopLyricField v-model="settings.opacity" type="slider" :label="t('settings.desktopLyrics.opacity')" :min="10" :max="100" :step="1" unit="%" />
       </div>
 
-      <!-- Outline & shadow -->
+      <!-- Outline -->
       <div class="grid gap-4 border border-line bg-bg/40 p-4">
-        <DesktopLyricField v-model="settings.strokeWidth" type="slider" :label="t('settings.desktopLyrics.strokeWidth')" :min="0" :max="12" :step="1" unit="px" />
-        <DesktopLyricField v-model="settings.strokeColor" type="color" :label="t('settings.desktopLyrics.strokeColor')" :disabled="settings.strokeWidth === 0" />
-        <DesktopLyricField v-model="settings.shadow" type="toggle" :label="t('settings.desktopLyrics.shadow')" />
-        <DesktopLyricField v-model="settings.shadowBlur" type="slider" :label="t('settings.desktopLyrics.shadowBlur')" :min="0" :max="40" :step="1" unit="px" :disabled="!settings.shadow" />
-        <DesktopLyricField v-model="settings.shadowColor" type="color" :label="t('settings.desktopLyrics.shadowColor')" :disabled="!settings.shadow" />
+        <DesktopLyricField v-model="settings.stroke" type="toggle" :label="t('settings.desktopLyrics.stroke')" />
       </div>
 
-      <!-- Background panel -->
+      <!-- Layout -->
       <div class="grid gap-4 border border-line bg-bg/40 p-4">
-        <DesktopLyricField v-model="settings.background" type="toggle" :label="t('settings.desktopLyrics.background')" />
-        <DesktopLyricField v-model="settings.backgroundColor" type="color" :label="t('settings.desktopLyrics.backgroundColor')" :disabled="!settings.background" />
-        <DesktopLyricField v-model="settings.backgroundOpacity" type="slider" :label="t('settings.desktopLyrics.backgroundOpacity')" :min="0" :max="100" :step="1" unit="%" :disabled="!settings.background" />
-        <DesktopLyricField v-model="settings.borderRadius" type="slider" :label="t('settings.desktopLyrics.borderRadius')" :min="0" :max="48" :step="1" unit="px" />
         <DesktopLyricField v-model="settings.paddingX" type="slider" :label="t('settings.desktopLyrics.paddingX')" :min="0" :max="80" :step="1" unit="px" />
         <DesktopLyricField v-model="settings.paddingY" type="slider" :label="t('settings.desktopLyrics.paddingY')" :min="0" :max="80" :step="1" unit="px" />
       </div>

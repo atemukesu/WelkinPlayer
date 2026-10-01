@@ -114,8 +114,12 @@ fn status(app: &AppHandle) -> DesktopLyricStatus {
 }
 
 /// Bring the floating renderer up (idempotent).
+///
+/// Must be `async`: synchronous commands run on the main thread, and
+/// `WebviewWindowBuilder::build` blocks waiting for the main thread, which
+/// would deadlock the whole app.
 #[tauri::command]
-pub fn desktop_lyric_open(app: AppHandle) -> Result<DesktopLyricStatus, AppError> {
+pub async fn desktop_lyric_open(app: AppHandle) -> Result<DesktopLyricStatus, AppError> {
     #[cfg(desktop)]
     {
         if app.get_webview_window(WINDOW_LABEL).is_none() {
@@ -126,8 +130,8 @@ pub fn desktop_lyric_open(app: AppHandle) -> Result<DesktopLyricStatus, AppError
                 tauri::WebviewUrl::App("desktop-lyric-overlay.html".into()),
             )
             .title("Welkin Desktop Lyrics")
-            .inner_size(860.0, 190.0)
-            .min_inner_size(240.0, 64.0)
+            .inner_size(880.0, 260.0)
+            .min_inner_size(240.0, 72.0)
             .decorations(false)
             .transparent(true)
             .shadow(false)
@@ -256,8 +260,8 @@ fn place_default(window: &tauri::WebviewWindow) {
     };
     let size = monitor.size();
     let scale = monitor.scale_factor();
-    let width = 860.0 * scale;
-    let height = 190.0 * scale;
+    let width = 880.0 * scale;
+    let height = 260.0 * scale;
     let x = ((size.width as f64 - width) / 2.0).max(0.0) as i32;
     let y = (size.height as f64 - height - 120.0 * scale).max(0.0) as i32;
     let _ = window.set_position(tauri::PhysicalPosition::new(x, y));

@@ -8,8 +8,12 @@ import { useDesktopLyricsStore } from "../stores/desktopLyrics";
 import { useLyricsStore } from "../stores/lyrics";
 import { usePlayerStore } from "../stores/player";
 
-/** Cadence for the playhead document (ms). ~30 fps is plenty for text. */
-const TICK_INTERVAL_MS = 33;
+/**
+ * Cadence for the playhead document (ms). The renderer interpolates between
+ * ticks on its own animation frame, so a low rate keeps IPC cheap without
+ * making the karaoke sweep choppy.
+ */
+const TICK_INTERVAL_MS = 80;
 
 let running = false;
 let timer = 0;
@@ -113,6 +117,23 @@ export function startDesktopLyrics() {
       immediate: true,
     });
     watch(() => dl.settings, pushSettings, { deep: true });
+    // The player views are not always mounted, so the floating layer must make
+    // sure the current track's lyrics are actually loaded. `loadForTrack` is
+    // idempotent per track, so this never double-fetches what a view already got.
+    watch(
+      () =>
+        [
+          dl.settings.enabled,
+          useLyricsStore().enabled,
+          useLyricsStore().providers,
+          trackKey(),
+        ] as const,
+      () => {
+        if (!dl.settings.enabled) return;
+        void useLyricsStore().loadForTrack(usePlayerStore().currentTrack ?? undefined);
+      },
+      { immediate: true },
+    );
   });
 
   timer = window.setInterval(tick, TICK_INTERVAL_MS);

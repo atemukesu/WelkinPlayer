@@ -29,33 +29,29 @@
       .join(", ");
   }
 
-  function hexToRgba(color, opacity) {
-    var hex = String(color || "").trim();
-    var match = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex);
-    if (!match) return hex;
-    var value = match[1];
-    if (value.length === 3) {
-      value = value[0] + value[0] + value[1] + value[1] + value[2] + value[2];
-    }
-    var r = parseInt(value.slice(0, 2), 16);
-    var g = parseInt(value.slice(2, 4), 16);
-    var b = parseInt(value.slice(4, 6), 16);
-    return "rgba(" + r + ", " + g + ", " + b + ", " + Math.max(0, Math.min(1, opacity)) + ")";
-  }
+  /** Fraction of the viewport the active block is aligned to. */
+  var ANCHOR = 0.5;
+  /** Extra lines kept above/below the active block to animate without a rebuild. */
+  var WINDOW_BUFFER = 10;
 
   var state = {
     settings: null,
     lines: [],
     activeIndex: -1,
     activeIndices: [],
+    activeSig: "",
     positionMs: 0,
     playing: false,
     visible: true,
-    renderedRange: "",
-    wordEls: [],
+    lastTickAt: 0,
+    windowFrom: -1,
+    windowTo: -1,
+    lineEls: {},
+    raf: 0,
   };
 
   var stage = document.getElementById("stage");
+  var track = document.getElementById("track");
   var body = document.body;
 
   function applySettings(settings) {
@@ -65,7 +61,6 @@
     root.setProperty("--line-spacing", settings.lineSpacing + "px");
     root.setProperty("--pad-x", settings.paddingX + "px");
     root.setProperty("--pad-y", settings.paddingY + "px");
-    root.setProperty("--radius", settings.borderRadius + "px");
     root.setProperty("--opacity", Math.max(0, Math.min(1, settings.opacity / 100)));
     root.setProperty("--font-size", settings.fontSize + "px");
     root.setProperty("--translation-size", settings.translationSize + "px");
@@ -73,24 +68,18 @@
     root.setProperty("--text-color", settings.textColor);
     root.setProperty("--active-color", settings.activeColor);
     root.setProperty("--translation-color", settings.translationColor);
-    root.setProperty("--stroke-width", settings.strokeWidth + "px");
-    root.setProperty("--stroke-color", settings.strokeColor);
+    // The stroke is centred on the glyph and the fill layer hides its inner
+    // half, so 2px yields a 1px outline *outside* the text.
+    root.setProperty("--stroke-width", settings.stroke ? "2px" : "0px");
     root.setProperty("--align", settings.align);
-    root.setProperty(
-      "--bg-color",
-      settings.background ? hexToRgba(settings.backgroundColor, settings.backgroundOpacity / 100) : "transparent"
-    );
     var stack = cssFontFamily(settings.fontFamilies);
     body.style.fontFamily = stack || "";
-    body.classList.toggle("shadow", !!settings.shadow);
     body.classList.toggle("karaoke", !!settings.karaoke);
     applyLocked(!!settings.locked);
     if (win) {
       if (typeof win.setAlwaysOnTop === "function") win.setAlwaysOnTop(!!settings.alwaysOnTop).catch(function () {});
       if (typeof win.setSkipTaskbar === "function") win.setSkipTaskbar(!!settings.skipTaskbar).catch(function () {});
     }
-    state.renderedRange = "";
-    render();
   }
 
   function applyLocked(locked) {
@@ -105,57 +94,75 @@
     }
   }
 
-  function setLines(payload) {
-    if (!payload) return;
-    state.lines = Array.isArray(payload.lines) ? payload.lines : [];
-    if (payload.settings) applySettings(payload.settings);
-    state.renderedRange = "";
-    render();
+  function setVisibility(visible) {
+    body.classList.toggle("is-hidden", !visible);
+    if (!visible) stopRaf();
+    if (win && typeof win.show === "function") {
+      if (visible) win.show().catch(function () {});
+      else win.hide().catch(function () {});
+    }
+    if (window.AndroidDesktopLyric && window.AndroidDesktopLyric.setVisible) {
+      try { window.AndroidDesktopLyric.setVisible(visible); } catch (error) {}
+    }
   }
 
-  function rangeFor() {
-    var total = state.lines.length;
-    if (!total) return null;
-    var ctx = state.settings && Number.isFinite(state.settings.contextLines) ? state.settings.contextLines : 1;
-    var anchor = state.activeIndices && state.activeIndices.length
+  /** Bounds of the simultaneously-active lines, or null. */
+  function activeBlock() {
+    var indices = state.activeIndices && state.activeIndices.length
       ? state.activeIndices
       : state.activeIndex >= 0
         ? [state.activeIndex]
-        : [0];
-    var min = anchor[0];
-    var max = anchor[anchor.length - 1];
-    for (var i = 0; i < anchor.length; i++) {
-      if (anchor[i] < min) min = anchor[i];
-      if (anchor[i] > max) max = anchor[i];
+        : [];
+    if (!indices.length) return null;
+    var min = indices[0];
+    var max = indices[0];
+    for (var i = 1; i < indices.length; i++) {
+      if (indices[i] < min) min = indices[i];
+      if (indices[i] > max) max = indices[i];
     }
-    return {
-      from: Math.max(0, min - ctx),
-      to: Math.min(total - 1, max + ctx),
-    };
+    return { min: min, max: max };
   }
 
-  function buildLine(line, index, activeSet) {
-    if (!line && line !== "") return null;
+  function anchorIndex() {
+    var block = activeBlock();
+    if (block) return Math.round((block.min + block.max) / 2);
+    return 0;
+  }
+
+  function buildLine(line) {
     var wrapper = document.createElement("div");
     wrapper.className = "line";
     if (line.isBG) wrapper.classList.add("is-bg");
     if (line.isDuet) wrapper.classList.add("is-duet");
-    if (activeSet.indexOf(index) >= 0) wrapper.classList.add("is-active");
-    wrapper.dataset.index = String(index);
 
     var primary = document.createElement("p");
     primary.className = "primary";
-    var wordEls = [];
     var words = Array.isArray(line.words) && line.words.length ? line.words : [{ text: line.text || "", start: 0, end: 0 }];
+
+    // Outline layer (behind) and fill layer (front) share the exact same word
+    // spans, so they wrap identically and the fill hides the stroke's inner half.
+    var outline = document.createElement("span");
+    outline.className = "outline";
+    var fill = document.createElement("span");
+    fill.className = "fill";
+    var wordEls = [];
     for (var w = 0; w < words.length; w++) {
+      var outlineWord = document.createElement("span");
+      outlineWord.className = "word";
+      outlineWord.textContent = words[w].text;
+      outline.appendChild(outlineWord);
+
       var span = document.createElement("span");
       span.className = "word";
       span.textContent = words[w].text;
-      primary.appendChild(span);
+      fill.appendChild(span);
       wordEls.push(span);
     }
+    primary.appendChild(outline);
+    primary.appendChild(fill);
     wrapper.appendChild(primary);
-    state.wordEls[index] = wordEls;
+
+    var node = { el: wrapper, words: wordEls, wordData: words, active: false };
 
     if (state.settings && state.settings.translation && line.translation) {
       var translation = document.createElement("p");
@@ -169,94 +176,221 @@
       roman.textContent = line.roman;
       wrapper.appendChild(roman);
     }
-    return wrapper;
+    return node;
   }
 
-  function render() {
-    var range = rangeFor();
-    if (!range) {
-      if (state.renderedRange !== "") {
-        state.renderedRange = "";
-        stage.textContent = "";
-        state.wordEls = [];
-      }
-      return;
-    }
-    var key = range.from + ":" + range.to + ":" + state.activeIndices.join(",") + ":" + state.activeIndex;
-    if (key === state.renderedRange) return;
-    state.renderedRange = key;
+  function resetWindow() {
+    state.windowFrom = -1;
+    state.windowTo = -1;
+    state.lineEls = {};
+    track.textContent = "";
+  }
+
+  function buildWindow(center) {
+    var total = state.lines.length;
+    var ctx = state.settings && Number.isFinite(state.settings.contextLines) ? state.settings.contextLines : 1;
+    var block = activeBlock();
+    var span = block ? block.max - block.min : 0;
+    var radius = Math.max(ctx + WINDOW_BUFFER, Math.ceil(span / 2) + ctx + 4);
+    var from = Math.max(0, center - radius);
+    var to = Math.min(total - 1, center + radius);
 
     var frag = document.createDocumentFragment();
-    state.wordEls = [];
-    for (var i = range.from; i <= range.to; i++) {
-      var el = buildLine(state.lines[i], i, state.activeIndices);
-      if (el) frag.appendChild(el);
+    var els = {};
+    for (var i = from; i <= to; i++) {
+      var node = buildLine(state.lines[i]);
+      frag.appendChild(node.el);
+      els[i] = node;
     }
-    stage.textContent = "";
-    stage.appendChild(frag);
+    track.textContent = "";
+    track.appendChild(frag);
+    state.windowFrom = from;
+    state.windowTo = to;
+    state.lineEls = els;
   }
 
-  function updateProgress() {
+  /** Rebuild the DOM window only when the active block nears its edge. */
+  function ensureWindow() {
+    var total = state.lines.length;
+    if (!total) {
+      if (state.windowFrom !== -1) resetWindow();
+      return false;
+    }
+    if (state.windowFrom < 0) {
+      buildWindow(anchorIndex());
+      return true;
+    }
+    var ctx = state.settings && Number.isFinite(state.settings.contextLines) ? state.settings.contextLines : 1;
+    var margin = ctx + 3;
+    var center = anchorIndex();
+    if (center < state.windowFrom + margin || center > state.windowTo - margin) {
+      buildWindow(center);
+      return true;
+    }
+    return false;
+  }
+
+  function applyActive() {
+    var set = {};
+    var indices = state.activeIndices || [];
+    for (var i = 0; i < indices.length; i++) set[indices[i]] = true;
+    if (state.activeIndex >= 0) set[state.activeIndex] = true;
+    for (var index in state.lineEls) {
+      var node = state.lineEls[index];
+      var active = !!set[index];
+      if (node.active !== active) {
+        node.active = active;
+        node.el.classList.toggle("is-active", active);
+      }
+    }
+  }
+
+  function activeEls() {
+    var indices = state.activeIndices && state.activeIndices.length
+      ? state.activeIndices
+      : state.activeIndex >= 0
+        ? [state.activeIndex]
+        : [];
+    var els = [];
+    for (var i = 0; i < indices.length; i++) {
+      var node = state.lineEls[indices[i]];
+      if (node) els.push(node.el);
+    }
+    return els;
+  }
+
+  function layout(animate) {
+    var els = activeEls();
+    if (!els.length) return;
+    var top = Infinity;
+    var bottom = -Infinity;
+    for (var i = 0; i < els.length; i++) {
+      top = Math.min(top, els[i].offsetTop);
+      bottom = Math.max(bottom, els[i].offsetTop + els[i].offsetHeight);
+    }
+    var center = (top + bottom) / 2;
+    var viewHeight = stage.clientHeight;
+    var maxOffset = Math.max(0, track.offsetHeight - viewHeight);
+    var target = Math.min(maxOffset, Math.max(0, center - viewHeight * ANCHOR));
+
+    if (animate) {
+      track.style.transition = "";
+      track.style.transform = "translate3d(0," + -target + "px,0)";
+    } else {
+      track.style.transition = "none";
+      track.style.transform = "translate3d(0," + -target + "px,0)";
+      // Re-enable the transition on the next frame without animating this jump.
+      void track.offsetHeight;
+      requestAnimationFrame(function () {
+        track.style.transition = "";
+      });
+    }
+  }
+
+  function refreshActive(animate) {
+    var rebuilt = ensureWindow();
+    applyActive();
+    layout(animate && !rebuilt);
+  }
+
+  function nowMs() {
+    if (!state.playing) return state.positionMs;
+    return state.positionMs + (performance.now() - state.lastTickAt);
+  }
+
+  function updateProgress(position) {
     if (!state.settings || !state.settings.karaoke) return;
-    var pos = state.positionMs;
     var indices = state.activeIndices && state.activeIndices.length
       ? state.activeIndices
       : state.activeIndex >= 0
         ? [state.activeIndex]
         : [];
     for (var k = 0; k < indices.length; k++) {
-      var index = indices[k];
-      var line = state.lines[index];
-      var els = state.wordEls[index];
-      if (!line || !els) continue;
-      var words = Array.isArray(line.words) && line.words.length ? line.words : [];
-      for (var w = 0; w < els.length; w++) {
+      var node = state.lineEls[indices[k]];
+      if (!node) continue;
+      var words = node.wordData;
+      for (var w = 0; w < node.words.length; w++) {
         var word = words[w];
         var progress = 0;
         if (word) {
           var duration = Math.max(1, word.end - word.start);
-          progress = Math.max(0, Math.min(1, (pos - word.start) / duration));
+          progress = Math.max(0, Math.min(1, (position - word.start) / duration));
         }
-        els[w].style.setProperty("--p", progress * 100 + "%");
+        node.words[w].style.setProperty("--p", progress * 100 + "%");
       }
     }
   }
 
-  function setVisibility(visible) {
-    body.classList.toggle("is-hidden", !visible);
-    if (win && typeof win.show === "function") {
-      if (visible) win.show().catch(function () {});
-      else win.hide().catch(function () {});
+  function frame() {
+    state.raf = 0;
+    if (!state.visible || !state.settings || !state.settings.karaoke || !state.playing) return;
+    updateProgress(nowMs());
+    state.raf = requestAnimationFrame(frame);
+  }
+
+  function ensureRaf() {
+    if (!state.raf) state.raf = requestAnimationFrame(frame);
+  }
+
+  function stopRaf() {
+    if (state.raf) {
+      cancelAnimationFrame(state.raf);
+      state.raf = 0;
     }
-    if (window.AndroidDesktopLyric && window.AndroidDesktopLyric.setVisible) {
-      try { window.AndroidDesktopLyric.setVisible(visible); } catch (error) {}
-    }
+  }
+
+  function setLines(payload) {
+    if (!payload) return;
+    state.lines = Array.isArray(payload.lines) ? payload.lines : [];
+    if (payload.settings) applySettings(payload.settings);
+    resetWindow();
+    refreshActive(false);
+  }
+
+  function setSettings(settings) {
+    applySettings(settings);
+    resetWindow();
+    refreshActive(false);
   }
 
   function tick(payload) {
     if (!payload) return;
     state.positionMs = payload.positionMs || 0;
+    state.lastTickAt = performance.now();
     state.playing = !!payload.playing;
     state.activeIndex = Number.isFinite(payload.activeIndex) ? payload.activeIndex : -1;
     state.activeIndices = Array.isArray(payload.activeIndices) ? payload.activeIndices : [];
+
     var visible = payload.visible !== false;
     if (visible !== state.visible) {
       state.visible = visible;
       setVisibility(visible);
     }
-    render();
-    updateProgress();
+
+    var sig = state.activeIndex + "|" + state.activeIndices.join(",");
+    if (sig !== state.activeSig) {
+      state.activeSig = sig;
+      refreshActive(true);
+    } else {
+      ensureWindow();
+    }
+
+    if (state.playing && state.settings && state.settings.karaoke && state.visible) ensureRaf();
+    else {
+      stopRaf();
+      updateProgress(state.positionMs);
+    }
   }
 
   // Desktop: state arrives as Tauri events.
   if (tauri && tauri.event) {
     tauri.event.listen("desktop-lyric:load", function (event) { setLines(event.payload); });
-    tauri.event.listen("desktop-lyric:settings", function (event) { applySettings(event.payload); });
+    tauri.event.listen("desktop-lyric:settings", function (event) { setSettings(event.payload); });
     tauri.event.listen("desktop-lyric:tick", function (event) { tick(event.payload); });
   }
 
   // Android: Kotlin (`evaluateJavascript`) calls these directly.
-  window.__welkinOverlay = { load: setLines, settings: applySettings, tick: tick };
+  window.__welkinOverlay = { load: setLines, settings: setSettings, tick: tick };
 
   // Restore the last desktop geometry (shared origin with the main window).
   function readGeometry() {
@@ -331,6 +465,8 @@
     if (!state.settings) return;
     state.settings.fontSize = Math.max(14, Math.min(96, state.settings.fontSize + delta));
     document.documentElement.style.setProperty("--font-size", state.settings.fontSize + "px");
+    resetWindow();
+    refreshActive(false);
   }
   document.getElementById("fontUp").addEventListener("click", function () { nudgeFont(2); });
   document.getElementById("fontDown").addEventListener("click", function () { nudgeFont(-2); });

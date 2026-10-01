@@ -39,8 +39,7 @@ type BooleanKey =
   | "skipTaskbar"
   | "translation"
   | "karaoke"
-  | "shadow"
-  | "background"
+  | "stroke"
   | "hideOnPause"
   | "hideWhenNoLyrics";
 
@@ -70,15 +69,7 @@ export function normalizeDesktopLyric(raw: unknown): DesktopLyricSettings {
     activeColor: asColor(data.activeColor, fallback.activeColor),
     translationColor: asColor(data.translationColor, fallback.translationColor),
     opacity: clampNumber(data.opacity, 10, 100, fallback.opacity),
-    strokeWidth: clampNumber(data.strokeWidth, 0, 12, fallback.strokeWidth),
-    strokeColor: asColor(data.strokeColor, fallback.strokeColor),
-    shadow: bool("shadow"),
-    shadowBlur: clampNumber(data.shadowBlur, 0, 40, fallback.shadowBlur),
-    shadowColor: asColor(data.shadowColor, fallback.shadowColor),
-    background: bool("background"),
-    backgroundColor: asColor(data.backgroundColor, fallback.backgroundColor),
-    backgroundOpacity: clampNumber(data.backgroundOpacity, 0, 100, fallback.backgroundOpacity),
-    borderRadius: clampNumber(data.borderRadius, 0, 48, fallback.borderRadius),
+    stroke: bool("stroke"),
     paddingX: clampNumber(data.paddingX, 0, 80, fallback.paddingX),
     paddingY: clampNumber(data.paddingY, 0, 80, fallback.paddingY),
     hideOnPause: bool("hideOnPause"),

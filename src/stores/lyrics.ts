@@ -139,6 +139,8 @@ export const useLyricsStore = defineStore("lyrics", () => {
   const sourceFormat = ref("");
   /** Guards against out-of-order lyric loads when switching tracks quickly. */
   let loadToken = 0;
+  /** Track key the current lines belong to, so duplicate triggers are no-ops. */
+  const activeKey = ref("");
 
   const hasLyrics = computed(() => lines.value.length > 0);
   /** True when lyrics are intentionally off (global switch or this track), so
@@ -185,11 +187,23 @@ export const useLyricsStore = defineStore("lyrics", () => {
    * so later plays resolve straight from `local`. AMLL is queried by the
    * NetEase/QQ platform ids resolved from one shared title/artist search.
    */
-  async function loadForTrack(track: LyricTrackInfo | undefined) {
+  async function loadForTrack(track: LyricTrackInfo | undefined, force = false) {
+    const key = trackKey(track ?? undefined);
+    // Several places can ask for the same track (the player views and the
+    // floating-lyrics layer); once it is loaded or in flight, skip. Explicit
+    // refreshes pass `force` to bypass this.
+    if (
+      !force &&
+      key &&
+      key === activeKey.value &&
+      (status.value === "loading" || status.value === "ready")
+    ) {
+      return;
+    }
     reset();
+    activeKey.value = key ?? "";
     const path = track?.path;
     const trackSourceId = track?.sourceId;
-    const key = trackKey(track ?? undefined);
     const isDisabled = key ? useProfileStore().isLyricsDisabled(key) : false;
     disabled.value = isDisabled;
     if (!path || !enabled.value || isDisabled) {

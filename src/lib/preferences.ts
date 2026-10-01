@@ -66,18 +66,9 @@ export interface DesktopLyricSettings {
   translationColor: string;
   /** Whole-layer opacity, 0–100. */
   opacity: number;
-  /** Outline thickness in px; 0 disables the outline. */
-  strokeWidth: number;
-  strokeColor: string;
-  shadow: boolean;
-  shadowBlur: number;
-  shadowColor: string;
-  /** Draw a filled panel behind the text. */
-  background: boolean;
-  backgroundColor: string;
-  /** Background opacity, 0–100. */
-  backgroundOpacity: number;
-  borderRadius: number;
+  /** Draw a 1px outline around the text. */
+  stroke: boolean;
+  /** Horizontal / vertical inset inside the floating window. */
   paddingX: number;
   paddingY: number;
   /** Hide the layer while playback is paused. */
@@ -97,7 +88,7 @@ export const DEFAULT_DESKTOP_LYRIC: DesktopLyricSettings = {
   skipTaskbar: true,
   translation: true,
   karaoke: true,
-  contextLines: 1,
+  contextLines: 2,
   align: "center",
   fontSize: 34,
   translationSize: 20,
@@ -108,15 +99,7 @@ export const DEFAULT_DESKTOP_LYRIC: DesktopLyricSettings = {
   activeColor: "#f0a500",
   translationColor: "#d0d3d8",
   opacity: 100,
-  strokeWidth: 2,
-  strokeColor: "#000000",
-  shadow: true,
-  shadowBlur: 6,
-  shadowColor: "#000000",
-  background: false,
-  backgroundColor: "#000000",
-  backgroundOpacity: 35,
-  borderRadius: 12,
+  stroke: true,
   paddingX: 22,
   paddingY: 12,
   hideOnPause: false,

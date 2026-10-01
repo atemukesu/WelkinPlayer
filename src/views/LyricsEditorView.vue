@@ -79,7 +79,7 @@ function toggleDisabled() {
   if (!currentKey) return;
   profile.toggleLyricsDisabled(currentKey);
   const current = player.currentTrack;
-  if (current && trackKey(current) === currentKey) void lyrics.loadForTrack(current);
+  if (current && trackKey(current) === currentKey) void lyrics.loadForTrack(current, true);
 }
 
 const providerKey = computed(() =>
@@ -182,7 +182,7 @@ function onOffsetInput(event: Event) {
 async function saveOffset() {
   await save();
   const current = player.currentTrack;
-  if (current && current.path === props.path) void lyrics.loadForTrack(current);
+  if (current && current.path === props.path) void lyrics.loadForTrack(current, true);
 }
 
 function openSource() {

@@ -76,7 +76,7 @@ function toggleLyrics() {
   profile.toggleLyricsDisabled(key);
   // Reflect the change immediately when the toggled track is the one playing.
   const current = player.currentTrack;
-  if (current && trackKey(current) === key) void lyrics.loadForTrack(current);
+  if (current && trackKey(current) === key) void lyrics.loadForTrack(current, true);
   close();
 }
 function toggleFavorite() {
