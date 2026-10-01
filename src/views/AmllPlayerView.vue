@@ -225,7 +225,6 @@ function onLyricSeek(timeMs: number) {
       '--fg': '#ffffff',
       '--muted': 'rgba(255, 255, 255, 0.72)',
       '--dim': 'rgba(255, 255, 255, 0.55)',
-      '--amll-narrow-top': `${lyrics.amll.narrowTopSpacing}px`,
     }"
   >
     <div class="absolute inset-0">
@@ -235,7 +234,7 @@ function onLyricSeek(timeMs: number) {
     <div class="pointer-events-none absolute inset-x-0 top-0 h-40 bg-gradient-to-b from-black/40 to-transparent"></div>
     <div class="pointer-events-none absolute inset-x-0 bottom-0 h-56 bg-gradient-to-t from-black/60 to-transparent"></div>
 
-    <header class="pointer-events-none absolute inset-x-0 top-[var(--amll-narrow-top)] z-20 h-16 px-4 md:hidden">
+    <header class="pointer-events-none absolute inset-x-0 top-[env(safe-area-inset-top)] z-20 h-16 px-4 md:hidden">
       <div class="flex h-full min-w-0 items-center gap-3">
         <span
           class="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-md text-sm font-black text-white/90"
@@ -274,7 +273,7 @@ function onLyricSeek(timeMs: number) {
       </div>
     </header>
 
-    <div class="relative z-10 flex h-full flex-col px-6 pt-[var(--amll-narrow-top)] md:grid md:grid-cols-[minmax(240px,0.82fr)_minmax(0,1.18fr)] md:grid-rows-1 md:gap-14 md:px-14 md:pt-0 lg:px-24">
+    <div class="relative z-10 flex h-full flex-col px-6 pt-[env(safe-area-inset-top)] md:grid md:grid-cols-[minmax(240px,0.82fr)_minmax(0,1.18fr)] md:grid-rows-1 md:gap-14 md:px-14 md:pt-0 lg:px-24">
       <div class="amll-controls order-2 shrink-0 md:order-none md:min-h-0" :data-collapsed="controlsVisible ? 'false' : 'true'">
         <div class="flex flex-col items-center justify-center gap-6 px-6 pb-6 pt-4 md:h-full md:gap-6 md:px-0 md:pb-16 md:pt-24">
         <div class="relative hidden w-full max-w-[420px] md:block">

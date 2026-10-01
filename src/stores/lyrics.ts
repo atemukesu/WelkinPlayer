@@ -67,7 +67,6 @@ function normalizeSettings(raw: unknown, fallback: LyricDisplaySettings): LyricD
     fontFamilies: Array.isArray(data.fontFamilies)
       ? data.fontFamilies.filter((item): item is string => typeof item === "string")
       : [...fallback.fontFamilies],
-    narrowTopSpacing: clampNumber(data.narrowTopSpacing, 0, 80, fallback.narrowTopSpacing),
   };
 }
 

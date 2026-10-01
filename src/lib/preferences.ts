@@ -20,11 +20,6 @@ export interface LyricDisplaySettings {
   fontWeight: number;
   /** Ordered `font-family` fallback list; empty falls back to the app font. */
   fontFamilies: string[];
-  /**
-   * Top gap (px) above the narrow-screen AMLL layout. Keeps the title clear of
-   * the device status bar; only the AMLL player uses it.
-   */
-  narrowTopSpacing: number;
 }
 
 /** Where a lyric provider may be selected on the settings page. */
@@ -41,7 +36,6 @@ export const DEFAULT_CLASSIC_DISPLAY: LyricDisplaySettings = {
   ruby: true,
   fontWeight: 600,
   fontFamilies: [],
-  narrowTopSpacing: 15,
 };
 
 export const DEFAULT_AMLL_DISPLAY: LyricDisplaySettings = {
@@ -52,7 +46,6 @@ export const DEFAULT_AMLL_DISPLAY: LyricDisplaySettings = {
   ruby: true,
   fontWeight: 400,
   fontFamilies: [],
-  narrowTopSpacing: 15,
 };
 
 /** Fold a stored provider list into the canonical set, dropping duplicates. */
