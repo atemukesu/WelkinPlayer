@@ -33,10 +33,10 @@ const LICENSE_KEY: &str = "license.code";
 
 /// Developer's Ed25519 public key, base64-encoded (32 bytes).
 ///
-/// PLACEHOLDER: replace with the real public key before release. This is the
+/// This is the
 /// counterpart of the private key the developer signs activation codes with;
 /// it is safe to ship inside the app.
-const PUBLIC_KEY_B64: &str = "REPLACE_WITH_ED25519_PUBLIC_KEY_BASE64";
+const PUBLIC_KEY_B64: &str = "jYKyuCr2qCcbjRVgGbA126XDxm9pNWFva/nIaCpCAAE=";
 
 /// Threshold above which an `expires_at` value is treated as milliseconds
 /// rather than seconds (roughly the year 5138, so no real timestamp is close).
@@ -235,23 +235,20 @@ fn read_stored_code(app: &AppHandle) -> Option<String> {
         .filter(|code| !code.trim().is_empty())
 }
 
-/// Verify and persist a Pro activation code.
+/// How long a verification is held before the result is returned.
 ///
-/// Returns the resulting status on success; on failure returns a structured
-/// [`AppError`] whose code lets the frontend localize the exact reason.
-#[tauri::command]
-pub fn activate_pro(app: AppHandle, code: String) -> Result<ProStatus, AppError> {
-    let code = code.trim().to_string();
-    if code.is_empty() {
-        return Err(AppError::invalid_argument("code", "must not be empty"));
-    }
+/// Keeps the frontend's verification animation honest and slows down repeated
+/// guessing. The wait runs on the blocking pool, never on the UI thread.
+const VERIFY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// Verify a code and, when valid, persist it. Pure blocking work.
+fn verify_and_store(app: &AppHandle, code: &str) -> Result<ProStatus, AppError> {
     let key = developer_key()?;
-    let device = current_device(&app)?;
-    let claims = verify_token(&code, &key, &device, now_seconds())?;
+    let device = current_device(app)?;
+    let claims = verify_token(code, &key, &device, now_seconds())?;
 
     let store = app.store(STORE_FILE)?;
-    store.set(LICENSE_KEY, code.as_str());
+    store.set(LICENSE_KEY, code);
     store.save()?;
 
     log::info!(
@@ -260,6 +257,29 @@ pub fn activate_pro(app: AppHandle, code: String) -> Result<ProStatus, AppError>
         claims.signer
     );
     Ok(ProStatus::from_claims(&claims))
+}
+
+/// Verify and persist a Pro activation code.
+///
+/// Returns the resulting status on success; on failure returns a structured
+/// [`AppError`] whose code lets the frontend localize the exact reason. Either
+/// way the result is held for [`VERIFY_DELAY`] so the animation can play out.
+#[tauri::command]
+pub async fn activate_pro(app: AppHandle, code: String) -> Result<ProStatus, AppError> {
+    let code = code.trim().to_string();
+    if code.is_empty() {
+        return Err(AppError::invalid_argument("code", "must not be empty"));
+    }
+
+    let status = tauri::async_runtime::spawn_blocking(move || {
+        let result = verify_and_store(&app, &code);
+        std::thread::sleep(VERIFY_DELAY);
+        result
+    })
+    .await
+    .map_err(|error| AppError::Other(format!("激活任务失败：{error}")))??;
+
+    Ok(status)
 }
 
 /// Report the current Pro status, re-verifying any stored code from scratch.

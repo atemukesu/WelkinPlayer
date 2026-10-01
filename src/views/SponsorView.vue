@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { ArrowLeft, BadgeCheck, Check, Coffee, Copy, ExternalLink, HeartHandshake, KeyRound, LoaderCircle, X } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -21,6 +21,12 @@ const activateOpen = ref(false);
 const activationCode = ref("");
 const activationLoading = ref(false);
 const activationError = ref("");
+
+/** Which face the activation modal shows: input, verification or celebration. */
+type ActivationStage = "form" | "verifying" | "success";
+const activationStage = ref<ActivationStage>("form");
+/** Auto-dismiss timer for the success animation. */
+let activationTimer = 0;
 
 /** Maps stable Rust error codes to localized activation messages. */
 const ACTIVATION_ERROR_KEYS: Record<string, string> = {
@@ -93,23 +99,41 @@ async function copyClaim() {
 }
 
 function openActivate() {
+  window.clearTimeout(activationTimer);
+  activationTimer = 0;
   activationCode.value = "";
   activationError.value = "";
+  activationStage.value = "form";
   activateOpen.value = true;
 }
 
-/** Verify the code in Rust and, on success, persist and reflect Pro status. */
+/** Close the modal from the backdrop or the close button, stopping any timers. */
+function closeActivate() {
+  window.clearTimeout(activationTimer);
+  activationTimer = 0;
+  activationStage.value = "form";
+  activateOpen.value = false;
+}
+
+/** Verify the code in Rust, then play the reveal; persist and reflect Pro. */
 async function submitActivation() {
   const code = activationCode.value.trim();
-  if (!code || activationLoading.value) return;
+  if (!code || activationStage.value === "verifying") return;
   activationLoading.value = true;
   activationError.value = "";
+  activationStage.value = "verifying";
   try {
-    const status = await license.activate(code);
-    pushToast("success", t("sponsor.activateModal.success", { signer: status.signer ?? "" }));
-    activationCode.value = "";
-    activateOpen.value = false;
+    await license.activate(code);
+    activationStage.value = "success";
+    activationTimer = window.setTimeout(() => {
+      activationTimer = 0;
+      activationStage.value = "form";
+      activationCode.value = "";
+      activateOpen.value = false;
+      pushToast("success", t("sponsor.activateModal.success", { signer: license.status.signer ?? "" }));
+    }, 2200);
   } catch (error) {
+    activationStage.value = "form";
     const appError = toAppError(error);
     const key = ACTIVATION_ERROR_KEYS[appError.code];
     activationError.value = key
@@ -122,6 +146,10 @@ async function submitActivation() {
 
 onMounted(() => {
   void license.refresh();
+});
+
+onUnmounted(() => {
+  window.clearTimeout(activationTimer);
 });
 </script>
 
@@ -236,13 +264,35 @@ onMounted(() => {
 
     <Teleport to="body">
       <Transition name="modal">
-      <div v-if="activateOpen" class="fixed inset-0 z-[80] grid place-items-center bg-black/70 p-4" role="dialog" aria-modal="true" @pointerdown.self="activateOpen = false">
+      <div v-if="activateOpen" class="fixed inset-0 z-[80] grid place-items-center bg-black/70 p-4" role="dialog" aria-modal="true" @pointerdown.self="closeActivate">
         <div class="ak-frame w-full max-w-md border border-line bg-surface p-5">
           <div class="flex items-center justify-between">
             <h3 class="text-sm font-bold uppercase tracking-[0.2em]">{{ t("sponsor.activateModal.title") }}</h3>
-            <button type="button" class="grid h-8 w-8 place-items-center text-dim hover:text-fg" @click="activateOpen = false"><X :size="16" /></button>
+            <button type="button" class="grid h-8 w-8 place-items-center text-dim hover:text-fg" @click="closeActivate"><X :size="16" /></button>
           </div>
-          <template v-if="license.isPro">
+
+          <div v-if="activationStage === 'verifying'" class="ak-act-panel" role="status" aria-live="polite">
+            <div class="ak-act-scan relative grid h-24 w-24 place-items-center overflow-hidden border border-line bg-bg">
+              <span class="ak-act-grid absolute inset-0"></span>
+              <KeyRound class="relative z-10 text-accent" :size="30" :stroke-width="2" />
+              <span class="ak-act-scanline absolute inset-x-0 h-px bg-accent"></span>
+            </div>
+            <p class="text-[11px] font-semibold uppercase tracking-[0.4em] text-dim">{{ t("sponsor.activateModal.verifying") }}</p>
+            <div class="relative h-[3px] w-44 overflow-hidden bg-line"><span class="ak-act-bar absolute inset-y-0 left-0 w-[45%] bg-accent"></span></div>
+          </div>
+
+          <div v-else-if="activationStage === 'success'" class="ak-act-panel" role="status" aria-live="polite">
+            <div class="ak-act-mark relative grid h-24 w-24 place-items-center bg-accent text-accent-fg">
+              <span class="ak-act-ghost ak-act-ghost-a"></span>
+              <span class="ak-act-ghost ak-act-ghost-b"></span>
+              <Check class="ak-act-check relative z-10" :size="40" :stroke-width="2.6" />
+            </div>
+            <p class="ak-act-word text-lg font-black uppercase text-fg">{{ t("sponsor.compare.badgePro") }}</p>
+            <span class="ak-eq text-accent" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+            <p class="max-w-[15rem] text-center text-xs leading-relaxed text-muted">{{ t("sponsor.activateModal.activeDesc") }}</p>
+          </div>
+
+          <template v-else-if="license.isPro">
             <div class="mt-3 flex items-center gap-3 border border-accent/40 bg-accent/10 px-4 py-3 text-accent">
               <BadgeCheck :size="20" :stroke-width="2.2" />
               <span class="text-sm font-bold uppercase tracking-[0.15em]">{{ t("sponsor.activateModal.activeTitle") }}</span>
@@ -253,10 +303,11 @@ onMounted(() => {
               <div class="flex justify-between gap-4"><dt class="text-dim">{{ t("sponsor.activateModal.expires") }}</dt><dd class="font-semibold tabular-nums">{{ activationExpiry }}</dd></div>
             </dl>
           </template>
+
           <template v-else>
             <p class="mt-3 text-sm leading-relaxed text-muted">{{ t("sponsor.activateModal.desc") }}</p>
             <input v-model="activationCode" class="mt-3 h-11 w-full border border-line bg-bg px-3 font-mono text-sm text-fg outline-none focus:border-accent disabled:opacity-50" :placeholder="t('sponsor.activateModal.placeholder')" :disabled="activationLoading" @keydown.enter="submitActivation" />
-            <p v-if="activationError" class="mt-3 text-xs leading-relaxed text-accent">{{ activationError }}</p>
+            <p v-if="activationError" class="mt-3 text-xs leading-relaxed text-red-500">{{ activationError }}</p>
             <button type="button" class="ak-clip-tr mt-4 flex h-11 w-full items-center justify-center gap-2 bg-accent px-6 text-[13px] font-bold uppercase tracking-[0.25em] text-accent-fg transition-transform hover:scale-[1.01] active:scale-95 disabled:opacity-50" :disabled="!activationCode.trim() || activationLoading" @click="submitActivation"><LoaderCircle v-if="activationLoading" class="animate-spin" :size="15" :stroke-width="2.2" /><Check v-else :size="15" :stroke-width="2.4" />{{ activationLoading ? t("sponsor.activateModal.activating") : t("sponsor.activateModal.submit") }}</button>
           </template>
         </div>
@@ -292,5 +343,110 @@ button {
 .modal-leave-to .ak-frame {
   opacity: 0;
   transform: translateY(12px) scale(0.97);
+}
+
+/* --- Activation animation -------------------------------------------------
+   Same visual language as the rest of the app: square accent blocks, an
+   angular scanning pass, and mask/pop reveals on the house easing curve. */
+
+.ak-act-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.15rem;
+  padding: 2.75rem 0 2rem;
+}
+
+.ak-act-grid {
+  background-image: linear-gradient(var(--line) 1px, transparent 1px), linear-gradient(90deg, var(--line) 1px, transparent 1px);
+  background-size: 12px 12px;
+  opacity: 0.7;
+}
+
+.ak-act-scanline {
+  top: 0;
+  box-shadow: 0 0 12px var(--accent);
+  animation: ak-act-scan 1.4s cubic-bezier(0.6, 0, 0.4, 1) infinite;
+}
+
+@keyframes ak-act-scan {
+  0% { transform: translateY(0); opacity: 0; }
+  12% { opacity: 1; }
+  88% { opacity: 1; }
+  100% { transform: translateY(96px); opacity: 0; }
+}
+
+.ak-act-bar {
+  animation: ak-act-slide 1.4s cubic-bezier(0.6, 0, 0.4, 1) infinite;
+}
+
+@keyframes ak-act-slide {
+  0% { transform: translateX(-110%); }
+  100% { transform: translateX(255%); }
+}
+
+.ak-act-mark {
+  animation: ak-act-pop 560ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  box-shadow: 0 0 0 1px var(--accent), 0 0 30px var(--accent-soft);
+}
+
+@keyframes ak-act-pop {
+  0% { transform: scale(0.55) rotate(-6deg); opacity: 0; }
+  60% { transform: scale(1.06) rotate(0); opacity: 1; }
+  100% { transform: scale(1); }
+}
+
+.ak-act-ghost {
+  position: absolute;
+  inset: 0;
+  background: var(--accent);
+  opacity: 0;
+}
+
+.ak-act-ghost-a {
+  animation: ak-act-ghost-a 640ms 120ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.ak-act-ghost-b {
+  animation: ak-act-ghost-b 640ms 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+@keyframes ak-act-ghost-a {
+  0% { opacity: 0.5; transform: translate(0, 0); }
+  100% { opacity: 0; transform: translate(-14px, -14px); }
+}
+
+@keyframes ak-act-ghost-b {
+  0% { opacity: 0.5; transform: translate(0, 0); }
+  100% { opacity: 0; transform: translate(14px, 14px); }
+}
+
+.ak-act-check :deep(path) {
+  stroke-dasharray: 44;
+  stroke-dashoffset: 44;
+  animation: ak-act-draw 480ms 220ms cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+}
+
+@keyframes ak-act-draw {
+  to { stroke-dashoffset: 0; }
+}
+
+.ak-act-word {
+  letter-spacing: 0.9em;
+  animation: ak-act-reveal 560ms 140ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+@keyframes ak-act-reveal {
+  0% { opacity: 0; letter-spacing: 0.9em; }
+  100% { opacity: 1; letter-spacing: 0.45em; }
+}
+
+.ak-eq i {
+  animation-name: ak-act-eq;
+}
+
+@keyframes ak-act-eq {
+  0%, 100% { height: 3px; }
+  50% { height: 12px; }
 }
 </style>
