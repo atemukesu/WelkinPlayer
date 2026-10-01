@@ -100,9 +100,10 @@
         ? '<svg viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="10" rx="1"/><path d="M8 10V7a4 4 0 0 1 8 0"/></svg>'
         : '<svg viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="10" rx="1"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>';
     }
-    // On desktop the window intentionally stays interactive while locked so the
-    // small padlock can be hovered/clicked to unlock. Android goes click-through
-    // (the padlock there is unreachable; unlock via the notification instead).
+    // Locked = click-through: the window swallows no input, so the layer behind
+    // it stays usable. An in-window unlock affordance is impossible in that
+    // state; unlock from the settings toggle (desktop) / notification (Android).
+    if (win && typeof win.setIgnoreCursorEvents === "function") win.setIgnoreCursorEvents(locked).catch(function () {});
     if (window.AndroidDesktopLyric && window.AndroidDesktopLyric.setLocked) {
       try { window.AndroidDesktopLyric.setLocked(locked); } catch (error) {}
     }
@@ -657,14 +658,7 @@
     body.classList.remove("dragging");
     try { stage.releasePointerCapture(event.pointerId); } catch (error) {}
     if (!androidMoved && performance.now() - androidDownAt < 400) {
-      if (state.settings && state.settings.locked) {
-        // Locked: a tap anywhere reveals the white padlock so it can be unlocked.
-        body.classList.toggle("controls-visible");
-      } else if (body.classList.contains("controls-visible")) {
-        hideControls();
-      } else {
-        showControls();
-      }
+      if (body.classList.contains("controls-visible")) hideControls(); else showControls();
     }
   }
 
@@ -726,12 +720,5 @@
   document.getElementById("prev").addEventListener("click", function () { sendControl("previous"); });
   document.getElementById("play").addEventListener("click", function () { sendControl("toggle"); });
   document.getElementById("next").addEventListener("click", function () { sendControl("next"); });
-  document.getElementById("unlock").addEventListener("click", function () {
-    if (!state.settings) return;
-    state.settings.locked = false;
-    applyLocked(false);
-    body.classList.remove("controls-visible");
-    sendControl("unlock");
-  });
 
 })();

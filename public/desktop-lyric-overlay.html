@@ -365,38 +365,6 @@
       #tools #play svg,
       #tools #next svg { fill: currentColor; }
 
-      /* While locked the toolbar is gone; a small white padlock is the only way
-         back, revealed on hover (desktop) / tap (Android). */
-      #unlock {
-        position: fixed;
-        top: 8px;
-        left: 10px;
-        display: grid;
-        place-items: center;
-        width: 24px;
-        height: 24px;
-        padding: 0;
-        border: none;
-        background: transparent;
-        color: #fff;
-        cursor: pointer;
-        opacity: 0;
-        pointer-events: none;
-        transition: opacity 140ms ease;
-        z-index: 11;
-        filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.65));
-      }
-
-      body.locked:hover #unlock,
-      body.locked.controls-visible #unlock {
-        opacity: 1;
-        pointer-events: auto;
-      }
-
-      body:not(.locked) #unlock { display: none; }
-
-      #unlock svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-
       #resize {
         position: fixed;
         right: 6px;
@@ -443,7 +411,6 @@
       <button id="lock" type="button" title="锁定/解锁" aria-label="锁定/解锁"><svg viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="10" rx="1"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></button>
       <button id="close" type="button" title="关闭桌面歌词" aria-label="关闭桌面歌词"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
     </nav>
-    <button id="unlock" type="button" title="解锁" aria-label="解锁"><svg viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="10" rx="1"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></button>
     <button id="resize" type="button" title="按住拖动调整大小" aria-label="按住拖动调整大小"><svg viewBox="0 0 24 24"><path d="M20 8 8 20M20 14l-6 6"/></svg></button>
     <script src="/desktop-lyric-overlay.js"></script>
   </body>
