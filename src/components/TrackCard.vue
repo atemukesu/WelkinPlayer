@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { Check, Play, Trash2 } from "@lucide/vue";
+import { Check, LoaderCircle, Play, Trash2 } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import type { Track } from "../stores/player";
-import { initial } from "../lib/format";
+import { coverPending, initial } from "../lib/format";
 import { requestMeta } from "../directives/requestMeta";
 
 const vRequestMeta = requestMeta;
@@ -22,6 +22,7 @@ const { t } = useI18n();
   >
     <div class="relative aspect-square w-full overflow-hidden" :style="{ backgroundColor: track.color }">
       <img v-if="track.cover" :src="track.cover" alt="" loading="lazy" decoding="async" class="absolute inset-0 h-full w-full object-cover" />
+      <span v-else-if="coverPending(track)" class="absolute inset-0 grid place-items-center text-white/90"><LoaderCircle :size="24" :stroke-width="2" class="animate-spin" /></span>
       <span v-else class="absolute inset-0 grid place-items-center text-5xl font-black text-white/90">{{ initial(track) }}</span>
       <button v-if="!selectable" class="ak-clip-tr absolute bottom-0 right-0 grid h-10 w-10 place-items-center bg-fg text-bg opacity-0 transition-opacity group-hover:opacity-100" :title="t('controls.play')" @click.stop="emit('play', track)">
         <Play :size="16" />

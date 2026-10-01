@@ -1,13 +1,16 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { Activity, Music2, Play, TrendingUp } from "@lucide/vue";
+import { Activity, LoaderCircle, Music2, Play, TrendingUp } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { usePlayerStore } from "../stores/player";
 import type { Track } from "../stores/player";
 import { useProfileStore } from "../stores/profile";
-import { initial, pad } from "../lib/format";
+import { coverPending, initial, pad } from "../lib/format";
 import { trackKey } from "../lib/sources";
+import { requestMeta } from "../directives/requestMeta";
 import TrackContextMenu from "../components/TrackContextMenu.vue";
+
+const vRequestMeta = requestMeta;
 
 withDefaults(defineProps<{ loading: boolean; downloadingTrackId?: number | null }>(), { downloadingTrackId: null });
 const emit = defineEmits<{ downloadMetadata: [track: Track]; editLyrics: [track: Track]; editInfo: [track: Track]; showInfo: [track: Track] }>();
@@ -90,6 +93,7 @@ function openContextMenu(event: MouseEvent, track: Track) { contextTrack.value =
         <div
           v-for="(item, index) in ranked"
           :key="item.track.id"
+          v-request-meta="item.track"
           role="button"
           tabindex="0"
           class="group grid cursor-pointer grid-cols-[40px_44px_minmax(0,1fr)_auto] items-center gap-4 border-t border-line px-3 py-2 text-left first:border-t-0"
@@ -100,7 +104,7 @@ function openContextMenu(event: MouseEvent, track: Track) { contextTrack.value =
           @contextmenu.prevent="openContextMenu($event, item.track)"
         >
           <span class="font-mono text-sm font-bold tabular-nums" :class="index < 3 ? 'text-accent' : 'text-dim'">{{ pad(index + 1) }}</span>
-          <span class="grid h-11 w-11 place-items-center overflow-hidden text-lg font-black text-white/90" :style="{ backgroundColor: item.track.color }"><img v-if="item.track.cover" :src="item.track.cover" alt="" loading="lazy" decoding="async" class="h-full w-full object-cover" /><template v-else>{{ initial(item.track) }}</template></span>
+          <span class="grid h-11 w-11 place-items-center overflow-hidden text-lg font-black text-white/90" :style="{ backgroundColor: item.track.color }"><img v-if="item.track.cover" :src="item.track.cover" alt="" loading="lazy" decoding="async" class="h-full w-full object-cover" /><LoaderCircle v-else-if="coverPending(item.track)" :size="18" :stroke-width="2" class="animate-spin" /><template v-else>{{ initial(item.track) }}</template></span>
           <span class="grid min-w-0 gap-1.5">
             <span class="flex min-w-0 items-baseline gap-2"><strong class="truncate text-sm font-semibold tracking-wide" :class="item.track.id === player.currentTrack?.id ? 'text-accent' : 'text-fg'">{{ item.track.title }}</strong><small class="truncate text-xs text-muted">{{ item.track.artist }}</small></span>
             <span class="block h-1 w-full overflow-hidden bg-fg/5"><span class="block h-full transition-[width]" :class="item.track.id === player.currentTrack?.id ? 'bg-white' : 'bg-accent'" :style="{ width: `${maxCount ? (item.count / maxCount) * 100 : 0}%` }"></span></span>

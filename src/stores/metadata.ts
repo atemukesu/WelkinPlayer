@@ -90,11 +90,13 @@ export const useMetadataStore = defineStore("metadata", () => {
           });
           apply(batch, results);
         } catch (error) {
-          // Leave the tracks unresolved so they can retry after the backoff.
+          // Mark the attempt as failed so the spinner stops; the backoff still
+          // allows a later retry.
           console.warn("[welkin] metadata batch failed", error);
           for (const track of batch) {
             const key = trackKey(track);
             if (key) attempted.set(key, Date.now());
+            player.updateTrack(track.id, { metaFailed: true });
           }
         } finally {
           for (const track of batch) {
@@ -124,18 +126,22 @@ export const useMetadataStore = defineStore("metadata", () => {
       if (key) attempted.set(key, Date.now());
       const result = track.path ? byPath.get(track.path) : undefined;
       const meta = result?.metadata;
-      // A `null` metadata means the read failed; keep the track unresolved so
-      // the backoff can retry it later instead of marking it permanently done.
-      if (!meta) continue;
       const current = key ? byKey.get(key) : undefined;
-      const patch: Partial<Track> = { metaLoaded: true };
+      const id = current?.id ?? track.id;
+      // A `null` metadata means the read failed: stop the spinner but leave the
+      // track retryable once the backoff elapses.
+      if (!meta) {
+        patches.push({ id, patch: { metaFailed: true } });
+        continue;
+      }
+      const patch: Partial<Track> = { metaLoaded: true, metaFailed: false };
       if (meta.title) patch.title = meta.title;
       if (meta.artist) patch.artist = meta.artist;
       if (meta.album) patch.album = meta.album;
       if (meta.durationSecs) patch.duration = formatDuration(meta.durationSecs);
       const url = coverUrl(result?.coverPath, current?.modified ?? track.modified);
       if (url) patch.cover = url;
-      patches.push({ id: current?.id ?? track.id, patch });
+      patches.push({ id, patch });
     }
     player.updateTracks(patches);
   }

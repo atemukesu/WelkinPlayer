@@ -1,18 +1,20 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { VList } from "virtua/vue";
-import { Check, ImagePlus, Music2, Search, Trash2, X } from "@lucide/vue";
+import { Check, ImagePlus, LoaderCircle, Music2, Search, Trash2, X } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { usePlayerStore } from "../stores/player";
 import type { Track } from "../stores/player";
 import { useProfileStore } from "../stores/profile";
 import type { Playlist } from "../lib/profile";
-import { initial } from "../lib/format";
+import { coverPending, initial } from "../lib/format";
 import { trackKey } from "../lib/sources";
+import { requestMeta } from "../directives/requestMeta";
 import PlaylistCover from "../components/PlaylistCover.vue";
 import CoverCropper from "../components/CoverCropper.vue";
 import TrackList from "../components/TrackList.vue";
 
+const vRequestMeta = requestMeta;
 const props = withDefaults(defineProps<{ playlistId?: string | null }>(), { playlistId: null });
 const emit = defineEmits<{ done: [id: string]; deleted: [id: string]; cancel: [] }>();
 const { t } = useI18n();
@@ -177,9 +179,10 @@ function removePlaylist() {
               <template #default="{ item: row }">
                 <div class="grid gap-3 px-2 pb-3" :style="{ gridTemplateColumns: `repeat(${pickerColumns}, minmax(0, 1fr))` }">
                   <template v-for="col in pickerColumns" :key="col">
-                    <button v-if="pickerInRange(row, col - 1)" type="button" class="group grid gap-2 text-left" @click="chooseTrack(pickerKey(row, col - 1) as string)">
+                    <button v-if="pickerInRange(row, col - 1)" v-request-meta="pickerTrack(row, col - 1)" type="button" class="group grid gap-2 text-left" @click="chooseTrack(pickerKey(row, col - 1) as string)">
                       <span class="relative grid aspect-square place-items-center overflow-hidden text-2xl font-black text-white/90 ring-offset-2 ring-offset-surface transition-all" :class="coverTrack === pickerKey(row, col - 1) ? 'ring-2 ring-accent' : 'group-hover:ring-2 group-hover:ring-line-strong'" :style="{ backgroundColor: pickerTrack(row, col - 1).color }">
                         <img v-if="pickerTrack(row, col - 1).cover" :src="pickerTrack(row, col - 1).cover" alt="" loading="lazy" decoding="async" class="h-full w-full object-cover" />
+                        <LoaderCircle v-else-if="coverPending(pickerTrack(row, col - 1))" :size="22" :stroke-width="2" class="animate-spin" />
                         <template v-else>{{ initial(pickerTrack(row, col - 1)) }}</template>
                         <span v-if="coverTrack === pickerKey(row, col - 1)" class="absolute bottom-0 right-0 grid h-6 w-6 place-items-center bg-accent text-accent-fg"><Check :size="14" /></span>
                       </span>

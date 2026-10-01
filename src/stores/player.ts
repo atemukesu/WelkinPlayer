@@ -34,6 +34,8 @@ export interface Track {
   cover?: string;
   /** Whether metadata has already been loaded from cache or the network. */
   metaLoaded?: boolean;
+  /** Whether a metadata fetch was attempted and returned nothing (no retry UI). */
+  metaFailed?: boolean;
   /** Whether the on-disk cache has already been consulted for this track. */
   assetsHydrated?: boolean;
 }

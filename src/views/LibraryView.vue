@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import type { Component } from "vue";
-import { Activity, AudioLines, Heart, Library, ListMusic, Play, Plus, RefreshCw, Shuffle, X } from "@lucide/vue";
+import { Activity, AudioLines, Heart, Library, ListMusic, LoaderCircle, Play, Plus, RefreshCw, Shuffle, X } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { usePlayerStore } from "../stores/player";
 import type { Track } from "../stores/player";
 import { tracksForPaths, useProfileStore } from "../stores/profile";
-import { initial } from "../lib/format";
+import { coverPending, initial } from "../lib/format";
 import { trackKey } from "../lib/sources";
 import type { View } from "../lib/app";
 import PlaylistCover from "../components/PlaylistCover.vue";
@@ -125,6 +125,7 @@ function confirmCreate() { const name = newName.value.trim(); if (name) profile.
           <div v-if="heroTrack" class="flex items-center gap-4">
             <span class="ak-frame grid h-28 w-28 shrink-0 place-items-center overflow-hidden text-4xl font-black text-white/90" :style="{ backgroundColor: heroTrack.color }">
               <img v-if="heroTrack.cover" :src="heroTrack.cover" alt="" decoding="async" class="h-full w-full object-cover" />
+              <LoaderCircle v-else-if="coverPending(heroTrack)" :size="30" :stroke-width="2" class="animate-spin" />
               <template v-else>{{ initial(heroTrack) }}</template>
             </span>
             <div class="hidden max-w-[200px] sm:block">

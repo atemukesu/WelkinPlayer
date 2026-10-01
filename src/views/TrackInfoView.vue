@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { ArrowLeft } from "@lucide/vue";
+import { ArrowLeft, LoaderCircle } from "@lucide/vue";
 import { describeError, invoke } from "../api";
-import { initial } from "../lib/format";
+import { coverPending, initial } from "../lib/format";
+import { useMetadataStore } from "../stores/metadata";
 import { usePlayerStore } from "../stores/player";
 import type { Track } from "../stores/player";
 import { useProfileStore } from "../stores/profile";
@@ -17,6 +18,7 @@ const { t } = useI18n();
 const player = usePlayerStore();
 const profile = useProfileStore();
 const sources = useSourcesStore();
+const metadata = useMetadataStore();
 const key = computed(() => trackKey({ sourceId: props.sourceId ?? undefined, path: props.path ?? undefined }));
 const sourceName = computed(() => sources.sources.find((source) => source.id === props.sourceId)?.name ?? "—");
 
@@ -97,6 +99,7 @@ async function load() {
   loadError.value = "";
   coverUrl.value = track.value?.cover ?? null;
   if (!props.path) return;
+  metadata.request(track.value);
 
   loading.value = true;
   try {
@@ -129,6 +132,7 @@ watch(() => props.path, load, { immediate: true });
           <header class="flex flex-col gap-5 border-b border-line pb-6 sm:flex-row sm:items-start sm:gap-6">
             <span class="ak-frame grid h-28 w-28 shrink-0 place-items-center overflow-hidden border border-line text-4xl font-black text-white/90" :style="{ backgroundColor: track?.color ?? 'var(--color-accent)' }">
               <img v-if="coverUrl" :src="coverUrl" alt="" decoding="async" class="h-full w-full object-cover" />
+              <LoaderCircle v-else-if="track && coverPending(track)" :size="28" :stroke-width="2" class="animate-spin" />
               <template v-else>{{ track ? initial(track) : "?" }}</template>
             </span>
             <div class="min-w-0 flex-1">

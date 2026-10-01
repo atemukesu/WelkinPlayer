@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { VList } from "virtua/vue";
-import { X } from "@lucide/vue";
+import { LoaderCircle, X } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { usePlayerStore } from "../stores/player";
-import { initial, pad } from "../lib/format";
+import { coverPending, initial, pad } from "../lib/format";
+import { requestMeta } from "../directives/requestMeta";
 
+const vRequestMeta = requestMeta;
 const emit = defineEmits<{ close: [] }>();
 const { t } = useI18n();
 const player = usePlayerStore();
@@ -43,6 +45,7 @@ function playFromQueue(index: number) {
           :style="{ backgroundColor: player.currentTrack.color }"
         >
           <img v-if="player.currentTrack.cover" :src="player.currentTrack.cover" alt="" decoding="async" class="h-full w-full object-cover" />
+          <LoaderCircle v-else-if="coverPending(player.currentTrack)" :size="16" :stroke-width="2" class="animate-spin" />
           <template v-else>{{ initial(player.currentTrack) }}</template>
         </span>
         <span class="min-w-0 flex-1">
@@ -63,6 +66,7 @@ function playFromQueue(index: number) {
         <template #default="{ item: track, index }">
           <button
             type="button"
+            v-request-meta="track"
             class="flex w-full items-center gap-3 px-5 py-2 text-left transition-colors hover:bg-fg/5"
             @click="playFromQueue(player.queueIndex + 1 + index)"
           >
@@ -72,6 +76,7 @@ function playFromQueue(index: number) {
               :style="{ backgroundColor: track.color }"
             >
               <img v-if="track.cover" :src="track.cover" alt="" loading="lazy" decoding="async" class="h-full w-full object-cover" />
+              <LoaderCircle v-else-if="coverPending(track)" :size="14" :stroke-width="2" class="animate-spin" />
               <template v-else>{{ initial(track) }}</template>
             </span>
             <span class="min-w-0 flex-1">

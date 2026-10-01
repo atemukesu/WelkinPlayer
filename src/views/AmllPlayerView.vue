@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, toRaw, watch } from "vue";
 import {
   ChevronDown,
+  LoaderCircle,
   Maximize2,
   Minimize2,
   Pause,
@@ -20,7 +21,7 @@ import AmllLyrics from "../components/AmllLyrics.vue";
 import { usePlayerStore } from "../stores/player";
 import { useLyricsStore } from "../stores/lyrics";
 import { currentTime, seekPercent, seekTo } from "../lib/audio";
-import { initial, percent } from "../lib/format";
+import { coverPending, initial, percent } from "../lib/format";
 import { useWakeLock } from "../composables/useWakeLock";
 import type { View } from "../lib/app";
 
@@ -241,6 +242,7 @@ function onLyricSeek(timeMs: number) {
           :style="{ backgroundColor: player.currentTrack.color }"
         >
           <img v-if="player.currentTrack.cover" :src="player.currentTrack.cover" alt="" decoding="async" class="h-full w-full object-cover" />
+          <LoaderCircle v-else-if="coverPending(player.currentTrack)" :size="16" :stroke-width="2" class="animate-spin" />
           <template v-else>{{ initial(player.currentTrack) }}</template>
         </span>
         <span class="grid min-w-0 gap-0.5">
@@ -300,6 +302,7 @@ function onLyricSeek(timeMs: number) {
           </div>
           <div class="aspect-square w-full overflow-hidden rounded-2xl shadow-2xl shadow-black/40" :style="{ backgroundColor: player.currentTrack.color }">
             <img v-if="player.currentTrack.cover" :src="player.currentTrack.cover" alt="" decoding="async" class="h-full w-full object-cover" />
+            <span v-else-if="coverPending(player.currentTrack)" class="grid h-full w-full place-items-center text-white/90"><LoaderCircle :size="44" :stroke-width="1.8" class="animate-spin" /></span>
             <span v-else class="grid h-full w-full place-items-center text-8xl font-black text-white/90">{{ initial(player.currentTrack) }}</span>
           </div>
         </div>

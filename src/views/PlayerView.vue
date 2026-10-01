@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { ChevronDown, Maximize2, Minimize2 } from "@lucide/vue";
+import { ChevronDown, LoaderCircle, Maximize2, Minimize2 } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { usePlayerStore } from "../stores/player";
 import { useLyricsStore } from "../stores/lyrics";
 import { currentTime } from "../lib/audio";
-import { initial } from "../lib/format";
+import { coverPending, initial } from "../lib/format";
 import { cssFontFamily } from "../lib/fonts";
 import { useWakeLock } from "../composables/useWakeLock";
 import PlayerBar from "../components/PlayerBar.vue";
@@ -386,6 +386,7 @@ watch(
       <div class="hidden min-h-0 flex-col justify-center md:flex">
         <div class="ak-frame mx-auto aspect-square w-full max-w-[420px] overflow-hidden" :style="{ backgroundColor: player.currentTrack.color }">
           <img v-if="player.currentTrack.cover" :src="player.currentTrack.cover" alt="" decoding="async" class="h-full w-full object-cover" />
+          <span v-else-if="coverPending(player.currentTrack)" class="grid h-full w-full place-items-center text-white/90"><LoaderCircle :size="40" :stroke-width="1.8" class="animate-spin" /></span>
           <span v-else-if="player.currentTrack.metaLoaded" class="grid h-full w-full place-items-center text-8xl font-black text-white/90">{{ initial(player.currentTrack) }}</span>
         </div>
         <div class="mx-auto mt-6 w-full max-w-[420px]">

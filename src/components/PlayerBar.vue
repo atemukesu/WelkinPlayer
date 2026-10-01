@@ -4,6 +4,7 @@ import { useI18n } from "vue-i18n";
 import {
   ChevronUp,
   ListMusic,
+  LoaderCircle,
   Pause,
   Play,
   Repeat,
@@ -15,7 +16,7 @@ import {
   VolumeX,
 } from "@lucide/vue";
 import { usePlayerStore } from "../stores/player";
-import { initial, percent } from "../lib/format";
+import { coverPending, initial, percent } from "../lib/format";
 import { seekPercent } from "../lib/audio";
 
 const emit = defineEmits<{ open: []; queue: []; openArtist: [artist: string]; openAlbum: [album: string] }>();
@@ -60,6 +61,7 @@ function onSeek(event: Event) {
             decoding="async"
             class="h-full w-full object-cover"
           />
+          <LoaderCircle v-else-if="player.currentTrack && coverPending(player.currentTrack)" :size="18" :stroke-width="2" class="animate-spin" />
           <template v-else>{{ player.currentTrack ? initial(player.currentTrack) : "" }}</template>
         </button>
         <button type="button" class="min-w-0 truncate text-left text-[13px] font-semibold tracking-wide transition-colors hover:text-accent" @click="emit('open')">{{ player.currentTrack?.title }}</button>
