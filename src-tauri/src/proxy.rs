@@ -24,7 +24,7 @@ use crate::dav::resolve_under_base;
 use crate::sources::find_source;
 use crate::smart_cache::{SmartCache, SmartCandidate};
 use crate::stream_cache::{
-    read_cache_limit_mb, write_cache_limit_mb, StreamCache, TotalState,
+    read_cache_limit_mb, split_budget, write_cache_limit_mb, StreamCache, TotalState,
 };
 
 /// Shared state handed to the frontend via the `stream_endpoint` command.
@@ -52,8 +52,10 @@ pub fn start(app: AppHandle) -> Result<StreamProxy, String> {
         .map(|addr| addr.port())
         .ok_or_else(|| "could not determine proxy port".to_string())?;
     let token = generate_token();
-    let cache = Arc::new(StreamCache::new(&app)?);
-    let smart = SmartCache::new(&app)?;
+    let total_bytes = read_cache_limit_mb(&app).saturating_mul(1024 * 1024);
+    let (hot_bytes, smart_bytes) = split_budget(total_bytes);
+    let cache = Arc::new(StreamCache::new(&app, hot_bytes)?);
+    let smart = SmartCache::new(&app, smart_bytes)?;
 
     let thread_token = token.clone();
     let thread_cache = cache.clone();
@@ -178,6 +180,8 @@ fn serve_stream(
     range: Option<&str>,
 ) {
     let key = asset_hash(&source.id, remote_path);
+    // The requested track is what is playing now: keep its read-ahead entry.
+    cache.set_active(&key);
 
     // A fully cached track is served straight from disk, no network at all.
     if let Some(file) = smart.complete_file(&key) {
@@ -636,12 +640,12 @@ pub struct CacheUsage {
     pub limit_bytes: u64,
 }
 
-/// Current smart-cache usage and budget, in bytes.
+/// Total cache usage (read-ahead + persistent) and budget, in bytes.
 #[tauri::command]
 pub fn cache_usage(proxy: tauri::State<StreamProxy>) -> Result<CacheUsage, crate::error::AppError> {
     Ok(CacheUsage {
-        used_bytes: proxy.smart.used_bytes(),
-        limit_bytes: proxy.smart.limit_bytes(),
+        used_bytes: proxy.cache.used_bytes() + proxy.smart.used_bytes(),
+        limit_bytes: proxy.cache.limit_bytes() + proxy.smart.limit_bytes(),
     })
 }
 
@@ -702,9 +706,11 @@ pub fn set_stream_cache_limit(
     limit_mb: u64,
 ) -> Result<u64, crate::error::AppError> {
     write_cache_limit_mb(&app, limit_mb).map_err(crate::error::AppError::Store)?;
-    // The budget governs the persistent smart tier; the read-ahead tier keeps
-    // its own fixed, small budget.
-    proxy.smart.set_limit_bytes(limit_mb.saturating_mul(1024 * 1024));
+    // The budget is shared: a small transient read-ahead slice, the rest
+    // persistent. Applying it keeps the displayed total honest.
+    let (hot_bytes, smart_bytes) = split_budget(limit_mb.saturating_mul(1024 * 1024));
+    proxy.cache.set_limit_bytes(hot_bytes);
+    proxy.smart.set_limit_bytes(smart_bytes);
     Ok(limit_mb)
 }
 

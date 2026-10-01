@@ -42,8 +42,8 @@ pub const TOTAL_WAIT: Duration = Duration::from_secs(20);
 pub const CACHE_LIMIT_KEY: &str = "stream.cacheLimitMb";
 /// Default budget when the user has not chosen one.
 pub const DEFAULT_CACHE_LIMIT_MB: u64 = 1024;
-/// Fixed budget for the transient read-ahead tier (not user-facing).
-const HOT_CACHE_LIMIT_MB: u64 = 256;
+/// The read-ahead tier may take at most this share of the total budget.
+pub const HOT_BUDGET_DIVISOR: u64 = 4;
 
 /// Outcome of waiting for a track's total size.
 pub enum TotalState {
@@ -124,21 +124,56 @@ pub struct StreamCache {
     entries: Mutex<HashMap<String, Arc<Entry>>>,
     /// Least-recently-used key order (oldest first) for eviction.
     order: Mutex<Vec<String>>,
+    /// Track currently being played; never evicted mid-stream.
+    active: Mutex<Option<String>>,
 }
 
 impl StreamCache {
-    /// Create the cache rooted at `<cache_dir>/stream`.
-    pub fn new(app: &AppHandle) -> Result<Self, String> {
+    /// Create the cache rooted at `<cache_dir>/stream` with the given budget.
+    pub fn new(app: &AppHandle, limit_bytes: u64) -> Result<Self, String> {
         let dir = resolve_cache_dir(app).join("stream");
         std::fs::create_dir_all(&dir).map_err(|error| format!("无法创建流缓存目录：{error}"))?;
+        // The read-ahead tier is transient: drop any leftovers from last run.
+        if let Ok(read) = std::fs::read_dir(&dir) {
+            for item in read.flatten() {
+                let _ = std::fs::remove_file(item.path());
+            }
+        }
         let client = Client::builder().build().map_err(|error| error.to_string())?;
         Ok(Self {
             dir,
             client,
-            limit_bytes: AtomicU64::new(HOT_CACHE_LIMIT_MB.saturating_mul(1024 * 1024)),
+            limit_bytes: AtomicU64::new(limit_bytes),
             entries: Mutex::new(HashMap::new()),
             order: Mutex::new(Vec::new()),
+            active: Mutex::new(None),
         })
+    }
+
+    /// Mark the track currently being played so it resists eviction.
+    pub fn set_active(&self, key: &str) {
+        *self.active.lock().unwrap() = Some(key.to_string());
+    }
+
+    /// Bytes currently occupied on disk by the read-ahead cache.
+    pub fn used_bytes(&self) -> u64 {
+        self.entries
+            .lock()
+            .unwrap()
+            .values()
+            .map(|entry| file_len(&entry.path))
+            .sum()
+    }
+
+    /// Configured budget in bytes.
+    pub fn limit_bytes(&self) -> u64 {
+        self.limit_bytes.load(Ordering::Relaxed)
+    }
+
+    /// Update the budget and evict down to it.
+    pub fn set_limit_bytes(&self, bytes: u64) {
+        self.limit_bytes.store(bytes, Ordering::Relaxed);
+        self.maybe_evict();
     }
 
     /// Look up or create the entry for a `(source, path)` pair.
@@ -251,14 +286,20 @@ impl StreamCache {
         let key = asset_hash(source_id, path);
         let entry = { self.entries.lock().unwrap().get(&key).cloned() };
         let Some(entry) = entry else { return };
-        let mut state = entry.state.lock().unwrap();
-        if duration > 0.0 {
-            state.duration = duration;
+        {
+            let mut state = entry.state.lock().unwrap();
+            if duration > 0.0 {
+                state.duration = duration;
+            }
+            if position.is_finite() && position >= 0.0 {
+                state.position = position;
+            }
+            entry.cv.notify_all();
         }
-        if position.is_finite() && position >= 0.0 {
-            state.position = position;
-        }
-        entry.cv.notify_all();
+        // The playing track is the most-recently-used and protected from
+        // eviction; this is also a cheap moment to bound the cache.
+        self.set_active(&key);
+        self.touch(&key);
     }
 
     /// Percentage (0-100) of the track the read-ahead tier has cached, if the
@@ -337,22 +378,21 @@ impl StreamCache {
         if total <= limit {
             return;
         }
+        let active = self.active.lock().unwrap().clone();
         let mut order = self.order.lock().unwrap();
         let candidates: Vec<String> = order.clone();
         for key in candidates {
             if total <= limit {
                 break;
             }
-            let busy = entries
-                .get(&key)
-                .map(|entry| entry.state.lock().unwrap().downloading)
-                .unwrap_or(false);
-            if busy {
+            // Never evict the track that is playing right now.
+            if active.as_deref() == Some(key.as_str()) {
                 continue;
             }
             if let Some(entry) = entries.remove(&key) {
                 let size = file_len(&entry.path);
                 {
+                    // Bumping the generation stops a parked downloader too.
                     let mut state = entry.state.lock().unwrap();
                     state.generation = state.generation.wrapping_add(1);
                     entry.cv.notify_all();
@@ -511,6 +551,8 @@ fn run_downloader(
     generation: u64,
 ) -> Result<(), (u16, String)> {
     loop {
+        // Bound the cache as bytes accumulate, even without new requests.
+        cache.maybe_evict();
         let (cursor, target, total, complete) = {
             let state = entry.state.lock().unwrap();
             if state.generation != generation {
@@ -631,6 +673,16 @@ fn mark_complete(entry: &Arc<Entry>, generation: u64) {
 
 fn file_len(path: &std::path::Path) -> u64 {
     std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0)
+}
+
+/// Split the total cache budget into `(read-ahead, persistent)` byte budgets.
+/// The transient read-ahead tier takes at most a quarter (and never more than
+/// the total); the rest is the persistent smart tier.
+pub fn split_budget(total_bytes: u64) -> (u64, u64) {
+    let hot = (total_bytes / HOT_BUDGET_DIVISOR)
+        .max(64 * 1024 * 1024)
+        .min(total_bytes);
+    (hot, total_bytes.saturating_sub(hot))
 }
 
 /// Read the configured stream cache budget (MiB).

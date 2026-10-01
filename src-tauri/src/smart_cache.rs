@@ -25,7 +25,7 @@ use tauri::AppHandle;
 
 use crate::commands::media::{asset_hash, resolve_cache_dir};
 use crate::sources::{find_source, load_sources};
-use crate::stream_cache::{open_upstream, read_cache_limit_mb, response_total};
+use crate::stream_cache::{open_upstream, response_total};
 
 const READ_CHUNK: usize = 64 * 1024;
 const IDLE_WAIT: Duration = Duration::from_secs(15);
@@ -85,13 +85,32 @@ pub struct SmartCache {
 }
 
 impl SmartCache {
-    /// Create the cache and start its background worker.
-    pub fn new(app: &AppHandle) -> Result<Arc<Self>, String> {
+    /// Create the cache with the given persistent budget and start its worker.
+    pub fn new(app: &AppHandle, limit_bytes: u64) -> Result<Arc<Self>, String> {
         let dir = resolve_cache_dir(app).join("smart");
         std::fs::create_dir_all(&dir).map_err(|error| format!("无法创建智能缓存目录：{error}"))?;
         let client = Client::builder().build().map_err(|error| error.to_string())?;
+        let entries = load_index(&dir);
+        // Remove orphaned files left by a crash mid-download (they are not in
+        // the index and would otherwise never be cleaned).
+        if let Ok(read) = std::fs::read_dir(&dir) {
+            for item in read.flatten() {
+                let path = item.path();
+                if path.extension().and_then(|value| value.to_str()) != Some("audio") {
+                    continue;
+                }
+                let known = path
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .map(|stem| entries.contains_key(stem))
+                    .unwrap_or(false);
+                if !known {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+        }
         let state = Mutex::new(State {
-            entries: load_index(&dir),
+            entries,
             queue: Vec::new(),
             active: None,
         });
@@ -100,7 +119,7 @@ impl SmartCache {
             app: app.clone(),
             dir,
             client,
-            limit_bytes: AtomicU64::new(read_cache_limit_mb(app).saturating_mul(1024 * 1024)),
+            limit_bytes: AtomicU64::new(limit_bytes),
             state,
             cv: Condvar::new(),
         });
