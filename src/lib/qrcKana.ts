@@ -10,6 +10,9 @@
 //! counts every digit character separately, so the credit lines (`词：164`)
 //! inject two extra slots each and every reading after them is shifted.
 //!
+//! Both sides of the pairing are normalised to half-width digits first, so a
+//! `１６４` credit line counts as the same one run as `164` would.
+//!
 //! This module therefore strips the `[kana:]` line before `parseQRC` (so
 //! `lyric-kit` never sees it) and re-applies the readings itself, using the
 //! corrected base list. Kept dependency-free apart from type imports so it can
@@ -18,10 +21,21 @@
 import type { LyricLine, LyricWord } from "lyric-kit";
 
 /** Characters that can carry a reading: CJK, the iteration marks 々/〆, digits. */
-const KANA_BASE = /[\u4e00-\u9fff\u3400-\u4dbf\u3005\u30060-9]/;
+const KANA_BASE = /[一-鿿㐀-䶹々〆0-9０-９]/;
 
 /** Matches the whole `[kana:…]` meta line. */
 const KANA_TAG = /^\s*\[kana:(.*)\]\s*$/i;
+
+/** A digit in either half-width (`1`) or full-width (`１`) form. */
+const DIGIT = /[0-9０-９]/;
+
+/** Full-width digits, narrowed to ASCII by subtracting the U+FF10 offset. */
+const FULLWIDTH_DIGIT = /[０-９]/g;
+
+/** Rewrite every full-width digit in `text` to its half-width form. */
+function narrowDigits(text: string): string {
+  return text.replace(FULLWIDTH_DIGIT, (digit) => String.fromCharCode(digit.charCodeAt(0) - 0xfee0));
+}
 
 /** One `N<reading>` unit of the kana tag. */
 interface KanaUnit {
@@ -59,7 +73,8 @@ export function extractKanaTag(text: string): { text: string; tag: string } {
 }
 
 /** Parse the raw reading list into units. */
-function parseKanaUnits(tag: string): KanaUnit[] {
+function parseKanaUnits(rawTag: string): KanaUnit[] {
+  const tag = narrowDigits(rawTag);
   const units: KanaUnit[] = [];
   let kanjiCount = 0;
   let kanaText = "";
@@ -114,6 +129,7 @@ function parseKanaUnits(tag: string): KanaUnit[] {
  * A run of consecutive digits counts as **one** base: the tag contains an empty
  * placeholder unit for it (e.g. `…1し11きょく…` — the bare `1` is the reading
  * slot for `164`). Counting each digit separately is what shifts the readings.
+ * Half- and full-width digits are both runs, and mix freely (`1６４`).
  */
 function collectTargets(lines: LyricLine[]): KanaTarget[] {
   const targets: KanaTarget[] = [];
@@ -122,9 +138,9 @@ function collectTargets(lines: LyricLine[]): KanaTarget[] {
       const text = word.word;
       for (let index = 0; index < text.length; index++) {
         const char = text[index];
-        if (char >= "0" && char <= "9") {
+        if (DIGIT.test(char)) {
           targets.push({ word, charIndex: index });
-          while (index + 1 < text.length && text[index + 1] >= "0" && text[index + 1] <= "9") index++;
+          while (index + 1 < text.length && DIGIT.test(text[index + 1])) index++;
           continue;
         }
         if (KANA_BASE.test(char)) targets.push({ word, charIndex: index });

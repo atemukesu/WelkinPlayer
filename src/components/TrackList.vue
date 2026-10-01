@@ -6,6 +6,7 @@ import { useI18n } from "vue-i18n";
 import { usePlayerStore } from "../stores/player";
 import type { Track } from "../stores/player";
 import { initial, pad } from "../lib/format";
+import { trackKey } from "../lib/sources";
 import { trackViewMode } from "../lib/ui";
 import TrackCard from "./TrackCard.vue";
 
@@ -108,42 +109,46 @@ function gridTrack(row: number, col: number): Track { return props.tracks[row * 
 function gridInRange(row: number, col: number): boolean { return row * columns.value + col < props.tracks.length; }
 
 const selection = computed(() => props.selected ?? new Set<string>());
-const selectableTracks = computed(() => props.tracks.filter((track) => track.path));
-const allSelected = computed(() => selectableTracks.value.length > 0 && selectableTracks.value.every((track) => selection.value.has(track.path as string)));
+const selectableTracks = computed(() => props.tracks.filter((track) => trackKey(track)));
+const allSelected = computed(() => selectableTracks.value.length > 0 && selectableTracks.value.every((track) => selection.value.has(trackKey(track) as string)));
 const selectedCount = computed(() => props.tracks.filter(isSelected).length);
-let anchorPath: string | null = null;
+let anchorKey: string | null = null;
 
 function isSelected(track: Track): boolean {
-  return !!track.path && selection.value.has(track.path);
+  const key = trackKey(track);
+  return !!key && selection.value.has(key);
 }
 function commit(next: Set<string>) { emit("update:selected", next); }
 function toggleAll() {
   if (allSelected.value) commit(new Set());
-  else commit(new Set(selectableTracks.value.map((track) => track.path as string)));
+  else commit(new Set(selectableTracks.value.map((track) => trackKey(track) as string)));
 }
 function selectRange(track: Track) {
-  const paths = selectableTracks.value.map((item) => item.path as string);
-  const to = paths.indexOf(track.path as string);
+  const keys = selectableTracks.value.map((item) => trackKey(item) as string);
+  const to = keys.indexOf(trackKey(track) as string);
   if (to < 0) return;
-  const from = anchorPath ? paths.indexOf(anchorPath) : to;
-  if (from < 0) { commit(new Set([track.path as string])); return; }
-  commit(new Set(paths.slice(Math.min(from, to), Math.max(from, to) + 1)));
+  const from = anchorKey ? keys.indexOf(anchorKey) : to;
+  if (from < 0) { commit(new Set([trackKey(track) as string])); return; }
+  commit(new Set(keys.slice(Math.min(from, to), Math.max(from, to) + 1)));
 }
 function selectOnly(track: Track) {
-  if (track.path) commit(new Set([track.path]));
+  const key = trackKey(track);
+  if (key) commit(new Set([key]));
 }
 function toggleOne(track: Track) {
-  if (!track.path) return;
+  const key = trackKey(track);
+  if (!key) return;
   const next = new Set(selection.value);
-  if (next.has(track.path)) next.delete(track.path);
-  else next.add(track.path);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
   commit(next);
 }
 function activate(track: Track, event?: MouseEvent) {
   if (!props.selectable) { emit("play", track); return; }
-  if (!track.path) return;
+  const key = trackKey(track);
+  if (!key) return;
   if (event?.shiftKey) { selectRange(track); return; }
-  anchorPath = track.path;
+  anchorKey = key;
   if (event?.ctrlKey || event?.metaKey) selectOnly(track);
   else toggleOne(track);
 }

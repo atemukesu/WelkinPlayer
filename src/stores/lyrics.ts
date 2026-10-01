@@ -11,6 +11,7 @@ import {
 import type { LyricDisplaySettings, LyricProvider } from "../lib/preferences";
 import { readLyricSource, tagLyric } from "../lib/lyricTag";
 import { applyLyricOffset, readLyricOffset } from "../lib/lyricOffset";
+import { narrowFullWidthDigits } from "../lib/lyricWidth";
 import {
   LyricResolver,
   lyricFromAmll,
@@ -18,6 +19,7 @@ import {
   lyricFromQqBest,
 } from "../lib/lyricSources";
 import { lyricLog, since } from "../lib/lyricLog";
+import { trackKey } from "../lib/sources";
 import { useProfileStore } from "./profile";
 
 export type LyricsStatus = "idle" | "loading" | "ready" | "error";
@@ -29,6 +31,7 @@ export type { LyricDisplaySettings, LyricProvider };
 /** Minimal track descriptor passed to the loader (title/artist drive online lookup). */
 export interface LyricTrackInfo {
   path?: string;
+  sourceId?: string;
   title?: string;
   artist?: string;
   album?: string;
@@ -186,7 +189,9 @@ export const useLyricsStore = defineStore("lyrics", () => {
   async function loadForTrack(track: LyricTrackInfo | undefined) {
     reset();
     const path = track?.path;
-    const isDisabled = path ? useProfileStore().isLyricsDisabled(path) : false;
+    const trackSourceId = track?.sourceId;
+    const key = trackKey(track ?? undefined);
+    const isDisabled = key ? useProfileStore().isLyricsDisabled(key) : false;
     disabled.value = isDisabled;
     if (!path || !enabled.value || isDisabled) {
       lyricLog("info", "skip load", { path, enabled: enabled.value, disabled: isDisabled });
@@ -206,7 +211,7 @@ export const useLyricsStore = defineStore("lyrics", () => {
     // 1. Show the locally cached lyrics immediately (no network needed).
     let shown = false;
     try {
-      const cached = await invoke<string | null>("get_cached_lyrics", { path });
+      const cached = await invoke<string | null>("get_cached_lyrics", { sourceId: trackSourceId, path });
       if (token !== loadToken) return;
       if (cached) {
         shown = applyContent(cached);
@@ -235,7 +240,7 @@ export const useLyricsStore = defineStore("lyrics", () => {
         let content: string | null = null;
         let sourceId: string | undefined;
         if (provider === "local") {
-          content = await readLocalLyrics(path);
+          content = await readLocalLyrics(path, trackSourceId);
         } else if (provider === "amll") {
           await resolver.netease();
           await resolver.qq();
@@ -269,7 +274,7 @@ export const useLyricsStore = defineStore("lyrics", () => {
           );
           // Online lyrics are tagged, cached and mirrored to WebDAV; a `local`
           // hit is already the sidecar itself.
-          if (provider !== "local") void persistLyrics(path, content, provider, sourceId);
+          if (provider !== "local") void persistLyrics(path, trackSourceId, content, provider, sourceId);
           return;
         }
         lyricLog("info", `provider ${provider} miss (unparsable or empty)`);
@@ -290,10 +295,10 @@ export const useLyricsStore = defineStore("lyrics", () => {
     }
   }
 
-  /** Read the same-named `.lrc` sidecar from WebDAV (it caches locally too). */
-  async function readLocalLyrics(path: string): Promise<string | null> {
+  /** Read the same-named `.lrc` sidecar from the track's source. */
+  async function readLocalLyrics(path: string, trackSourceId?: string): Promise<string | null> {
     try {
-      const content = await invoke<string>("read_track_lyrics", { path });
+      const content = await invoke<string>("read_track_lyrics", { sourceId: trackSourceId, path });
       const ok = Boolean(content && content.trim());
       lyricLog(
         ok ? "info" : "warn",
@@ -313,15 +318,18 @@ export const useLyricsStore = defineStore("lyrics", () => {
    */
   async function persistLyrics(
     path: string,
+    trackSourceId: string | undefined,
     content: string,
     provider: LyricProvider,
     sourceId?: string,
   ) {
-    const tagged = tagLyric(content, { source: provider, sourceId });
+    // Stored copies get the half-width form too, so a later cache hit (or the
+    // WebDAV sidecar) is already clean and the editor never sees １６４ again.
+    const tagged = tagLyric(narrowFullWidthDigits(content), { source: provider, sourceId });
     try {
       const result = await invoke<{ uploaded: boolean; uploadError: string | null }>(
         "save_track_lyrics",
-        { path, content: tagged },
+        { sourceId: trackSourceId, path, content: tagged },
       );
       if (result.uploadError) {
         lyricLog(
@@ -360,11 +368,14 @@ export const useLyricsStore = defineStore("lyrics", () => {
 
   /** Parse lyric text and load it; returns false when there are no lines. */
   function applyContent(content: string): boolean {
-    const parsed = parseLyric(content, { applyOffset: true, extractMetadata: true });
+    // Normalise width once, so display, offset and format detection all see
+    // the same half-width digits the renderer will draw.
+    const normalized = narrowFullWidthDigits(content);
+    const parsed = parseLyric(normalized, { applyOffset: true, extractMetadata: true });
     // `lyric-kit` applies `[offset]` for LRC-family payloads, but keeps the TTML
     // offset tag as inert metadata — shift it here so both formats behave alike.
-    if (detectFormat(content) === "ttml") {
-      applyLyricOffset(parsed.lines, readLyricOffset(content));
+    if (detectFormat(normalized) === "ttml") {
+      applyLyricOffset(parsed.lines, readLyricOffset(normalized));
     }
     if (parsed.lines.length === 0) return false;
     load(parsed.lines);

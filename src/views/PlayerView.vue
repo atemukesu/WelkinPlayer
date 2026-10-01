@@ -174,24 +174,85 @@ function onWheel(event: WheelEvent) {
 }
 
 /**
- * Touch (and pen) drag scrolling. The track is moved through a CSS transform,
- * so the browser never scrolls the overflow-hidden container itself and there
- * is no native momentum to piggyback on — the pointer stream is tracked by
- * hand. `touch-action: none` on `.lyrics-scroll` keeps the browser from
- * hijacking the gesture and cancelling our pointer events.
+ * Touch (and pen) drag scrolling with release inertia. The track is moved
+ * through a CSS transform, so the browser never scrolls the overflow-hidden
+ * container itself and there is no native momentum to piggyback on — the
+ * pointer stream and the glide that follows a flick are tracked by hand.
+ * `touch-action: none` on `.lyrics-scroll` keeps the browser from hijacking
+ * the gesture and cancelling our pointer events.
  */
 let touchActive = false;
 let touchStartY = 0;
 let touchStartOffset = 0;
+let touchLastTime = 0;
+let touchVelocity = 0;
+let momentumFrame = 0;
+
 const TOUCH_RESUME_MS = 2500;
+/** Fraction of the velocity retained per 60fps frame; lower stops sooner. */
+const TOUCH_FRICTION = 0.95;
+/** Speeds (px/ms) below this are treated as stopped. */
+const TOUCH_MIN_VELOCITY = 0.02;
+/** Exponential smoothing applied to the sampled drag velocity. */
+const TOUCH_VELOCITY_SMOOTHING = 0.7;
+/** A release after this long without movement is treated as a hold, not a flick. */
+const TOUCH_HOLD_MS = 120;
+
+function cancelMomentum() {
+  if (momentumFrame) {
+    cancelAnimationFrame(momentumFrame);
+    momentumFrame = 0;
+  }
+}
+
+/** Glide to a stop after a flick, then hand control back to auto-scroll. */
+function startMomentum() {
+  let velocity = touchVelocity;
+  if (Math.abs(velocity) < TOUCH_MIN_VELOCITY) {
+    holdManualScroll(TOUCH_RESUME_MS);
+    return;
+  }
+
+  // Stay in manual mode while gliding so the CSS transition does not fight the
+  // per-frame transform, and keep the resume timer from firing mid-glide.
+  manualScroll.value = true;
+  window.clearTimeout(manualTimer);
+
+  let last = performance.now();
+  const step = (now: number) => {
+    const dt = Math.min(now - last, 64);
+    last = now;
+    const raw = scrollOffset.value + velocity * dt;
+    const clamped = clampOffset(raw);
+    scrollOffset.value = clamped;
+    if (clamped !== raw) {
+      // Reached the top or bottom: stop cleanly rather than overshoot.
+      momentumFrame = 0;
+      holdManualScroll(TOUCH_RESUME_MS);
+      return;
+    }
+    // Decay against real elapsed time so the glide feels the same at any fps.
+    velocity *= Math.pow(TOUCH_FRICTION, dt / (1000 / 60));
+    if (Math.abs(velocity) < TOUCH_MIN_VELOCITY) {
+      momentumFrame = 0;
+      holdManualScroll(TOUCH_RESUME_MS);
+      return;
+    }
+    momentumFrame = requestAnimationFrame(step);
+  };
+  momentumFrame = requestAnimationFrame(step);
+}
 
 function onTouchStart(event: PointerEvent) {
   if (event.pointerType === "mouse") return;
   const container = lyricsScroll.value;
   if (!container) return;
+  cancelMomentum();
   touchActive = true;
   touchStartY = event.clientY;
   touchStartOffset = scrollOffset.value;
+  touchLastTime = performance.now();
+  touchVelocity = 0;
   holdManualScroll(TOUCH_RESUME_MS);
   container.setPointerCapture(event.pointerId);
 }
@@ -199,17 +260,28 @@ function onTouchStart(event: PointerEvent) {
 function onTouchMove(event: PointerEvent) {
   if (!touchActive) return;
   event.preventDefault();
+  const now = performance.now();
   const delta = event.clientY - touchStartY;
-  scrollOffset.value = clampOffset(touchStartOffset - delta);
+  const next = clampOffset(touchStartOffset - delta);
+  const dt = now - touchLastTime;
+  if (dt > 0) {
+    // Offset grows as the content moves up, so a flick upward keeps gliding up.
+    const instantaneous = (next - scrollOffset.value) / dt;
+    touchVelocity = touchVelocity * (1 - TOUCH_VELOCITY_SMOOTHING) + instantaneous * TOUCH_VELOCITY_SMOOTHING;
+    touchLastTime = now;
+  }
+  scrollOffset.value = next;
   holdManualScroll(TOUCH_RESUME_MS);
 }
 
 function onTouchEnd(event: PointerEvent) {
   if (!touchActive) return;
   touchActive = false;
-  holdManualScroll(TOUCH_RESUME_MS);
   const container = lyricsScroll.value;
   if (container?.hasPointerCapture(event.pointerId)) container.releasePointerCapture(event.pointerId);
+  // Releasing after standing still should not fling the lyrics.
+  if (performance.now() - touchLastTime > TOUCH_HOLD_MS) touchVelocity = 0;
+  startMomentum();
 }
 
 onMounted(() => {
@@ -223,6 +295,7 @@ onMounted(() => {
 });
 onBeforeUnmount(() => {
   cancelAnimationFrame(frame);
+  cancelMomentum();
   window.clearTimeout(manualTimer);
   window.clearTimeout(controlsTimer);
   window.removeEventListener("pointermove", bumpControls);
@@ -232,7 +305,10 @@ onBeforeUnmount(() => {
 });
 
 watch(
-  () => player.currentTrack?.path,
+  () => {
+    const track = player.currentTrack;
+    return track?.path ? `${track.sourceId ?? ""}::${track.path}` : "";
+  },
   () => {
     lastScrolledIndex = -1;
     scrollOffset.value = 0;

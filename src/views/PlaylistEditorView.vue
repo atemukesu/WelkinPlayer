@@ -8,12 +8,13 @@ import type { Track } from "../stores/player";
 import { useProfileStore } from "../stores/profile";
 import type { Playlist } from "../lib/profile";
 import { initial } from "../lib/format";
+import { trackKey } from "../lib/sources";
 import PlaylistCover from "../components/PlaylistCover.vue";
 import CoverCropper from "../components/CoverCropper.vue";
 import TrackList from "../components/TrackList.vue";
 
 const props = withDefaults(defineProps<{ playlistId?: string | null }>(), { playlistId: null });
-const emit = defineEmits<{ done: [id: string]; cancel: [] }>();
+const emit = defineEmits<{ done: [id: string]; deleted: [id: string]; cancel: [] }>();
 const { t } = useI18n();
 const player = usePlayerStore();
 const profile = useProfileStore();
@@ -29,11 +30,15 @@ const cropSrc = ref<string | null>(null);
 const trackQuery = ref("");
 const listQuery = ref("");
 const selected = ref<Set<string>>(new Set(editing.value?.tracks ?? []));
+/** Two-step delete guard: the first click arms, the second within the window deletes. */
+const pendingDelete = ref<string | null>(null);
 
 const selectedPaths = computed(() => {
-  const known = player.tracks.filter((track) => track.path && selected.value.has(track.path)).map((track) => track.path as string);
+  const known = player.tracks
+    .filter((track) => trackKey(track) && selected.value.has(trackKey(track) as string))
+    .map((track) => trackKey(track) as string);
   const knownSet = new Set(known);
-  return [...known, ...[...selected.value].filter((path) => !knownSet.has(path))];
+  return [...known, ...[...selected.value].filter((key) => !knownSet.has(key))];
 });
 const preview = computed<Playlist>(() => ({ id: "preview", name: name.value || t("playlistEditor.untitled"), tracks: selectedPaths.value, cover: legacyCover.value, coverFile: coverFile.value, coverTrack: coverTrack.value }));
 const pickerTracks = computed(() => {
@@ -79,6 +84,9 @@ function pickerTrack(row: number, col: number): Track {
 function pickerInRange(row: number, col: number): boolean {
   return row * pickerColumns.value + col < pickerTracks.value.length;
 }
+function pickerKey(row: number, col: number): string | undefined {
+  return trackKey(pickerTrack(row, col));
+}
 
 function onFile(event: Event) {
   const input = event.target as HTMLInputElement;
@@ -111,6 +119,19 @@ async function save() {
     profile.updatePlaylist(playlist.id, { cover: legacyCover.value, coverFile: file ?? undefined, coverTrack: coverTrack.value, tracks: selectedPaths.value });
     emit("done", playlist.id);
   }
+}
+
+function removePlaylist() {
+  const id = editing.value?.id;
+  if (!id) return;
+  if (pendingDelete.value !== id) {
+    pendingDelete.value = id;
+    window.setTimeout(() => { if (pendingDelete.value === id) pendingDelete.value = null; }, 3000);
+    return;
+  }
+  pendingDelete.value = null;
+  profile.deletePlaylist(id);
+  emit("deleted", id);
 }
 </script>
 
@@ -156,11 +177,11 @@ async function save() {
               <template #default="{ item: row }">
                 <div class="grid gap-3 px-2 pb-3" :style="{ gridTemplateColumns: `repeat(${pickerColumns}, minmax(0, 1fr))` }">
                   <template v-for="col in pickerColumns" :key="col">
-                    <button v-if="pickerInRange(row, col - 1)" type="button" class="group grid gap-2 text-left" @click="chooseTrack(pickerTrack(row, col - 1).path as string)">
-                      <span class="relative grid aspect-square place-items-center overflow-hidden text-2xl font-black text-white/90 ring-offset-2 ring-offset-surface transition-all" :class="coverTrack === pickerTrack(row, col - 1).path ? 'ring-2 ring-accent' : 'group-hover:ring-2 group-hover:ring-line-strong'" :style="{ backgroundColor: pickerTrack(row, col - 1).color }">
+                    <button v-if="pickerInRange(row, col - 1)" type="button" class="group grid gap-2 text-left" @click="chooseTrack(pickerKey(row, col - 1) as string)">
+                      <span class="relative grid aspect-square place-items-center overflow-hidden text-2xl font-black text-white/90 ring-offset-2 ring-offset-surface transition-all" :class="coverTrack === pickerKey(row, col - 1) ? 'ring-2 ring-accent' : 'group-hover:ring-2 group-hover:ring-line-strong'" :style="{ backgroundColor: pickerTrack(row, col - 1).color }">
                         <img v-if="pickerTrack(row, col - 1).cover" :src="pickerTrack(row, col - 1).cover" alt="" loading="lazy" decoding="async" class="h-full w-full object-cover" />
                         <template v-else>{{ initial(pickerTrack(row, col - 1)) }}</template>
-                        <span v-if="coverTrack === pickerTrack(row, col - 1).path" class="absolute bottom-0 right-0 grid h-6 w-6 place-items-center bg-accent text-accent-fg"><Check :size="14" /></span>
+                        <span v-if="coverTrack === pickerKey(row, col - 1)" class="absolute bottom-0 right-0 grid h-6 w-6 place-items-center bg-accent text-accent-fg"><Check :size="14" /></span>
                       </span>
                       <span class="truncate text-[11px] font-semibold">{{ pickerTrack(row, col - 1).title }}</span>
                     </button>
@@ -185,9 +206,13 @@ async function save() {
       </div>
     </section>
 
-    <footer class="mt-10 flex justify-end gap-3 border-t border-line pt-6">
-      <button type="button" class="ak-clip-tr h-11 border border-line px-5 text-[13px] font-semibold" @click="emit('cancel')"><span class="flex items-center gap-2"><X :size="15" />{{ t("playlistEditor.cancel") }}</span></button>
-      <button type="button" class="ak-clip-tr h-11 bg-accent px-6 text-[13px] font-bold text-accent-fg disabled:opacity-50" :disabled="!name.trim()" @click="save">{{ editing ? t("playlistEditor.save") : t("playlistEditor.create") }}</button>
+    <footer class="mt-10 flex flex-wrap items-center justify-between gap-3 border-t border-line pt-6">
+      <button v-if="editing" type="button" class="ak-clip-tr flex h-11 items-center gap-2 border px-5 text-[13px] font-semibold transition-colors" :class="pendingDelete === editing.id ? 'border-red-500 bg-red-500 text-white' : 'border-line text-dim hover:border-red-500 hover:text-red-500'" @click="removePlaylist"><Trash2 :size="15" />{{ pendingDelete === editing.id ? t("playlistEditor.confirmDelete") : t("playlistEditor.delete") }}</button>
+      <span v-else></span>
+      <div class="flex gap-3">
+        <button type="button" class="ak-clip-tr h-11 border border-line px-5 text-[13px] font-semibold" @click="emit('cancel')"><span class="flex items-center gap-2"><X :size="15" />{{ t("playlistEditor.cancel") }}</span></button>
+        <button type="button" class="ak-clip-tr h-11 bg-accent px-6 text-[13px] font-bold text-accent-fg disabled:opacity-50" :disabled="!name.trim()" @click="save">{{ editing ? t("playlistEditor.save") : t("playlistEditor.create") }}</button>
+      </div>
     </footer>
 
     <CoverCropper v-if="cropSrc" :src="cropSrc" @confirm="applyCrop" @cancel="cropSrc = null" />

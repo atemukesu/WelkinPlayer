@@ -8,6 +8,7 @@ import {
 } from "../lib/profile";
 import type { Playlist, Profile } from "../lib/profile";
 import { coverUrl } from "../lib/remote";
+import { trackKey } from "../lib/sources";
 import type { Track } from "./player";
 
 /** Where the loaded profile came from. */
@@ -468,10 +469,14 @@ export const useProfileStore = defineStore("profile", () => {
 });
 
 /** Keep a track lookup helper close to the playlist consumers. */
-export function tracksForPaths(paths: string[], tracks: Track[]): Track[] {
-  const byPath = new Map(tracks.filter((track) => track.path).map((track) => [track.path as string, track]));
-  return paths.flatMap((path) => {
-    const track = byPath.get(path);
+export function tracksForPaths(keys: string[], tracks: Track[]): Track[] {
+  const byKey = new Map(
+    tracks
+      .filter((track) => track.path)
+      .map((track) => [trackKey(track) as string, track]),
+  );
+  return keys.flatMap((key) => {
+    const track = byKey.get(key);
     return track ? [track] : [];
   });
 }

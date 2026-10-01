@@ -5,6 +5,7 @@ import { useI18n } from "vue-i18n";
 import { usePlayerStore } from "../stores/player";
 import type { Track } from "../stores/player";
 import { tracksForPaths, useProfileStore } from "../stores/profile";
+import { useSourcesStore } from "../stores/sources";
 import { groupKeys, isUnknownGroup, type GroupKind } from "../lib/grouping";
 import { sortTracks, useTrackSort, type TrackSortContext } from "../lib/sort";
 import TrackList from "../components/TrackList.vue";
@@ -13,11 +14,12 @@ import TrackSortMenu from "../components/TrackSortMenu.vue";
 import ViewModeToggle from "../components/ViewModeToggle.vue";
 import PlaylistCover from "../components/PlaylistCover.vue";
 
-const props = withDefaults(defineProps<{ playlistId?: string | null; artist?: string | null; album?: string | null; loading: boolean; enriching: boolean; refreshing?: boolean; enrichDone: number; enrichTotal: number; downloadingTrackId?: number | null }>(), { playlistId: null, artist: null, album: null, refreshing: false, downloadingTrackId: null });
+const props = withDefaults(defineProps<{ playlistId?: string | null; artist?: string | null; album?: string | null; sourceId?: string | null; loading: boolean; enriching: boolean; refreshing?: boolean; enrichDone: number; enrichTotal: number; downloadingTrackId?: number | null }>(), { playlistId: null, artist: null, album: null, sourceId: null, refreshing: false, downloadingTrackId: null });
 const emit = defineEmits<{ refresh: []; edit: [id: string]; openArtist: [artist: string]; openAlbum: [album: string]; downloadMetadata: [track: Track]; editLyrics: [track: Track]; editInfo: [track: Track]; showInfo: [track: Track] }>();
 const { t } = useI18n();
 const player = usePlayerStore();
 const profile = useProfileStore();
+const sources = useSourcesStore();
 const query = ref("");
 const contextTrack = ref<Track | null>(null);
 const contextPosition = ref({ x: 0, y: 0 });
@@ -30,6 +32,8 @@ const activePlaylist = computed(() => props.playlistId ? profile.playlists.find(
 const groupKind = computed<GroupKind>(() => (props.artist ? "artists" : "albums"));
 const groupKeyValue = computed(() => props.artist ?? props.album ?? null);
 const isGroup = computed(() => groupKeyValue.value !== null);
+const sourceFilter = computed(() => props.sourceId ?? null);
+const sourceName = computed(() => sources.sources.find((source) => source.id === sourceFilter.value)?.name ?? null);
 const groupTracks = computed(() => {
   const key = groupKeyValue.value;
   if (key === null) return null;
@@ -44,7 +48,12 @@ const groupTitle = computed(() => {
 });
 /** Representative cover for a generated collection: the first track that has artwork. */
 const groupCoverTrack = computed(() => groupTracks.value?.find((track) => track.cover) ?? groupTracks.value?.[0]);
-const sourceTracks = computed(() => activePlaylist.value ? tracksForPaths(activePlaylist.value.tracks, player.tracks) : groupTracks.value ?? player.tracks);
+const sourceTracks = computed(() => {
+  if (activePlaylist.value) return tracksForPaths(activePlaylist.value.tracks, player.tracks);
+  if (groupTracks.value) return groupTracks.value;
+  if (sourceFilter.value) return player.tracks.filter((track) => track.sourceId === sourceFilter.value);
+  return player.tracks;
+});
 /** Sort settings are per page: playlists, artists, albums and the full library remember their own. */
 const sortContext = computed<TrackSortContext>(() => activePlaylist.value ? "playlist" : isGroup.value ? (groupKind.value === "artists" ? "artist" : "album") : "tracks");
 const sortKey = computed(() => useTrackSort(sortContext.value).key.value);
@@ -94,9 +103,9 @@ function downloadMetadata(track: Track) { emit("downloadMetadata", track); }
               <p class="mt-3 font-mono text-sm uppercase tracking-[0.2em] text-dim">{{ t("library.tracks", { count: sourceTracks.length }) }}</p>
             </template>
             <template v-else>
-              <p class="flex items-center gap-2 text-[13px] font-semibold uppercase tracking-[0.35em] text-accent"><span class="h-2 w-2 bg-accent"></span>{{ t("nav.tracks") }}</p>
-              <h1 class="mt-4 truncate text-4xl font-black leading-none tracking-tight sm:text-5xl">{{ t("nav.tracks") }}</h1>
-              <p class="mt-3 font-mono text-sm uppercase tracking-[0.2em] text-dim">{{ t("library.tracks", { count: player.tracks.length }) }}</p>
+              <p class="flex items-center gap-2 text-[13px] font-semibold uppercase tracking-[0.35em] text-accent"><span class="h-2 w-2 bg-accent"></span>{{ sourceFilter ? t("nav.sources") : t("nav.tracks") }}</p>
+              <h1 class="mt-4 truncate text-4xl font-black leading-none tracking-tight sm:text-5xl">{{ sourceFilter ? (sourceName ?? t("nav.tracks")) : t("nav.tracks") }}</h1>
+              <p class="mt-3 font-mono text-sm uppercase tracking-[0.2em] text-dim">{{ t("library.tracks", { count: sourceTracks.length }) }}</p>
             </template>
 
             <div class="mt-auto flex flex-wrap items-center gap-3 pt-4">

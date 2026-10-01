@@ -1,5 +1,6 @@
 import { computed, ref, watch } from "vue";
 import { defineStore } from "pinia";
+import { trackKey } from "../lib/sources";
 
 const VOLUME_STORAGE_KEY = "welkin-volume";
 const MUTED_STORAGE_KEY = "welkin-muted";
@@ -21,9 +22,13 @@ export interface Track {
   album: string;
   duration: string;
   color: string;
-  /** Remote WebDAV href, used to fetch metadata, covers and the audio stream. */
+  /** Path inside its source, used to fetch metadata, covers and the stream. */
   path?: string;
-  /** Remote last-modified timestamp, used to bust the cover image cache. */
+  /** Id of the source this track was read from. */
+  sourceId?: string;
+  /** Display name of the source (kept denormalized for the UI). */
+  sourceName?: string;
+  /** Source last-modified timestamp, used to bust the cover image cache. */
   modified?: string | null;
   /** Cover thumbnail URL (asset protocol), once resolved. */
   cover?: string;
@@ -116,7 +121,7 @@ export const usePlayerStore = defineStore("player", () => {
     // clicking the current row again, wrap-around with a one-track queue). The
     // path is the audio identity, so compare on it (ids can be reassigned on
     // a library refresh).
-    const restarting = !!track.path && currentTrack.value?.path === track.path;
+    const restarting = !!track.path && !!currentTrack.value?.path && trackKey(currentTrack.value) === trackKey(track);
     currentTrack.value = track;
     if (restarting) {
       // Same media element: no metadata event will follow, so keep the known
@@ -190,15 +195,22 @@ export const usePlayerStore = defineStore("player", () => {
 
   /** Replace the whole library, e.g. after loading a remote WebDAV listing. */
   function setTracks(nextTracks: Track[]) {
-    const previousPath = currentTrack.value?.path;
+    const previousKey = trackKey(currentTrack.value);
     tracks.value = [...nextTracks];
 
     // Re-point existing queue entries at the fresh track objects (metadata,
     // covers and ids may have changed) while preserving the user's queue order.
-    const byPath = new Map(nextTracks.filter((track) => track.path).map((track) => [track.path as string, track]));
+    const byKey = new Map(
+      nextTracks
+        .filter((track) => track.path)
+        .map((track) => [trackKey(track) as string, track]),
+    );
     const remap = (list: Track[]) =>
       list
-        .map((track) => (track.path ? byPath.get(track.path) : undefined))
+        .map((track) => {
+          const key = trackKey(track);
+          return key ? byKey.get(key) : undefined;
+        })
         .filter((track): track is Track => !!track);
 
     // A fresh library load must honour the persisted shuffle state so launching
@@ -221,8 +233,8 @@ export const usePlayerStore = defineStore("player", () => {
     // Keep the current selection (and its restored position/playing state)
     // when it still exists in the new listing; only fall back to the first
     // track for a genuinely fresh library.
-    const preserved = previousPath
-      ? nextTracks.find((track) => track.path === previousPath)
+    const preserved = previousKey
+      ? nextTracks.find((track) => trackKey(track) === previousKey)
       : undefined;
     if (preserved) {
       currentTrack.value = preserved;

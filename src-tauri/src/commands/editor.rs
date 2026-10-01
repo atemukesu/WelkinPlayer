@@ -1,32 +1,21 @@
 //! Track metadata editing.
 //!
-//! Editing rewrites the tags inside the audio container itself, so the flow
-//! mirrors the user's mental model: download the remote track, change its tags
-//! in memory, then upload the modified bytes back to WebDAV. The local
-//! metadata/cover cache is refreshed in the same step so the library updates
-//! without waiting for the next full listing.
+//! Editing rewrites the tags inside the audio container itself: the track is
+//! read from its source, its tags changed in memory, then the modified bytes are
+//! written back (uploaded for WebDAV, written in place for local files). The
+//! local metadata/cover cache is refreshed in the same step.
 
 use base64::Engine;
 use lofty::picture::MimeType;
 use tauri::AppHandle;
 
-use super::media::{cover_file, cover_hash, resolve_cache_dir, write_cover, write_meta};
-use super::webdav::require_credentials;
-use crate::dav::WebDavClient;
+use super::media::{asset_hash, cover_file, resolve_cache_dir, write_cover, write_meta};
+use crate::backend::backend_for;
 use crate::error::AppError;
 use crate::metadata::{self, TrackMetadata, TrackTags};
 
 /// Hard cap on a newly embedded cover image, guarding against pathological uploads.
 const MAX_COVER_BYTES: usize = 8 * 1024 * 1024;
-
-fn client(app: &AppHandle) -> Result<WebDavClient, AppError> {
-    let credentials = require_credentials(app)?;
-    WebDavClient::new(
-        &credentials.url,
-        &credentials.username,
-        &credentials.password,
-    )
-}
 
 /// Decode a `data:image/...;base64,...` URL into its MIME type and bytes.
 fn decode_cover_data_url(data_url: &str) -> Result<(MimeType, Vec<u8>), AppError> {
@@ -61,7 +50,7 @@ fn decode_cover_data_url(data_url: &str) -> Result<(MimeType, Vec<u8>), AppError
     Ok((mime_type, bytes))
 }
 
-/// Best-effort audio content type from the remote file extension.
+/// Best-effort audio content type from the file extension.
 fn content_type_for(path: &str) -> &'static str {
     match path
         .rsplit('.')
@@ -80,15 +69,16 @@ fn content_type_for(path: &str) -> &'static str {
     }
 }
 
-/// Refresh the local metadata/cover cache after an edit and return the stored metadata.
+/// Refresh the local metadata/cover cache after an edit and return the metadata.
 fn cache_metadata(
     app: &AppHandle,
+    source_id: &str,
     path: &str,
     mut metadata: TrackMetadata,
     cover: Option<Vec<u8>>,
 ) -> TrackMetadata {
     let dir = resolve_cache_dir(app);
-    let hash = cover_hash(path);
+    let hash = asset_hash(source_id, path);
 
     if let Some(cover) = cover {
         match metadata::encode_thumbnail(&cover) {
@@ -109,28 +99,30 @@ fn cache_metadata(
     metadata
 }
 
-/// Read every editable tag from a remote track.
-///
-/// This downloads the complete file (unlike the head-only read used for the
-/// library list) because tags may live anywhere in the container.
+/// Read every editable tag from a track (downloads the complete file).
 #[tauri::command]
-pub async fn read_track_tags(app: AppHandle, path: String) -> Result<TrackTags, AppError> {
-    let client = client(&app)?;
-    let bytes = client.get(&path).await?.bytes().await?;
+pub async fn read_track_tags(
+    app: AppHandle,
+    source_id: String,
+    path: String,
+) -> Result<TrackTags, AppError> {
+    let backend = backend_for(&app, &source_id)?;
+    let bytes = backend.read(&path).await?;
     metadata::read_tags(&bytes)
 }
 
-/// Rewrite every tag (and optionally the cover) and upload the track back.
+/// Rewrite every tag (and optionally the cover) and store the track back.
 #[tauri::command]
 pub async fn edit_track_metadata(
     app: AppHandle,
+    source_id: String,
     path: String,
     tags: TrackTags,
     cover_data_url: Option<String>,
     remove_cover: bool,
 ) -> Result<TrackMetadata, AppError> {
-    let client = client(&app)?;
-    let original = client.get(&path).await?.bytes().await?;
+    let backend = backend_for(&app, &source_id)?;
+    let original = backend.read(&path).await?;
 
     let cover = match cover_data_url
         .as_deref()
@@ -142,7 +134,7 @@ pub async fn edit_track_metadata(
     };
 
     let edited = metadata::write_tags(&original, &tags, cover, remove_cover)?;
-    client
+    backend
         .put(&path, content_type_for(&path), edited.clone())
         .await?;
     log::info!(
@@ -152,5 +144,5 @@ pub async fn edit_track_metadata(
     );
 
     let parsed = metadata::parse(&edited)?;
-    Ok(cache_metadata(&app, &path, parsed.metadata, parsed.cover))
+    Ok(cache_metadata(&app, &source_id, &path, parsed.metadata, parsed.cover))
 }

@@ -7,13 +7,18 @@ import { initial } from "../lib/format";
 import { usePlayerStore } from "../stores/player";
 import type { Track } from "../stores/player";
 import { useProfileStore } from "../stores/profile";
+import { useSourcesStore } from "../stores/sources";
+import { trackKey } from "../lib/sources";
 import type { TrackTags } from "../lib/remote";
 
-const props = defineProps<{ path: string | null }>();
+const props = defineProps<{ path: string | null; sourceId?: string | null }>();
 const emit = defineEmits<{ back: [] }>();
 const { t } = useI18n();
 const player = usePlayerStore();
 const profile = useProfileStore();
+const sources = useSourcesStore();
+const key = computed(() => trackKey({ sourceId: props.sourceId ?? undefined, path: props.path ?? undefined }));
+const sourceName = computed(() => sources.sources.find((source) => source.id === props.sourceId)?.name ?? "—");
 
 interface InfoRow { label: string; value: string; wide?: boolean; wrap?: boolean }
 
@@ -23,8 +28,8 @@ const loadError = ref("");
 const coverUrl = ref<string | null>(null);
 
 const track = computed<Track | null>(() => player.tracks.find((item) => item.path === props.path) ?? null);
-const playCount = computed(() => (props.path ? profile.profile.playCounts[props.path] ?? 0 : 0));
-const favorite = computed(() => profile.isFavorite(props.path ?? undefined));
+const playCount = computed(() => (key.value ? profile.profile.playCounts[key.value] ?? 0 : 0));
+const favorite = computed(() => profile.isFavorite(key.value));
 const duration = computed(() => {
   if (track.value && player.currentTrack?.path === track.value.path && player.duration > 0) {
     return formatSeconds(Math.floor(player.duration));
@@ -77,6 +82,7 @@ const tagRows = computed<InfoRow[]>(() => {
 });
 
 const fileRows = computed<InfoRow[]>(() => [
+  { label: t("trackInfo.source"), value: sourceName.value },
   { label: t("trackInfo.path"), value: props.path ?? "—", wide: true, wrap: true },
   { label: t("trackInfo.modified"), value: text(track.value?.modified) },
   { label: t("trackInfo.duration"), value: duration.value },
@@ -95,9 +101,9 @@ async function load() {
   loading.value = true;
   try {
     if (!coverUrl.value) {
-      coverUrl.value = await invoke<string | null>("get_cached_cover", { path: props.path }).catch(() => null);
+      coverUrl.value = await invoke<string | null>("get_cached_cover", { sourceId: props.sourceId, path: props.path }).catch(() => null);
     }
-    tags.value = await invoke<TrackTags>("read_track_tags", { path: props.path });
+    tags.value = await invoke<TrackTags>("read_track_tags", { sourceId: props.sourceId, path: props.path });
   } catch (error) {
     loadError.value = describeError(error);
   } finally {
@@ -129,6 +135,7 @@ watch(() => props.path, load, { immediate: true });
               <h1 class="truncate text-3xl font-black leading-tight tracking-tight sm:text-4xl">{{ track?.title ?? t("trackInfo.title") }}</h1>
               <p class="mt-2 truncate text-sm text-muted">{{ track?.artist }}<span v-if="track?.album"> · {{ track.album }}</span></p>
               <div class="mt-4 flex flex-wrap items-center gap-2">
+                <span class="border border-line px-2 py-1 font-mono text-[10px] uppercase tracking-[0.2em] text-dim">{{ sourceName }}</span>
                 <span class="border border-line px-2 py-1 font-mono text-[10px] uppercase tracking-[0.2em] text-dim">{{ duration }}</span>
                 <span v-if="favorite" class="border border-accent px-2 py-1 font-mono text-[10px] uppercase tracking-[0.2em] text-accent">{{ t("trackInfo.favorite") }}</span>
                 <span v-if="playCount > 0" class="border border-line px-2 py-1 font-mono text-[10px] uppercase tracking-[0.2em] text-dim">{{ t("trackInfo.playCountBadge", { count: playCount }) }}</span>

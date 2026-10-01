@@ -6,11 +6,12 @@ import { initAudio, seekTo } from "./lib/audio";
 import { accents } from "./lib/app";
 import type { Accent, Theme, View } from "./lib/app";
 import { albumKey, primaryArtist } from "./lib/grouping";
+import { trackKey } from "./lib/sources";
 import { useLibrary } from "./composables/useLibrary";
 import { pushToast } from "./lib/toast";
 import { usePlayerStore } from "./stores/player";
 import type { Track } from "./stores/player";
-import { useWebdavStore } from "./stores/webdav";
+import { useSourcesStore } from "./stores/sources";
 import { useProfileStore } from "./stores/profile";
 import { usePlaybackStore } from "./stores/playback";
 import { useLyricsStore } from "./stores/lyrics";
@@ -22,10 +23,13 @@ import ToastStack from "./components/ToastStack.vue";
 import LibraryView from "./views/LibraryView.vue";
 import PlayerView from "./views/PlayerView.vue";
 import SettingsView from "./views/SettingsView.vue";
+import SponsorView from "./views/SponsorView.vue";
 import TracksView from "./views/TracksView.vue";
 import FavoritesView from "./views/FavoritesView.vue";
 import StatsView from "./views/StatsView.vue";
 import GroupedLibraryView from "./views/GroupedLibraryView.vue";
+import SourcesView from "./views/SourcesView.vue";
+import PlaylistsView from "./views/PlaylistsView.vue";
 import PlaylistEditorView from "./views/PlaylistEditorView.vue";
 import LyricsEditorView from "./views/LyricsEditorView.vue";
 import TrackEditorView from "./views/TrackEditorView.vue";
@@ -35,7 +39,7 @@ const AmllPlayerView = defineAsyncComponent(() => import("./views/AmllPlayerView
 
 const { t, locale } = useI18n();
 const player = usePlayerStore();
-const webdav = useWebdavStore();
+const sources = useSourcesStore();
 const profile = useProfileStore();
 const playback = usePlaybackStore();
 const lyrics = useLyricsStore();
@@ -45,16 +49,16 @@ const baseView = ref<View>(view.value === "player" || view.value === "track-info
 const theme = ref<Theme>(localStorage.getItem("welkin-theme") === "dark" ? "dark" : "light");
 const accent = ref<Accent>(readAccent());
 const sidebarCollapsed = ref(localStorage.getItem("welkin-sidebar-collapsed") === "1");
-const testing = ref(false);
 const downloadingTrackId = ref<number | null>(null);
 const booted = ref(false);
 const playlistFilter = ref<string | null>(null);
 const artistFilter = ref<string | null>(null);
 const albumFilter = ref<string | null>(null);
+const sourceFilter = ref<string | null>(null);
 const editingPlaylist = ref<string | null>(null);
-const editingLyricsPath = ref<string | null>(null);
-const editingTrackPath = ref<string | null>(null);
-const viewingTrackPath = ref<string | null>(null);
+const editingLyricsTrack = ref<Track | null>(null);
+const editingTrack = ref<Track | null>(null);
+const viewingTrack = ref<Track | null>(null);
 const playbackRestored = ref(false);
 const showQueue = ref(false);
 /** Whether the AMLL full-screen player should be open. */
@@ -71,15 +75,32 @@ watch(view, (next) => { if (next !== "player" && next !== "track-info") baseView
 watchEffect(() => { document.documentElement.classList.toggle("dark", theme.value === "dark"); document.documentElement.dataset.accent = accent.value; localStorage.setItem("welkin-theme", theme.value); localStorage.setItem("welkin-accent", accent.value); });
 watchEffect(() => { document.documentElement.lang = locale.value; localStorage.setItem("welkin-locale", locale.value); });
 
-watch(() => player.currentTrack?.path, (path) => { if (booted.value && path && player.isPlaying) profile.recordPlay(path); });
+/** Minimum time (ms) the inline splash stays visible so a fast boot doesn't flash it. */
+const SPLASH_MIN_MS = 500;
+/** Dismisses the static splash screen inlined in index.html once the app is ready. */
+function dismissSplash() {
+  const splash = document.getElementById("splash");
+  if (!splash) return;
+  const elapsed = Date.now() - (window.__welkinSplashStart ?? Date.now());
+  window.setTimeout(() => {
+    splash.classList.add("splash-out");
+    // The fade is 420ms; remove the node after it ends, with a timeout as a fallback.
+    splash.addEventListener("transitionend", () => splash.remove(), { once: true });
+    window.setTimeout(() => splash.remove(), 800);
+  }, Math.max(0, SPLASH_MIN_MS - elapsed));
+}
+// Reveal the app and fade the splash out once bootstrap() has finished hydrating.
+watch(booted, (ready) => { if (ready) dismissSplash(); });
 
-// Resume the last track/position once the profile, playback state and library are ready.
+watch(() => trackKey(player.currentTrack), (key) => { if (booted.value && key && player.isPlaying) profile.recordPlay(key); });
+
+// Resume the last track/position once the playback state and library are ready.
 watch([() => playback.ready, () => player.tracks.length], () => {
   if (playbackRestored.value || !playback.ready || player.tracks.length === 0) return;
   playbackRestored.value = true;
-  const path = playback.path;
-  if (!path) return;
-  const track = player.tracks.find((item) => item.path === path);
+  const stored = playback.path;
+  if (!stored) return;
+  const track = findTrackByKey(stored);
   if (!track) return;
   restoringPlayback = true;
   player.currentTrack = track;
@@ -89,22 +110,27 @@ watch([() => playback.ready, () => player.tracks.length], () => {
   window.setTimeout(() => { restoringPlayback = false; }, 1200);
 });
 
+/** Resolve a stored playback key to its track. */
+function findTrackByKey(key: string): Track | undefined {
+  return player.tracks.find((item) => trackKey(item) === key);
+}
+
 // Persist the playback position: on track changes, on pause/seek/hide/exit, and
 // as a low-frequency safety net while audio keeps playing.
 function savePlaybackPosition(force = false) {
-  const path = player.currentTrack?.path;
-  if (!booted.value || restoringPlayback || !path) return;
+  const key = trackKey(player.currentTrack);
+  if (!booted.value || restoringPlayback || !key) return;
   lastPositionSavedAt = Date.now();
-  playback.record(path, player.position);
+  playback.record(key, player.position);
   if (force) void playback.flush();
 }
 function savePlaybackPositionOnLeave() { savePlaybackPosition(true); }
 function onVisibilityChange() { if (document.visibilityState === "hidden") savePlaybackPosition(true); }
 
-watch(() => player.currentTrack?.path, (path) => {
-  if (!booted.value || restoringPlayback || !path) return;
+watch(() => trackKey(player.currentTrack), (key) => {
+  if (!booted.value || restoringPlayback || !key) return;
   lastPositionSavedAt = Date.now();
-  playback.record(path, 0);
+  playback.record(key, 0);
 });
 watch(() => player.position, (position, previous) => {
   if (!booted.value || restoringPlayback) return;
@@ -120,13 +146,14 @@ watch(() => player.isPlaying, (playing) => {
 });
 
 function readAccent(): Accent { const value = localStorage.getItem("welkin-accent"); return (accents.some((item) => item.id === value) ? value : "amber") as Accent; }
-function getViewFromHash(): View { const route = window.location.hash.slice(1); return route === "settings" || route === "player" || route === "tracks" || route === "favorites" || route === "stats" || route === "artists" || route === "albums" || route === "playlist-new" || route === "lyrics-edit" || route === "track-edit" || route === "track-info" ? route : "library"; }
+function getViewFromHash(): View { const route = window.location.hash.slice(1); return route === "settings" || route === "sponsor" || route === "player" || route === "tracks" || route === "favorites" || route === "stats" || route === "artists" || route === "albums" || route === "sources" || route === "playlists" || route === "playlist-new" || route === "lyrics-edit" || route === "track-edit" || route === "track-info" ? route : "library"; }
 function setView(nextView: View) { view.value = nextView; window.location.hash = nextView === "library" ? "" : nextView; }
-function clearCollectionFilters() { playlistFilter.value = null; artistFilter.value = null; albumFilter.value = null; }
+function clearCollectionFilters() { playlistFilter.value = null; artistFilter.value = null; albumFilter.value = null; sourceFilter.value = null; }
 function navigate(nextView: View) { clearCollectionFilters(); setView(nextView); }
 function syncViewFromHash() { view.value = getViewFromHash(); }
-function openUserPlaylist(id: string) { artistFilter.value = null; albumFilter.value = null; playlistFilter.value = id; setView("tracks"); }
-function openGroup(kind: "artists" | "albums", key: string) { playlistFilter.value = null; artistFilter.value = kind === "artists" ? key : null; albumFilter.value = kind === "albums" ? key : null; setView("tracks"); }
+function openUserPlaylist(id: string) { clearCollectionFilters(); playlistFilter.value = id; setView("tracks"); }
+function openSource(id: string) { clearCollectionFilters(); sourceFilter.value = id; setView("tracks"); }
+function openGroup(kind: "artists" | "albums", key: string) { playlistFilter.value = null; artistFilter.value = kind === "artists" ? key : null; albumFilter.value = kind === "albums" ? key : null; sourceFilter.value = null; setView("tracks"); }
 function onOpenGroup(key: string) { openGroup(baseView.value === "albums" ? "albums" : "artists", key); }
 /** Clicking an artist name on a track opens that artist's collection. */
 function openArtist(artist: string) { const key = primaryArtist(artist); if (key) openGroup("artists", key); }
@@ -134,12 +161,16 @@ function openArtist(artist: string) { const key = primaryArtist(artist); if (key
 function openAlbum(album: string) { const key = albumKey(album); if (key) openGroup("albums", key); }
 function createPlaylist() { clearCollectionFilters(); editingPlaylist.value = null; setView("playlist-new"); }
 function editPlaylist(id: string) { clearCollectionFilters(); editingPlaylist.value = id; setView("playlist-new"); }
-function editLyrics(track: Track) { if (!track.path) return; editingLyricsPath.value = track.path; closeQueue(); setView("lyrics-edit"); }
-function editInfo(track: Track) { if (!track.path) return; editingTrackPath.value = track.path; closeQueue(); setView("track-edit"); }
-function showTrackInfo(track: Track) { if (!track.path) return; viewingTrackPath.value = track.path; closeQueue(); setView("track-info"); }
+function editLyrics(track: Track) { if (!track.path) return; editingLyricsTrack.value = track; closeQueue(); setView("lyrics-edit"); }
+function editInfo(track: Track) { if (!track.path) return; editingTrack.value = track; closeQueue(); setView("track-edit"); }
+function showTrackInfo(track: Track) { if (!track.path) return; viewingTrack.value = track; closeQueue(); setView("track-info"); }
 function closeTrackInfo() { setView(baseView.value); }
-function onPlaylistSaved(id: string) { artistFilter.value = null; albumFilter.value = null; playlistFilter.value = id; setView("tracks"); }
+function onPlaylistSaved(id: string) { artistFilter.value = null; albumFilter.value = null; sourceFilter.value = null; playlistFilter.value = id; setView("tracks"); }
 function onPlaylistEditorCancel() { navigate("library"); }
+function onPlaylistDeleted(id: string) {
+  if (playlistFilter.value === id) playlistFilter.value = null;
+  setView("playlists");
+}
 function toggleQueue() {
   if (showQueue.value) closeQueue();
   else openQueue();
@@ -148,44 +179,31 @@ function openQueue() { showQueue.value = true; }
 function closeQueue() { showQueue.value = false; }
 
 async function bootstrap() {
-  await webdav.hydrate();
+  await sources.hydrate();
   const firstRun = await profile.hydrate();
   const seeded = await playback.hydrate({ path: profile.profile.lastTrack, position: profile.profile.lastPosition });
   if (seeded) profile.clearLegacyPlayback();
   booted.value = true;
   void loadCachedLibrary();
   if (!firstRun) {
-    // The wizard owns the first remote fetch; returning users refresh silently.
+    // The wizard owns the first fetch; returning users refresh silently.
     void profile.syncRemote();
-    if (webdav.hasStoredPassword) void loadRemoteLibrary({ silent: true });
+    if (sources.hasSources) void loadRemoteLibrary({ silent: true });
   }
 }
 
 function onWizardFinish() {
-  if (webdav.hasStoredPassword) void loadRemoteLibrary();
+  if (sources.hasSources) void loadRemoteLibrary();
   else void loadCachedLibrary();
 }
 
 async function saveSettings() {
-  if (webdav.saving) return;
   profile.setNickname(profile.nickname);
-
-  const risk = await webdav.checkUrlRisk().catch(() => null);
-  if (risk?.safety === "insecurePublic" && !webdav.allowInsecure) {
-    pushToast("error", t("settings.webdav.insecurePublicBlocked"));
-    return;
-  }
-
-  const { warning } = await webdav.persist();
-  if (webdav.error) { pushToast("error", t("settings.webdav.saveFailed", { value: webdav.error })); return; }
-  if (warning) { pushToast("warning", t("settings.webdav.keychainUnavailable")); return; }
-  if (risk?.safety === "insecurePrivate" && !webdav.allowInsecure) {
-    pushToast("warning", t("settings.webdav.insecureWarning"));
-  }
+  await sources.persist();
   await profile.flush();
-  pushToast("success", t("settings.saved")); await loadRemoteLibrary();
+  pushToast("success", t("settings.saved"));
+  if (sources.hasSources) await loadRemoteLibrary();
 }
-async function testConnection() { testing.value = true; try { const risk = await webdav.checkUrlRisk().catch(() => null); if (risk?.safety === "insecurePrivate" && !webdav.allowInsecure) pushToast("warning", t("settings.webdav.insecureWarning")); await invoke<string>("test_webdav_connection"); pushToast("success", t("settings.webdav.testOk")); await loadRemoteLibrary(); } catch (error) { pushToast("error", friendlyError(error)); } finally { testing.value = false; } }
 function showError(error: unknown) { pushToast("error", friendlyError(error)); }
 async function downloadMetadata(track: Track) {
   downloadingTrackId.value = track.id;
@@ -216,8 +234,32 @@ onUnmounted(() => { savePlaybackPosition(true); window.removeEventListener("hash
 <template>
   <AmllPlayerView v-if="amllMounted && player.currentTrack" :active="amllActive" :return-view="baseView" @navigate="navigate" @closed="amllMounted = false" />
   <Transition name="slide"><PlayerView v-if="view === 'player' && player.currentTrack && !lyrics.useAmll" :return-view="baseView" @navigate="navigate" @queue="toggleQueue" @open-artist="openArtist" @open-album="openAlbum" /></Transition>
-  <Transition name="info"><TrackInfoView v-if="view === 'track-info' && viewingTrackPath" :path="viewingTrackPath" @back="closeTrackInfo" /></Transition>
+  <Transition name="info"><TrackInfoView v-if="view === 'track-info' && viewingTrack" :path="viewingTrack.path ?? null" :source-id="viewingTrack.sourceId" @back="closeTrackInfo" /></Transition>
   <SetupWizard v-if="booted && profile.firstRun" v-model:theme="theme" v-model:accent="accent" @finish="onWizardFinish" />
-  <div class="flex h-screen flex-col overflow-hidden bg-bg text-fg" :class="booted ? '' : 'opacity-0'"><AppNavigation placement="header" :active-view="baseView" @navigate="navigate" /><div class="relative flex min-h-0 flex-1"><AppNavigation placement="sidebar" :active-view="baseView" :collapsed="sidebarCollapsed" :active-playlist-id="playlistFilter" :active-artist="artistFilter" :active-album="albumFilter" @navigate="navigate" @toggle="toggleSidebar" @create-playlist="createPlaylist" @open-playlist="openUserPlaylist" /><main class="min-w-0 flex-1 overflow-y-auto"><Transition name="page" mode="out-in"><LibraryView v-if="baseView === 'library'" key="library" :loading="loadingLibrary" :enriching="enriching" :enrich-done="enrichDone" :enrich-total="enrichTotal" :downloading-track-id="downloadingTrackId" @settings="navigate('settings')" @navigate="navigate" @open-playlist="openUserPlaylist" @edit-playlist="editPlaylist" @download-metadata="downloadMetadata" @edit-lyrics="editLyrics" @edit-info="editInfo" @show-info="showTrackInfo" /><TracksView v-else-if="baseView === 'tracks'" key="tracks" @open-artist="openArtist" @open-album="openAlbum" :playlist-id="playlistFilter" :artist="artistFilter" :album="albumFilter" :loading="loadingLibrary" :enriching="enriching" :refreshing="refreshing" :enrich-done="enrichDone" :enrich-total="enrichTotal" :downloading-track-id="downloadingTrackId" @refresh="refreshLibrary" @edit="editPlaylist" @download-metadata="downloadMetadata" @edit-lyrics="editLyrics" @edit-info="editInfo" @show-info="showTrackInfo" /><GroupedLibraryView v-else-if="baseView === 'artists' || baseView === 'albums'" :key="baseView" :kind="baseView === 'artists' ? 'artists' : 'albums'" :loading="loadingLibrary" @open="onOpenGroup" /><FavoritesView v-else-if="baseView === 'favorites'" key="favorites" @open-artist="openArtist" @open-album="openAlbum" :loading="loadingLibrary" :enriching="enriching" :enrich-done="enrichDone" :enrich-total="enrichTotal" :downloading-track-id="downloadingTrackId" @download-metadata="downloadMetadata" @edit-lyrics="editLyrics" @edit-info="editInfo" @show-info="showTrackInfo" /><StatsView v-else-if="baseView === 'stats'" key="stats" :loading="loadingLibrary" :downloading-track-id="downloadingTrackId" @download-metadata="downloadMetadata" @edit-lyrics="editLyrics" @edit-info="editInfo" @show-info="showTrackInfo" /><PlaylistEditorView v-else-if="baseView === 'playlist-new'" key="playlist-new" :playlist-id="editingPlaylist" @done="onPlaylistSaved" @cancel="onPlaylistEditorCancel" /><LyricsEditorView v-else-if="baseView === 'lyrics-edit'" key="lyrics-edit" :path="editingLyricsPath" @back="navigate('library')" @friendly-error="showError" /><TrackEditorView v-else-if="baseView === 'track-edit'" key="track-edit" :path="editingTrackPath" @back="navigate('library')" @friendly-error="showError" /><SettingsView v-else key="settings" :testing="testing" v-model:theme="theme" v-model:accent="accent" @save="saveSettings" @test="testConnection" @friendly-error="showError" /></Transition></main>
-        <Transition name="queue-panel"><div v-if="showQueue" class="absolute inset-y-0 right-0 z-20 w-80 border-l border-line bg-surface"><QueuePanel @close="closeQueue" /></div></Transition>
-      </div><PlayerBar v-if="player.currentTrack" @open="navigate('player')" @queue="toggleQueue" @open-artist="openArtist" @open-album="openAlbum" /><AppNavigation placement="mobile" :active-view="baseView" :active-playlist-id="playlistFilter" :active-artist="artistFilter" :active-album="albumFilter" @navigate="navigate" @create-playlist="createPlaylist" @open-playlist="openUserPlaylist" /><ToastStack /></div></template>
+  <div class="flex h-screen flex-col overflow-hidden bg-bg text-fg" :class="booted ? '' : 'opacity-0'">
+    <AppNavigation placement="header" :active-view="baseView" @navigate="navigate" />
+    <div class="relative flex min-h-0 flex-1">
+      <AppNavigation placement="sidebar" :active-view="baseView" :collapsed="sidebarCollapsed" :active-playlist-id="playlistFilter" :active-artist="artistFilter" :active-album="albumFilter" :active-source="sourceFilter" @navigate="navigate" @toggle="toggleSidebar" @create-playlist="createPlaylist" @open-playlist="openUserPlaylist" />
+      <main class="min-w-0 flex-1 overflow-y-auto">
+        <Transition name="page" mode="out-in">
+          <LibraryView v-if="baseView === 'library'" key="library" :loading="loadingLibrary" :enriching="enriching" :enrich-done="enrichDone" :enrich-total="enrichTotal" :downloading-track-id="downloadingTrackId" @settings="navigate('settings')" @navigate="navigate" @open-playlist="openUserPlaylist" @download-metadata="downloadMetadata" @edit-lyrics="editLyrics" @edit-info="editInfo" @show-info="showTrackInfo" />
+          <TracksView v-else-if="baseView === 'tracks'" key="tracks" @open-artist="openArtist" @open-album="openAlbum" :playlist-id="playlistFilter" :artist="artistFilter" :album="albumFilter" :source-id="sourceFilter" :loading="loadingLibrary" :enriching="enriching" :refreshing="refreshing" :enrich-done="enrichDone" :enrich-total="enrichTotal" :downloading-track-id="downloadingTrackId" @refresh="refreshLibrary" @edit="editPlaylist" @download-metadata="downloadMetadata" @edit-lyrics="editLyrics" @edit-info="editInfo" @show-info="showTrackInfo" />
+          <SourcesView v-else-if="baseView === 'sources'" key="sources" :loading="loadingLibrary" @open="openSource" @settings="navigate('settings')" />
+          <GroupedLibraryView v-else-if="baseView === 'artists' || baseView === 'albums'" :key="baseView" :kind="baseView === 'artists' ? 'artists' : 'albums'" :loading="loadingLibrary" @open="onOpenGroup" />
+          <FavoritesView v-else-if="baseView === 'favorites'" key="favorites" @open-artist="openArtist" @open-album="openAlbum" :loading="loadingLibrary" :enriching="enriching" :enrich-done="enrichDone" :enrich-total="enrichTotal" :downloading-track-id="downloadingTrackId" @download-metadata="downloadMetadata" @edit-lyrics="editLyrics" @edit-info="editInfo" @show-info="showTrackInfo" />
+          <PlaylistsView v-else-if="baseView === 'playlists'" key="playlists" @open-playlist="openUserPlaylist" @edit-playlist="editPlaylist" @create-playlist="createPlaylist" />
+          <StatsView v-else-if="baseView === 'stats'" key="stats" :loading="loadingLibrary" :downloading-track-id="downloadingTrackId" @download-metadata="downloadMetadata" @edit-lyrics="editLyrics" @edit-info="editInfo" @show-info="showTrackInfo" />
+          <PlaylistEditorView v-else-if="baseView === 'playlist-new'" key="playlist-new" :playlist-id="editingPlaylist" @done="onPlaylistSaved" @deleted="onPlaylistDeleted" @cancel="onPlaylistEditorCancel" />
+          <LyricsEditorView v-else-if="baseView === 'lyrics-edit'" key="lyrics-edit" :path="editingLyricsTrack?.path ?? null" :source-id="editingLyricsTrack?.sourceId" @back="navigate('library')" @friendly-error="showError" />
+          <TrackEditorView v-else-if="baseView === 'track-edit'" key="track-edit" :path="editingTrack?.path ?? null" :source-id="editingTrack?.sourceId" @back="navigate('library')" @friendly-error="showError" />
+          <SponsorView v-else-if="baseView === 'sponsor'" key="sponsor" @back="navigate('library')" />
+          <SettingsView v-else key="settings" v-model:theme="theme" v-model:accent="accent" @save="saveSettings" @sponsor="navigate('sponsor')" @friendly-error="showError" />
+        </Transition>
+      </main>
+      <Transition name="queue-panel"><div v-if="showQueue" class="absolute inset-y-0 right-0 z-20 w-80 border-l border-line bg-surface"><QueuePanel @close="closeQueue" /></div></Transition>
+    </div>
+    <PlayerBar v-if="player.currentTrack" @open="navigate('player')" @queue="toggleQueue" @open-artist="openArtist" @open-album="openAlbum" />
+    <AppNavigation placement="mobile" :active-view="baseView" :active-playlist-id="playlistFilter" :active-artist="artistFilter" :active-album="albumFilter" :active-source="sourceFilter" @navigate="navigate" @create-playlist="createPlaylist" @open-playlist="openUserPlaylist" />
+    <ToastStack />
+  </div>
+</template>

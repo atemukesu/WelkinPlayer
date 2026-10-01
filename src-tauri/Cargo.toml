@@ -21,6 +21,7 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-opener = "2"
 tauri-plugin-store = "2"
+tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
@@ -29,6 +30,10 @@ log = "0.4"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking"] }
 quick-xml = "0.37"
 percent-encoding = "2"
+# Bounded concurrency for the recursive PROPFIND library walk.
+futures-util = "0.3"
+# Zeroes the stored WebDAV password when the client is dropped.
+zeroize = "1"
 # Tiny loopback HTTP server for streaming audio to the webview (true chunked
 # proxying with Range support, keeping WebDAV credentials in Rust).
 tiny_http = "0.12"

@@ -235,6 +235,34 @@ export async function searchQq(query: LyricQuery): Promise<LyricMatch | null> {
   return best;
 }
 
+interface QqSongDetail {
+  id?: number | string;
+}
+
+/**
+ * Resolve a QQ song MID to its numeric song id.
+ *
+ * The word-by-word QRC endpoint takes `musicid=` (numeric), but a pasted
+ * `songDetail` URL — or a bare MID — only carries the alphanumeric MID. The
+ * detail API is the only place that exposes the numeric id for an arbitrary
+ * MID, so no track metadata has to line up for the lookup to succeed.
+ */
+export async function resolveQqNumericId(mid: string): Promise<string | null> {
+  const url = `https://c.y.qq.com/v8/fcg-bin/fcg_play_single_song.fcg?songmid=${encodeURIComponent(mid)}&platform=yqq&format=json`;
+  const body = await tunnel(url, QQ_REFERER);
+  const parsed = JSON.parse(body) as { data?: QqSongDetail | QqSongDetail[] };
+  const detail = Array.isArray(parsed.data) ? parsed.data[0] : parsed.data;
+  const raw = detail?.id;
+  const resolved =
+    typeof raw === "number"
+      ? String(raw)
+      : typeof raw === "string" && /^\d+$/.test(raw)
+        ? raw
+        : null;
+  lyricLog(resolved ? "info" : "warn", `qq numeric id for mid=${mid}`, resolved ?? "not found");
+  return resolved;
+}
+
 // ---------------------------------------------------------------------------
 // Lyrics
 // ---------------------------------------------------------------------------

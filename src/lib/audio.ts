@@ -1,7 +1,7 @@
 import { effectScope, watch } from "vue";
 import type { EffectScope } from "vue";
 import { i18n } from "../i18n";
-import { invoke } from "../api";
+import { invoke, toAppError } from "../api";
 import { usePlayerStore } from "../stores/player";
 import { pushToast } from "./toast";
 import { setStreamEndpoint, trackStreamUrl } from "./remote";
@@ -45,6 +45,23 @@ let lastRecoveryAt = 0;
 let stallRecoveries = 0;
 /** Stall watchdog interval id. */
 let watchdogTimer = 0;
+
+/** Localization keys for the `AppError` codes a stream probe can return. */
+const PROBE_ERROR_KEYS: Record<string, string> = {
+  UNAUTHORIZED: "errors.unauthorized",
+  FORBIDDEN: "errors.forbidden",
+  NOT_FOUND: "errors.notFound",
+  TIMEOUT: "errors.timeout",
+  DNS: "errors.dns",
+  TLS: "errors.tls",
+  CONNECTION: "errors.connection",
+  HTTP: "errors.http",
+  XML: "errors.xml",
+  MISSING_CREDENTIALS: "errors.missingCredentials",
+  INSECURE_URL: "errors.insecureUrl",
+  STORE: "errors.store",
+  INVALID_ARGUMENT: "errors.invalidArgument",
+};
 
 function t(key: string): string {
   return i18n.global.t(key);
@@ -91,10 +108,45 @@ function fail(message: string, generation: number) {
 function play() {
   if (!audio) return;
   const generation = sourceGeneration;
+  const track = usePlayerStore().currentTrack;
   audio.play().catch((error: DOMException) => {
     if (isBenignPlayRejection(error)) return;
-    fail(error?.name === "NotSupportedError" ? t("playback.unsupported") : t("playback.failed"), generation);
+    if (error?.name === "NotSupportedError" && track?.path) {
+      void reportSourceUnavailable(generation, track.path, track.sourceId);
+      return;
+    }
+    fail(t("playback.failed"), generation);
   });
+}
+
+/** Guard so a media `error` and its rejected `play()` promise share one probe. */
+let probingGeneration = -1;
+
+/**
+ * The media element collapses every failed fetch — a `401` from bad credentials,
+ * a `404`, a `5xx` — into `MEDIA_ERR_SRC_NOT_SUPPORTED`, so on its own it cannot
+ * tell a decode problem from an authentication failure. Ask the backend (which
+ * owns the credentials) why the stream is unavailable and report the real
+ * reason; a successful probe means the file was served, i.e. the format.
+ */
+async function reportSourceUnavailable(generation: number, path: string, sourceId?: string) {
+  if (
+    generation !== sourceGeneration ||
+    generation === reportedGeneration ||
+    generation === probingGeneration
+  ) {
+    return;
+  }
+  probingGeneration = generation;
+  try {
+    await invoke("probe_track", { sourceId, path });
+    fail(t("playback.unsupported"), generation);
+  } catch (error) {
+    const key = PROBE_ERROR_KEYS[toAppError(error).code];
+    fail(key ? t(key) : t("playback.failed"), generation);
+  } finally {
+    if (probingGeneration === generation) probingGeneration = -1;
+  }
 }
 
 function syncBuffered() {
@@ -118,9 +170,9 @@ function syncBuffered() {
   player.setBufferedProgress((bufferedEnd / player.duration) * 100);
 }
 
-function setSource(path: string) {
+function setSource(path: string, sourceId?: string) {
   if (!audio) return;
-  const url = trackStreamUrl(path);
+  const url = trackStreamUrl(path, sourceId);
   if (!url) return;
 
   const player = usePlayerStore();
@@ -242,17 +294,30 @@ async function bootstrapAudio(): Promise<void> {
   });
   audio.addEventListener("error", () => {
     // Ignore the error fired when the source is intentionally cleared.
-    if (!player.currentTrack?.path) return;
+    const track = player.currentTrack;
+    if (!track?.path) return;
+    // A missing/undecodable source is indistinguishable from a failed fetch
+    // here, so probe for the real reason instead of blaming the format.
+    if (audio?.error?.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED) {
+      void reportSourceUnavailable(sourceGeneration, track.path, track.sourceId);
+      return;
+    }
     fail(describeMediaError(audio), sourceGeneration);
   });
 
   scope = effectScope();
   scope.run(() => {
+    // Track identity includes the source, so switching to the same path on a
+    // different source still reloads the element.
     watch(
-      () => player.currentTrack?.path,
-      (path) => {
+      () => {
+        const track = player.currentTrack;
+        return track?.path ? `${track.sourceId ?? ""}::${track.path}` : "";
+      },
+      () => {
         if (!audio) return;
-        if (!path) {
+        const track = player.currentTrack;
+        if (!track?.path) {
           pendingSeek = null;
           sourceGeneration += 1;
           lastRecoveryAt = 0;
@@ -261,7 +326,7 @@ async function bootstrapAudio(): Promise<void> {
           audio.load();
           return;
         }
-        setSource(path);
+        setSource(track.path, track.sourceId);
       },
     );
 
@@ -314,8 +379,8 @@ async function bootstrapAudio(): Promise<void> {
   lastProgressAt = performance.now();
   watchdogTimer = window.setInterval(checkStall, 1000);
 
-  const initialPath = player.currentTrack?.path;
-  if (initialPath) setSource(initialPath);
+  const initialTrack = player.currentTrack;
+  if (initialTrack?.path) setSource(initialTrack.path, initialTrack.sourceId);
 }
 
 /** Tear the element and its watchers down. Mainly guards against HMR leaks. */

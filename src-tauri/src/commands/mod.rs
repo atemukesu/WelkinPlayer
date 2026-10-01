@@ -12,6 +12,8 @@ pub mod lyrics;
 pub mod media;
 pub mod playback;
 pub mod profile;
+pub mod sources;
+pub mod sponsor;
 pub mod webdav;
 
 use crate::error::AppError;

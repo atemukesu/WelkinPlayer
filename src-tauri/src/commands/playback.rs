@@ -11,8 +11,7 @@ use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 use tauri_plugin_store::StoreExt;
 
-use crate::commands::webdav::load_saved_credentials;
-use crate::dav::WebDavClient;
+use crate::backend::{sync_backend, Backend};
 use crate::error::AppError;
 
 const LOCAL_FILE: &str = "playback.json";
@@ -58,18 +57,9 @@ fn local_set(app: &AppHandle, state: &PlaybackState) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Build a client from saved credentials, or `None` when the server is not
-/// configured yet.
-fn client(app: &AppHandle) -> Result<Option<WebDavClient>, AppError> {
-    let Some(credentials) = load_saved_credentials(app)? else {
-        return Ok(None);
-    };
-    let client = WebDavClient::new(
-        &credentials.url,
-        &credentials.username,
-        &credentials.password,
-    )?;
-    Ok(Some(client))
+/// Build the sync source backend, or `None` when no sync source is configured.
+fn client(app: &AppHandle) -> Result<Option<Backend>, AppError> {
+    sync_backend(app)
 }
 
 /// Read the locally cached resume point instantly, without touching the
@@ -97,16 +87,12 @@ pub async fn load_remote_playback(app: AppHandle) -> Result<Option<PlaybackState
         return Ok(local);
     };
 
-    match client.get(REMOTE_PATH).await {
-        Ok(response) => {
-            let bytes = response.bytes().await?;
-            if bytes.len() > MAX_PLAYBACK_BYTES {
+    match client.read_text(REMOTE_PATH).await {
+        Ok(text) => {
+            if text.len() > MAX_PLAYBACK_BYTES {
                 log::warn!("remote playback state too large, ignoring");
                 return Ok(local);
             }
-            let text = String::from_utf8(bytes.to_vec()).map_err(|error| {
-                AppError::Other(format!("远程播放进度不是有效的 UTF-8：{error}"))
-            })?;
             match serde_json::from_str::<PlaybackState>(&text) {
                 Ok(state) => {
                     // Local progress is authoritative when it is at least as

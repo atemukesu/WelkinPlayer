@@ -6,6 +6,7 @@ import type { Track } from "../stores/player";
 import { usePlayerStore } from "../stores/player";
 import { useProfileStore } from "../stores/profile";
 import { useLyricsStore } from "../stores/lyrics";
+import { trackKey } from "../lib/sources";
 
 const props = withDefaults(defineProps<{ track: Track; x: number; y: number; downloading: boolean; selectedPaths?: string[]; playlistId?: string | null }>(), { selectedPaths: () => [], playlistId: null });
 const emit = defineEmits<{ close: []; downloadMetadata: [track: Track]; editLyrics: [track: Track]; editInfo: [track: Track]; showInfo: [track: Track] }>();
@@ -46,15 +47,16 @@ function onWindowResize() {
   scheduleClamp();
 }
 
-const paths = computed(() => props.selectedPaths.length > 0 ? props.selectedPaths : (props.track.path ? [props.track.path] : []));
+const currentKey = computed(() => trackKey(props.track));
+const paths = computed(() => props.selectedPaths.length > 0 ? props.selectedPaths : (currentKey.value ? [currentKey.value] : []));
 const isSelection = computed(() => props.selectedPaths.length > 0);
-const allFavorite = computed(() => paths.value.length > 0 && paths.value.every((path) => profile.isFavorite(path)));
-const favorite = computed(() => !isSelection.value && profile.isFavorite(props.track.path));
-const lyricsDisabled = computed(() => !isSelection.value && !!props.track.path && profile.isLyricsDisabled(props.track.path));
+const allFavorite = computed(() => paths.value.length > 0 && paths.value.every((key) => profile.isFavorite(key)));
+const favorite = computed(() => !isSelection.value && profile.isFavorite(currentKey.value));
+const lyricsDisabled = computed(() => !isSelection.value && !!currentKey.value && profile.isLyricsDisabled(currentKey.value));
 
 const playlistPos = computed(() => {
-  if (!props.playlistId || !props.track.path || isSelection.value) return null;
-  return profile.getTrackIndexInPlaylist(props.playlistId, props.track.path);
+  if (!props.playlistId || !currentKey.value || isSelection.value) return null;
+  return profile.getTrackIndexInPlaylist(props.playlistId, currentKey.value);
 });
 const canMoveUp = computed(() => playlistPos.value !== null && playlistPos.value.index > 0);
 const canMoveDown = computed(() => playlistPos.value !== null && playlistPos.value.index < playlistPos.value.total - 1);
@@ -66,33 +68,34 @@ function editLyrics() { emit("editLyrics", props.track); close(); }
 function editInfo() { if (!props.track.path) return; emit("editInfo", props.track); close(); }
 function showInfo() { if (!props.track.path) return; emit("showInfo", props.track); close(); }
 function toggleLyrics() {
-  const path = props.track.path;
-  if (!path) return;
-  profile.toggleLyricsDisabled(path);
+  const key = currentKey.value;
+  if (!key) return;
+  profile.toggleLyricsDisabled(key);
   // Reflect the change immediately when the toggled track is the one playing.
   const current = player.currentTrack;
-  if (current && current.path === path) void lyrics.loadForTrack(current);
+  if (current && trackKey(current) === key) void lyrics.loadForTrack(current);
   close();
 }
 function toggleFavorite() {
   const desired = !allFavorite.value;
-  for (const path of paths.value) {
-    if (profile.isFavorite(path) !== desired) profile.toggleFavorite(path);
+  for (const key of paths.value) {
+    if (profile.isFavorite(key) !== desired) profile.toggleFavorite(key);
   }
   close();
 }
 function addToPlaylist(id: string) {
-  for (const path of paths.value) profile.addToPlaylist(id, path);
+  for (const key of paths.value) profile.addToPlaylist(id, key);
   close();
 }
 function removeFromPlaylist() {
   if (!props.playlistId) return;
-  for (const path of paths.value) profile.removeFromPlaylist(props.playlistId, path);
+  for (const key of paths.value) profile.removeFromPlaylist(props.playlistId, key);
   close();
 }
 function moveTrack(direction: "up" | "down") {
-  if (!props.playlistId || !props.track.path) return;
-  profile.moveTrackInPlaylist(props.playlistId, props.track.path, direction);
+  const key = currentKey.value;
+  if (!props.playlistId || !key) return;
+  profile.moveTrackInPlaylist(props.playlistId, key, direction);
   close();
 }
 watch(() => [props.x, props.y], scheduleClamp);

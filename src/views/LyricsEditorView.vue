@@ -6,14 +6,16 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { describeError, invoke } from "../api";
 import { detectFormat } from "lyric-kit";
 import { readLyricSource, tagLyric } from "../lib/lyricTag";
+import { narrowFullWidthDigits } from "../lib/lyricWidth";
 import { readLyricOffset, supportsLyricOffset, writeLyricOffset } from "../lib/lyricOffset";
-import { lyricPlatformLink, lyricSidecarPath, parseAmllAddress, parseNeteaseId, parseQqIds } from "../lib/lyricLink";
-import { lyricFromAmll, lyricFromNetease, lyricFromQqBest, LyricResolver, searchNetease, searchQq } from "../lib/lyricSources";
+import { lyricPlatformLink, lyricSidecarPath, parseAmllAddress, parseNeteaseId, parseQqIds, type ParsedLyricIds } from "../lib/lyricLink";
+import { lyricFromAmll, lyricFromNetease, lyricFromQqBest, LyricResolver, resolveQqNumericId, searchNetease, searchQq } from "../lib/lyricSources";
 import { pushToast } from "../lib/toast";
 import { usePlayerStore } from "../stores/player";
-import { useWebdavStore } from "../stores/webdav";
+import { useSourcesStore } from "../stores/sources";
 import { useProfileStore } from "../stores/profile";
 import { useLyricsStore } from "../stores/lyrics";
+import { trackKey } from "../lib/sources";
 import LayeredSelect from "../components/LayeredSelect.vue";
 
 import type { LyricFetchResult } from "../lib/lyricSources";
@@ -21,13 +23,14 @@ import type { LyricFetchResult } from "../lib/lyricSources";
 /** Mirrors the Rust `LyricSaveResult` returned by `save_track_lyrics`. */
 type LyricSaveResult = { uploaded: boolean; uploadError: string | null };
 
-const props = defineProps<{ path: string | null }>();
+const props = defineProps<{ path: string | null; sourceId?: string | null }>();
 const emit = defineEmits<{ back: []; friendlyError: [error: unknown] }>();
 const { t } = useI18n();
 const player = usePlayerStore();
-const webdav = useWebdavStore();
+const sources = useSourcesStore();
 const profile = useProfileStore();
 const lyrics = useLyricsStore();
+const key = computed(() => trackKey({ sourceId: props.sourceId ?? undefined, path: props.path ?? undefined }));
 
 const content = ref("");
 const savedSnapshot = ref("");
@@ -39,8 +42,14 @@ const downloadProvider = ref<"netease" | "qq" | "amll">("netease");
 const downloadInput = ref("");
 const downloading = ref(false);
 const searching = ref(false);
+/**
+ * Resolved QQ ids for the current input. The numeric id is what the
+ * word-by-word QRC endpoint wants, and it never appears in a pasted
+ * `songDetail` URL, so it is resolved from the MID and memoized here.
+ */
+const qqMatch = ref<{ qqMid?: string; qqId?: string }>({});
 
-const track = computed(() => player.tracks.find((item) => item.path === props.path) ?? null);
+const track = computed(() => player.tracks.find((item) => trackKey(item) === key.value) ?? null);
 const tag = computed(() => readLyricSource(content.value));
 const source = computed(() => tag.value?.source?.trim().toLowerCase() || "local");
 /** Local lyrics are never tagged, so an absent tag means the sidecar is local. */
@@ -58,7 +67,7 @@ const format = computed(() => {
 const sidecarPath = computed(() => lyricSidecarPath(props.path));
 const platformLink = computed(() => lyricPlatformLink(source.value, tag.value?.sourceId));
 const dirty = computed(() => content.value !== savedSnapshot.value);
-const disabled = computed(() => !!props.path && profile.isLyricsDisabled(props.path));
+const disabled = computed(() => !!key.value && profile.isLyricsDisabled(key.value));
 const offset = computed(() => readLyricOffset(content.value));
 const offsetSupported = computed(() => supportsLyricOffset(format.value));
 const negativeOffsetSteps = [-1000, -100, -10];
@@ -66,11 +75,11 @@ const positiveOffsetSteps = [10, 100, 1000];
 
 /** Suppress or restore lyrics for this track, reflecting playback immediately. */
 function toggleDisabled() {
-  const path = props.path;
-  if (!path) return;
-  profile.toggleLyricsDisabled(path);
+  const currentKey = key.value;
+  if (!currentKey) return;
+  profile.toggleLyricsDisabled(currentKey);
   const current = player.currentTrack;
-  if (current && current.path === path) void lyrics.loadForTrack(current);
+  if (current && trackKey(current) === currentKey) void lyrics.loadForTrack(current);
 }
 
 const providerKey = computed(() =>
@@ -100,14 +109,14 @@ async function loadLyrics() {
   loading.value = true;
   let text: string | null = null;
   try {
-    text = await invoke<string>("read_track_lyrics", { path: props.path });
+    text = await invoke<string>("read_track_lyrics", { sourceId: props.sourceId, path: props.path });
   } catch (error) {
     // WebDAV may be unconfigured or the sidecar missing; the cache is the fallback.
     loadError.value = describeError(error);
   }
   if (!text) {
     try {
-      const cached = await invoke<string | null>("get_cached_lyrics", { path: props.path });
+      const cached = await invoke<string | null>("get_cached_lyrics", { sourceId: props.sourceId, path: props.path });
       if (cached) {
         text = cached;
         loadError.value = "";
@@ -116,7 +125,9 @@ async function loadLyrics() {
       if (!loadError.value) loadError.value = describeError(error);
     }
   }
-  content.value = text ?? "";
+  // Open with half-width digits so the editor, the saved copy and the dirty
+  // check all agree on the same text.
+  content.value = narrowFullWidthDigits(text ?? "");
   savedSnapshot.value = content.value;
   loading.value = false;
 }
@@ -125,7 +136,10 @@ async function save() {
   if (!props.path || saving.value) return;
   saving.value = true;
   try {
+    // Full-width digits a user typed by hand are narrowed on the way out too.
+    content.value = narrowFullWidthDigits(content.value);
     const result = await invoke<LyricSaveResult>("save_track_lyrics", {
+      sourceId: props.sourceId,
       path: props.path,
       content: content.value,
     });
@@ -175,6 +189,34 @@ function openSource() {
   if (platformLink.value) void openUrl(platformLink.value).catch((error) => emit("friendlyError", error));
 }
 
+/** Title/artist/album of the open track, used to resolve platform ids. */
+function trackQuery() {
+  return {
+    title: track.value?.title ?? "",
+    artist: track.value?.artist ?? "",
+    album: track.value?.album ?? "",
+  };
+}
+
+/**
+ * Fill in QQ's numeric song id when the input only carries a MID.
+ *
+ * The word-by-word QRC endpoint takes `musicid=` (numeric), while a pasted
+ * `songDetail` URL or a bare MID only exposes the alphanumeric MID. The numeric
+ * id is resolved straight from the entered MID via the detail API, so a lyric
+ * for any song can be fetched — not just for the track that is currently open.
+ */
+async function withQqNumericId(ids: ParsedLyricIds): Promise<ParsedLyricIds> {
+  if (ids.qqId || !ids.qqMid) return ids;
+  if (qqMatch.value.qqMid === ids.qqMid && qqMatch.value.qqId) {
+    return { ...ids, qqId: qqMatch.value.qqId };
+  }
+  const qqId = await resolveQqNumericId(ids.qqMid).catch(() => null);
+  if (!qqId) return ids;
+  qqMatch.value = { qqMid: ids.qqMid, qqId };
+  return { ...ids, qqId };
+}
+
 /** Fetch lyrics for a manually entered platform id / address and save them. */
 async function downloadLyrics() {
   if (!props.path || downloading.value) return;
@@ -194,15 +236,11 @@ async function downloadLyrics() {
     } else if (downloadProvider.value === "qq") {
       const ids = parseQqIds(raw);
       if (!ids) { pushToast("error", t("lyricsEditor.invalidId")); return; }
-      hit = await lyricFromQqBest(ids);
+      hit = await lyricFromQqBest(await withQqNumericId(ids));
     } else {
       const ids = parseAmllAddress(raw);
       if (!ids) { pushToast("error", t("lyricsEditor.invalidAddress")); return; }
-      hit = await lyricFromAmll(ids, {
-        title: track.value?.title ?? "",
-        artist: track.value?.artist ?? "",
-        album: track.value?.album ?? "",
-      });
+      hit = await lyricFromAmll(ids, trackQuery());
     }
 
     if (!hit?.content.trim()) {
@@ -211,8 +249,11 @@ async function downloadLyrics() {
     }
 
     // Tag with the origin so the "来源" section and platform link keep working.
-    const tagged = tagLyric(hit.content, { source: downloadProvider.value, sourceId: hit.sourceId });
-    const result = await invoke<LyricSaveResult>("save_track_lyrics", { path: props.path, content: tagged });
+    const tagged = tagLyric(narrowFullWidthDigits(hit.content), {
+      source: downloadProvider.value,
+      sourceId: hit.sourceId,
+    });
+    const result = await invoke<LyricSaveResult>("save_track_lyrics", { sourceId: props.sourceId, path: props.path, content: tagged });
     content.value = tagged;
     savedSnapshot.value = tagged;
     loadError.value = "";
@@ -232,11 +273,7 @@ async function downloadLyrics() {
 /** Search the selected provider by title/artist and fill in the best match. */
 async function autoSearch() {
   if (!props.path || searching.value) return;
-  const query = {
-    title: track.value?.title ?? "",
-    artist: track.value?.artist ?? "",
-    album: track.value?.album ?? "",
-  };
+  const query = trackQuery();
   if (!query.title.trim()) {
     pushToast("warning", t("lyricsEditor.searchNoTrack"));
     return;
@@ -262,6 +299,8 @@ async function autoSearch() {
     const match = downloadProvider.value === "qq" ? await searchQq(query) : await searchNetease(query);
     if (!match) { pushToast("error", t("lyricsEditor.searchEmpty")); return; }
     downloadInput.value = match.id;
+    // Keep the numeric id: the MID alone can only ever fetch line-level lyrics.
+    if (downloadProvider.value === "qq") qqMatch.value = { qqMid: match.id, qqId: match.altId };
     pushToast("success", t("lyricsEditor.searchFound", { value: `${match.title} · ${match.artist}` }));
   } catch (error) {
     emit("friendlyError", error);
@@ -304,7 +343,7 @@ watch(() => props.path, loadLyrics, { immediate: true });
               <dd class="mt-1 break-all font-mono text-xs">{{ sidecarPath ?? "—" }}</dd>
             </div>
           </dl>
-          <p v-if="!webdav.url" class="mt-4 border-l-2 border-accent/60 pl-3 text-xs text-muted">{{ t("lyricsEditor.notConfigured") }}</p>
+          <p v-if="!sources.hasSources" class="mt-4 border-l-2 border-accent/60 pl-3 text-xs text-muted">{{ t("lyricsEditor.notConfigured") }}</p>
         </section>
 
         <section class="ak-frame border border-line bg-surface p-6">

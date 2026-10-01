@@ -1,19 +1,20 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import type { Component } from "vue";
-import { Activity, AudioLines, Ellipsis, Heart, ImagePlus, Library, ListMusic, Play, Plus, RefreshCw, Shuffle, Trash2, X } from "@lucide/vue";
+import { Activity, AudioLines, Heart, Library, ListMusic, Play, Plus, RefreshCw, Shuffle, X } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { usePlayerStore } from "../stores/player";
 import type { Track } from "../stores/player";
 import { tracksForPaths, useProfileStore } from "../stores/profile";
 import { initial } from "../lib/format";
+import { trackKey } from "../lib/sources";
 import type { View } from "../lib/app";
 import PlaylistCover from "../components/PlaylistCover.vue";
 import TrackCard from "../components/TrackCard.vue";
 import TrackContextMenu from "../components/TrackContextMenu.vue";
 
 withDefaults(defineProps<{ loading: boolean; enriching: boolean; enrichDone: number; enrichTotal: number; downloadingTrackId?: number | null }>(), { downloadingTrackId: null });
-const emit = defineEmits<{ settings: []; downloadMetadata: [track: Track]; editLyrics: [track: Track]; editInfo: [track: Track]; showInfo: [track: Track]; navigate: [view: View]; openPlaylist: [id: string]; editPlaylist: [id: string] }>();
+const emit = defineEmits<{ settings: []; downloadMetadata: [track: Track]; editLyrics: [track: Track]; editInfo: [track: Track]; showInfo: [track: Track]; navigate: [view: View]; openPlaylist: [id: string] }>();
 const { t } = useI18n();
 const player = usePlayerStore();
 const profile = useProfileStore();
@@ -24,9 +25,6 @@ const recommendedPaths = ref<string[]>([]);
 const recommended = computed(() => tracksForPaths(recommendedPaths.value, player.tracks));
 const creating = ref(false);
 const newName = ref("");
-const editingId = ref<string | null>(null);
-const editingName = ref("");
-const pendingDelete = ref<string | null>(null);
 
 const RECOMMEND_LIMIT = 5;
 const TOP_LIMIT = 5;
@@ -53,8 +51,11 @@ const stats = computed<{ key: string; value: number; icon: Component; view?: Vie
 const topTracks = computed(() => {
   const counts = profile.profile.playCounts;
   return [...player.tracks]
-    .filter((track) => track.path && (counts[track.path] ?? 0) > 0)
-    .sort((a, b) => (counts[b.path as string] ?? 0) - (counts[a.path as string] ?? 0))
+    .filter((track) => {
+      const key = trackKey(track);
+      return !!key && (counts[key] ?? 0) > 0;
+    })
+    .sort((a, b) => (counts[trackKey(b) ?? ""] ?? 0) - (counts[trackKey(a) ?? ""] ?? 0))
     .slice(0, TOP_LIMIT);
 });
 const recentTracks = computed(() => tracksForPaths(profile.recent, player.tracks).slice(0, RECOMMEND_LIMIT));
@@ -74,8 +75,8 @@ function pickRandom(list: Track[], count: number): Track[] {
 }
 function refreshRecommended() {
   recommendedPaths.value = pickRandom(player.tracks, RECOMMEND_LIMIT)
-    .map((track) => track.path)
-    .filter((path): path is string => !!path);
+    .map((track) => trackKey(track))
+    .filter((key): key is string => !!key);
 }
 /**
  * Fingerprint of the library's track paths. A remote re-list re-applies the same
@@ -83,7 +84,7 @@ function refreshRecommended() {
  * instead of on every `player.tracks` reassignment.
  */
 const librarySignature = computed(() =>
-  player.tracks.map((track) => track.path).filter((path): path is string => !!path).sort().join("\n"),
+  player.tracks.map((track) => trackKey(track)).filter((key): key is string => !!key).sort().join("\n"),
 );
 watch(librarySignature, refreshRecommended, { immediate: true });
 
@@ -98,20 +99,8 @@ function openContextMenu(event: MouseEvent, track: Track) { contextTrack.value =
 function downloadMetadata(track: Track) { emit("downloadMetadata", track); }
 
 function selectPlaylist(id: string) { emit("openPlaylist", id); }
-function editPlaylist(id: string) { emit("editPlaylist", id); }
 function startCreate() { creating.value = true; newName.value = ""; }
 function confirmCreate() { const name = newName.value.trim(); if (name) profile.createPlaylist(name); creating.value = false; newName.value = ""; }
-function startRename(id: string, name: string) { editingId.value = id; editingName.value = name; }
-function confirmRename() { if (editingId.value) profile.renamePlaylist(editingId.value, editingName.value); editingId.value = null; }
-function removePlaylist(id: string) {
-  if (pendingDelete.value !== id) {
-    pendingDelete.value = id;
-    window.setTimeout(() => { if (pendingDelete.value === id) pendingDelete.value = null; }, 3000);
-    return;
-  }
-  profile.deletePlaylist(id);
-  pendingDelete.value = null;
-}
 </script>
 
 <template>
@@ -185,35 +174,25 @@ function removePlaylist(id: string) {
       </section>
 
       <section class="mt-10">
-        <div class="mb-4 flex items-end justify-between">
+        <div class="mb-4 flex flex-wrap items-end justify-between gap-3">
           <h2 class="flex items-center gap-3 text-sm font-bold uppercase tracking-[0.25em]"><span class="h-3 w-1 bg-accent"></span>{{ t("home.playlists") }}</h2>
-          <form v-if="creating" class="flex items-center gap-2" @submit.prevent="confirmCreate">
-            <input v-model="newName" autofocus :placeholder="t('library.playlists.namePlaceholder')" class="h-8 border border-line bg-bg px-2 text-[13px] outline-none focus:border-accent" />
-            <button type="submit" class="ak-clip-tr h-8 bg-accent px-3 text-[12px] font-bold text-accent-fg">{{ t("library.playlists.create") }}</button>
-            <button type="button" class="grid h-8 w-8 place-items-center text-dim hover:text-fg" @click="creating = false"><X :size="15" /></button>
-          </form>
-          <button v-else type="button" class="flex items-center gap-2 text-[12px] font-semibold uppercase tracking-[0.2em] text-dim transition-colors hover:text-fg" @click="startCreate"><Plus :size="14" />{{ t("library.playlists.new") }}</button>
+          <div class="flex flex-wrap items-center gap-4">
+            <button v-if="!creating" type="button" class="text-[12px] font-semibold uppercase tracking-[0.2em] text-dim transition-colors hover:text-fg" @click="emit('navigate', 'playlists')">{{ t("library.playlists.viewAll") }}</button>
+            <form v-if="creating" class="flex items-center gap-2" @submit.prevent="confirmCreate">
+              <input v-model="newName" autofocus :placeholder="t('library.playlists.namePlaceholder')" class="h-8 border border-line bg-bg px-2 text-[13px] outline-none focus:border-accent" />
+              <button type="submit" class="ak-clip-tr h-8 bg-accent px-3 text-[12px] font-bold text-accent-fg">{{ t("library.playlists.create") }}</button>
+              <button type="button" class="grid h-8 w-8 place-items-center text-dim hover:text-fg" @click="creating = false"><X :size="15" /></button>
+            </form>
+            <button v-else type="button" class="flex items-center gap-2 text-[12px] font-semibold uppercase tracking-[0.2em] text-dim transition-colors hover:text-fg" @click="startCreate"><Plus :size="14" />{{ t("library.playlists.new") }}</button>
+          </div>
         </div>
         <p v-if="profile.playlists.length === 0 && !creating" class="text-sm text-muted">{{ t("library.playlists.empty") }}</p>
         <div v-else class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-          <article v-for="playlist in profile.playlists" :key="playlist.id" class="group relative flex cursor-pointer items-center gap-3 border border-line bg-surface p-4 transition-all hover:-translate-y-0.5 hover:border-accent" @click="selectPlaylist(playlist.id)">
+          <article v-for="playlist in profile.playlists" :key="playlist.id" class="flex cursor-pointer items-center gap-3 border border-line bg-surface p-4 transition-all hover:-translate-y-0.5 hover:border-accent" @click="selectPlaylist(playlist.id)">
             <PlaylistCover :playlist="playlist" class="h-11 w-11" :icon-size="20" />
             <div class="min-w-0 flex-1">
-              <form v-if="editingId === playlist.id" @submit.prevent="confirmRename" @click.stop>
-                <input v-model="editingName" autofocus class="h-8 w-full border border-line bg-bg px-2 text-sm outline-none focus:border-accent" />
-              </form>
-              <template v-else>
-                <p class="truncate text-sm font-semibold">{{ playlist.name }}</p>
-                <p class="font-mono text-[11px] uppercase tracking-[0.15em] text-dim">{{ t("library.playlists.count", { count: playlist.tracks.length }) }}</p>
-              </template>
-            </div>
-            <div v-if="editingId === playlist.id" class="flex items-center gap-1" @click.stop>
-              <button type="button" class="ak-clip-tr h-8 bg-accent px-2 text-[11px] font-bold text-accent-fg" @click="confirmRename">{{ t("library.playlists.save") }}</button>
-            </div>
-            <div v-else class="flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-              <button type="button" class="grid h-8 w-8 place-items-center text-dim hover:text-fg" :title="t('playlistEditor.editTitle')" @click.stop="editPlaylist(playlist.id)"><ImagePlus :size="16" /></button>
-              <button type="button" class="grid h-8 w-8 place-items-center text-dim hover:text-fg" :title="t('library.playlists.rename')" @click.stop="startRename(playlist.id, playlist.name)"><Ellipsis :size="16" /></button>
-              <button type="button" class="grid h-8 w-8 place-items-center transition-colors" :class="pendingDelete === playlist.id ? 'bg-red-500 text-white' : 'text-dim hover:text-red-500'" :title="pendingDelete === playlist.id ? t('library.playlists.confirmDelete') : t('library.playlists.delete')" @click.stop="removePlaylist(playlist.id)"><Trash2 :size="15" /></button>
+              <p class="truncate text-sm font-semibold">{{ playlist.name }}</p>
+              <p class="font-mono text-[11px] uppercase tracking-[0.15em] text-dim">{{ t("library.playlists.count", { count: playlist.tracks.length }) }}</p>
             </div>
           </article>
         </div>

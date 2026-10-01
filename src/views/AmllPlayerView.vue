@@ -165,7 +165,10 @@ onBeforeUnmount(() => {
 });
 
 watch(
-  () => player.currentTrack?.path,
+  () => {
+    const track = player.currentTrack;
+    return track?.path ? `${track.sourceId ?? ""}::${track.path}` : "";
+  },
   () => { lyrics.loadForTrack(player.currentTrack ?? undefined); },
   { immediate: true },
 );
@@ -177,12 +180,23 @@ const shuffleTitle = computed(() => player.shuffle ? t("controls.shuffleOn") : t
 /**
  * AMLL deep-clones its input with `structuredClone`, which rejects Vue's
  * reactive proxies — hand it the raw (non-reactive) lyric data instead. Also
- * respect the translation toggle by stripping translated text when disabled.
+ * respect the translation and ruby toggles by stripping the corresponding text
+ * when disabled.
  */
 const amllLines = computed(() => {
   const raw = toRaw(lyrics.lines);
-  if (lyrics.amll.translate) return raw;
-  return raw.map((line) => (line.translatedLyric ? { ...line, translatedLyric: "" } : line));
+  const { translate, ruby } = lyrics.amll;
+  if (translate && ruby) return raw;
+  return raw.map((line) => {
+    let next = line;
+    if (!translate && line.translatedLyric) {
+      next = { ...next, translatedLyric: "" };
+    }
+    if (!ruby && line.words.some((word) => word.ruby?.length)) {
+      next = { ...next, words: line.words.map((word) => (word.ruby?.length ? { ...word, ruby: undefined } : word)) };
+    }
+    return next;
+  });
 });
 
 function onSeek(event: Event) {

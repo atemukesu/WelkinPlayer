@@ -11,9 +11,8 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tauri::AppHandle;
 
+use crate::backend::{sync_backend, Backend};
 use crate::commands::media::{cover_file, cover_path_for, resolve_cache_dir, write_cover};
-use crate::commands::webdav::require_credentials;
-use crate::dav::WebDavClient;
 use crate::error::AppError;
 use crate::metadata;
 
@@ -42,13 +41,9 @@ pub struct ResolvedCover {
     pub path: Option<String>,
 }
 
-fn client(app: &AppHandle) -> Result<WebDavClient, AppError> {
-    let credentials = require_credentials(app)?;
-    WebDavClient::new(
-        &credentials.url,
-        &credentials.username,
-        &credentials.password,
-    )
+/// The backend of the configured sync source, or `None` when none is set.
+fn client(app: &AppHandle) -> Result<Option<Backend>, AppError> {
+    sync_backend(app)
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -117,11 +112,12 @@ pub async fn upload_playlist_cover(
     // A failed upload (offline, keychain) must not block local editing: the
     // cover already renders from cache and the profile still references it.
     match client(&app) {
-        Ok(client) => {
+        Ok(Some(client)) => {
             if let Err(error) = client.put(&file, "image/jpeg", jpeg).await {
                 log::warn!("failed to upload playlist cover {file}: {error}");
             }
         }
+        Ok(None) => log::info!("no sync source; playlist cover cached locally only"),
         Err(error) => log::warn!("skipping playlist cover upload: {error}"),
     }
 
@@ -160,7 +156,15 @@ pub async fn resolve_playlist_covers(
     }
 
     let client = match client(&app) {
-        Ok(client) => client,
+        Ok(Some(client)) => client,
+        Ok(None) => {
+            resolved.extend(
+                pending
+                    .into_iter()
+                    .map(|file| ResolvedCover { file, path: None }),
+            );
+            return Ok(resolved);
+        }
         Err(error) => {
             log::warn!("cannot resolve playlist covers: {error}");
             resolved.extend(
@@ -177,17 +181,11 @@ pub async fn resolve_playlist_covers(
             resolved.push(ResolvedCover { file, path: None });
             continue;
         };
-        let path = match client.get(&file).await {
-            Ok(response) => match response.bytes().await {
-                Ok(bytes) => match write_cover(&dir, &hash, &bytes) {
-                    Ok(()) => cover_path_for(&dir, &hash),
-                    Err(error) => {
-                        log::warn!("failed to cache playlist cover {file}: {error}");
-                        None
-                    }
-                },
+        let path = match client.read(&file).await {
+            Ok(bytes) => match write_cover(&dir, &hash, &bytes) {
+                Ok(()) => cover_path_for(&dir, &hash),
                 Err(error) => {
-                    log::warn!("failed to read playlist cover {file}: {error}");
+                    log::warn!("failed to cache playlist cover {file}: {error}");
                     None
                 }
             },
@@ -214,11 +212,12 @@ pub async fn delete_playlist_cover(app: AppHandle, file: String) -> Result<(), A
     }
 
     match client(&app) {
-        Ok(client) => {
+        Ok(Some(client)) => {
             if let Err(error) = client.delete(&file).await {
                 log::warn!("failed to delete playlist cover {file}: {error}");
             }
         }
+        Ok(None) => log::info!("no sync source; playlist cover cache cleared only"),
         Err(error) => log::warn!("skipping playlist cover delete: {error}"),
     }
     Ok(())

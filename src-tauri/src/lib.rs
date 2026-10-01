@@ -1,11 +1,13 @@
 #[cfg(target_os = "android")]
 mod android;
+mod backend;
 mod commands;
 mod dav;
 mod error;
 mod logging;
 mod metadata;
 mod proxy;
+mod sources;
 
 use tauri::Manager;
 
@@ -22,8 +24,20 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .setup(|app| {
+            // Mint the per-install identifier on first launch so it is stable
+            // from the very first run; later launches just read it back.
+            match commands::sponsor::get_install_id() {
+                Ok(status) if status.available => {}
+                Ok(status) => log::warn!(
+                    "install identifier unavailable at startup: {}",
+                    status.warning.as_deref().unwrap_or("unknown keychain error")
+                ),
+                Err(error) => log::warn!("failed to prepare install identifier: {error}"),
+            }
+
             // Let the webview load cached cover thumbnails as plain asset URLs.
             commands::media::allow_cache_dir(app.handle());
             match proxy::start(app.handle().clone()) {
@@ -43,15 +57,19 @@ pub fn run() {
             commands::echo,
             commands::log_message,
             commands::fonts::list_system_fonts,
-            commands::webdav::load_webdav_password,
-            commands::webdav::save_webdav_password,
+            commands::webdav::load_source_password,
+            commands::webdav::save_source_password,
+            commands::webdav::delete_source_password,
             commands::webdav::webdav_url_risk,
-            commands::webdav::test_webdav_connection,
-            commands::webdav::list_webdav_audio,
+            commands::sources::pick_local_folder,
+            commands::sources::list_source_audio,
+            commands::sources::test_source_connection,
+            commands::sources::test_source_write,
+            commands::sponsor::get_install_id,
+            commands::sponsor::build_sponsor_claim,
             commands::profile::load_local_profile,
             commands::profile::load_remote_profile,
             commands::profile::save_profile,
-            commands::profile::test_webdav_write,
             commands::covers::upload_playlist_cover,
             commands::covers::resolve_playlist_covers,
             commands::covers::delete_playlist_cover,
@@ -62,6 +80,7 @@ pub fn run() {
             commands::playback::save_playback,
             commands::media::read_track_metadata,
             commands::media::download_track_metadata,
+            commands::media::probe_track,
             commands::media::read_track_lyrics,
             commands::media::get_cached_lyrics,
             commands::lyrics::lyric_http_get,
@@ -75,7 +94,7 @@ pub fn run() {
             commands::media::set_cache_dir,
             commands::media::load_library_cache,
             commands::media::save_library_cache,
-            commands::media::refresh_webdav_library,
+            commands::media::refresh_source_library,
             proxy::stream_endpoint
         ])
         .run(tauri::generate_context!())

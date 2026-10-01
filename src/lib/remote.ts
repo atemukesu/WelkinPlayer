@@ -1,7 +1,8 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type { Track } from "../stores/player";
+import type { SourceKind } from "./sources";
 
-/** Shape of the `RemoteEntry` struct returned by the Rust `list_webdav_audio` command. */
+/** Shape of the `RemoteEntry` struct returned by the Rust `list_source_audio` command. */
 export interface RemoteEntry {
   name: string;
   /** Remote href as returned by WebDAV (percent-encoded, URL semantics). */
@@ -28,19 +29,29 @@ function stripExtension(name: string): string {
   return name.replace(/\.[^./\\]+$/, "");
 }
 
-/** Convert a remote WebDAV entry into the library's track shape. */
-export function trackFromEntry(entry: RemoteEntry, index: number): Track {
+/** Minimal source descriptor attached to library tracks. */
+export interface TrackSourceRef {
+  id: string;
+  name: string;
+  kind: SourceKind;
+}
+
+/** Convert a source entry into the library's track shape. */
+export function trackFromEntry(entry: RemoteEntry, index: number, source?: TrackSourceRef): Track {
   const segments = entry.localPath.split("/").filter(Boolean);
-  const artist = segments.length > 1 ? segments[segments.length - 2] : "WebDAV";
+  const fallback = source?.kind === "local" ? (source.name || "本地") : "WebDAV";
+  const artist = segments.length > 1 ? segments[segments.length - 2] : fallback;
   return {
     id: index + 1,
     title: stripExtension(entry.name) || entry.name,
     artist,
-    album: entry.contentType ?? "WebDAV",
+    album: entry.contentType ?? fallback,
     duration: "--:--",
-    color: colorFor(entry.path || entry.name),
+    color: colorFor(`${source?.id ?? ""}:${entry.path || entry.name}`),
     path: entry.path,
     modified: entry.modified,
+    sourceId: source?.id,
+    sourceName: source?.name,
   };
 }
 
@@ -110,8 +121,8 @@ export function setStreamEndpoint(endpoint: StreamEndpoint) {
  * response (with Range support) so credentials stay in Rust and the browser
  * handles progressive playback natively.
  */
-export function trackStreamUrl(remotePath: string): string {
+export function trackStreamUrl(remotePath: string, sourceId = ""): string {
   if (!streamEndpoint) return "";
-  const query = `token=${encodeURIComponent(streamEndpoint.token)}&path=${encodeURIComponent(remotePath)}`;
+  const query = `token=${encodeURIComponent(streamEndpoint.token)}&source=${encodeURIComponent(sourceId)}&path=${encodeURIComponent(remotePath)}`;
   return `${streamEndpoint.url}?${query}`;
 }

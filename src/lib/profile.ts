@@ -61,7 +61,7 @@ export interface Profile {
   updatedAt: number;
 }
 
-export const PROFILE_VERSION = 2;
+export const PROFILE_VERSION = 3;
 
 export function createDefaultProfile(): Profile {
   return {

@@ -6,6 +6,7 @@ import { usePlayerStore } from "../stores/player";
 import type { Track } from "../stores/player";
 import { useProfileStore } from "../stores/profile";
 import { initial, pad } from "../lib/format";
+import { trackKey } from "../lib/sources";
 import TrackContextMenu from "../components/TrackContextMenu.vue";
 
 withDefaults(defineProps<{ loading: boolean; downloadingTrackId?: number | null }>(), { downloadingTrackId: null });
@@ -24,8 +25,11 @@ interface RankedTrack {
 const ranked = computed<RankedTrack[]>(() => {
   const counts = profile.profile.playCounts;
   return player.tracks
-    .filter((track) => track.path && (counts[track.path] ?? 0) > 0)
-    .map((track) => ({ track, count: counts[track.path as string] ?? 0 }))
+    .filter((track) => {
+      const key = trackKey(track);
+      return !!key && (counts[key] ?? 0) > 0;
+    })
+    .map((track) => ({ track, count: counts[trackKey(track) as string] ?? 0 }))
     .sort((a, b) => b.count - a.count);
 });
 const queue = computed(() => ranked.value.flatMap((item) => (item.track.path ? [item.track] : [])));

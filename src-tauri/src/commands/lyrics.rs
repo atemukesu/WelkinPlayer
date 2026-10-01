@@ -15,9 +15,8 @@ use std::time::Duration;
 use reqwest::{header, Client, Url};
 use tauri::AppHandle;
 
-use super::media::{cover_hash, lyric_path, resolve_cache_dir, write_lyric};
-use super::webdav::require_credentials;
-use crate::dav::WebDavClient;
+use super::media::{asset_hash, lyric_path, resolve_cache_dir, write_lyric};
+use crate::backend::backend_for;
 use crate::error::AppError;
 
 /// A desktop browser UA; the music platforms reject the default agent.
@@ -102,54 +101,60 @@ pub struct LyricSaveResult {
 #[tauri::command]
 pub async fn save_track_lyrics(
     app: AppHandle,
+    source_id: String,
     path: String,
     content: String,
 ) -> Result<LyricSaveResult, AppError> {
     let dir = resolve_cache_dir(&app);
-    write_lyric(&dir, &cover_hash(&path), &content)?;
+    write_lyric(&dir, &asset_hash(&source_id, &path), &content)?;
     log::info!(
         "lyrics cached for {path} ({} chars)",
         content.chars().count()
     );
 
-    match upload_sidecar(&app, &path, &content).await {
-        Ok(true) => {
-            log::info!("lyrics sidecar uploaded for {path}");
+    // A writable source mirrors the lyric as a same-named `.lrc` sidecar.
+    let backend = match backend_for(&app, &source_id) {
+        Ok(backend) => backend,
+        Err(error) => {
+            log::info!("source unavailable; lyrics cached locally only for {path}: {error}");
+            return Ok(LyricSaveResult {
+                uploaded: false,
+                upload_error: None,
+            });
+        }
+    };
+
+    let remote = match lyric_path(&path) {
+        Ok(remote) => remote,
+        Err(error) => {
+            return Ok(LyricSaveResult {
+                uploaded: false,
+                upload_error: Some(error.to_string()),
+            })
+        }
+    };
+
+    match backend
+        .put(
+            &remote,
+            "text/plain; charset=utf-8",
+            content.as_bytes().to_vec(),
+        )
+        .await
+    {
+        Ok(()) => {
+            log::info!("lyrics sidecar written for {path}");
             Ok(LyricSaveResult {
                 uploaded: true,
                 upload_error: None,
             })
         }
-        Ok(false) => {
-            log::info!("WebDAV not configured; lyrics cached locally only for {path}");
-            Ok(LyricSaveResult {
-                uploaded: false,
-                upload_error: None,
-            })
-        }
         Err(error) => {
-            log::warn!("failed to upload lyrics for {path}: {error}");
+            log::warn!("failed to write lyrics sidecar for {path}: {error}");
             Ok(LyricSaveResult {
                 uploaded: false,
                 upload_error: Some(error.to_string()),
             })
         }
     }
-}
-
-/// Upload the same-named `.lrc` file; `Ok(false)` when WebDAV is not configured.
-async fn upload_sidecar(app: &AppHandle, path: &str, content: &str) -> Result<bool, AppError> {
-    let Ok(credentials) = require_credentials(app) else {
-        return Ok(false);
-    };
-    let client = WebDavClient::new(&credentials.url, &credentials.username, &credentials.password)?;
-    let remote = lyric_path(path)?;
-    client
-        .put(
-            &remote,
-            "text/plain; charset=utf-8",
-            content.as_bytes().to_vec(),
-        )
-        .await?;
-    Ok(true)
 }

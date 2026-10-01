@@ -12,16 +12,13 @@ use serde::Serialize;
 use tauri::AppHandle;
 use tauri_plugin_store::StoreExt;
 
-use crate::commands::webdav::{load_saved_credentials, require_credentials};
-use crate::dav::WebDavClient;
+use crate::backend::{sync_backend, Backend};
 use crate::error::AppError;
 
 const LOCAL_FILE: &str = "profile.json";
 const LOCAL_KEY: &str = "profile";
-/// Profile document at the WebDAV collection root (ignored by the audio listing).
+/// Profile document at the source root (ignored by the audio listing).
 const REMOTE_PATH: &str = "welkin-profile.json";
-/// Temporary object used to prove the server allows writes.
-const WRITE_TEST_PATH: &str = "welkin-write-test.tmp";
 /// Maximum profile size (1 MiB) accepted from the server, as a sanity bound.
 const MAX_PROFILE_BYTES: usize = 1024 * 1024;
 
@@ -51,6 +48,20 @@ pub struct SaveProfileResult {
     pub warning: Option<String>,
 }
 
+/// Read the nickname from the cached local profile document, if any.
+///
+/// The authoritative copy may live on WebDAV; this only reads the local cache
+/// that [`load_remote_profile`] / [`save_profile`] keep in sync, so callers can
+/// stay synchronous and offline.
+pub(crate) fn local_nickname(app: &AppHandle) -> Option<String> {
+    let raw = local_get(app)?;
+    let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    parsed
+        .get("nickname")
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+}
+
 fn local_get(app: &AppHandle) -> Option<String> {
     app.store(LOCAL_FILE)
         .ok()
@@ -65,18 +76,9 @@ fn local_set(app: &AppHandle, value: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Build a client from saved credentials, or `None` when the server is not
-/// configured yet.
-fn client(app: &AppHandle) -> Result<Option<WebDavClient>, AppError> {
-    let Some(credentials) = load_saved_credentials(app)? else {
-        return Ok(None);
-    };
-    let client = WebDavClient::new(
-        &credentials.url,
-        &credentials.username,
-        &credentials.password,
-    )?;
-    Ok(Some(client))
+/// Build the sync source backend, or `None` when no sync source is configured.
+fn client(app: &AppHandle) -> Result<Option<Backend>, AppError> {
+    sync_backend(app)
 }
 
 /// Read the local cache instantly, without touching the network. Used at
@@ -122,10 +124,9 @@ pub async fn load_remote_profile(app: AppHandle) -> Result<LoadedProfile, AppErr
         });
     };
 
-    match client.get(REMOTE_PATH).await {
-        Ok(response) => {
-            let bytes = response.bytes().await?;
-            if bytes.len() > MAX_PROFILE_BYTES {
+    match client.read_text(REMOTE_PATH).await {
+        Ok(text) => {
+            if text.len() > MAX_PROFILE_BYTES {
                 return Ok(LoadedProfile {
                     content: local,
                     source: "local".to_string(),
@@ -133,8 +134,6 @@ pub async fn load_remote_profile(app: AppHandle) -> Result<LoadedProfile, AppErr
                     remote_missing: false,
                 });
             }
-            let text = String::from_utf8(bytes.to_vec())
-                .map_err(|error| AppError::Other(format!("远程配置不是有效的 UTF-8：{error}")))?;
             if text.trim().is_empty() {
                 let source = if local.is_some() { "local" } else { "none" };
                 return Ok(LoadedProfile {
@@ -209,30 +208,4 @@ pub async fn save_profile(app: AppHandle, content: String) -> Result<SaveProfile
     }
 }
 
-/// Verify the configured server allows writes: PUT a throwaway object, read it
-/// back and DELETE it. Returns the URL that was tested.
-#[tauri::command]
-pub async fn test_webdav_write(app: AppHandle) -> Result<String, AppError> {
-    let credentials = require_credentials(&app)?;
-    let client = WebDavClient::new(
-        &credentials.url,
-        &credentials.username,
-        &credentials.password,
-    )?;
 
-    let payload = b"welkin write probe".to_vec();
-    client
-        .put(WRITE_TEST_PATH, "text/plain", payload.clone())
-        .await?;
-
-    let echoed = client.get(WRITE_TEST_PATH).await?.bytes().await?;
-    let delete_result = client.delete(WRITE_TEST_PATH).await;
-
-    if echoed != payload {
-        return Err(AppError::Other("写入校验失败：回读内容不一致".to_string()));
-    }
-    delete_result?;
-
-    log::info!("WebDAV write test succeeded");
-    Ok(credentials.url)
-}
