@@ -84,6 +84,23 @@ pub enum AppError {
     /// Reading or writing the local settings store failed.
     #[error("读取本地设置失败：{0}")]
     Store(String),
+
+    /// The Pro activation code's signature did not verify against the
+    /// developer's embedded Ed25519 public key.
+    #[error("激活失败：这不是由开发者签发的 Key。")]
+    LicenseSigner,
+
+    /// The signed code is authentic but was issued for another installation.
+    #[error("激活失败：此 Key 不适用于你的设备。")]
+    LicenseDevice,
+
+    /// The signed code is authentic but past its `expires_at`.
+    #[error("激活失败：此 Key 已过期。")]
+    LicenseExpired,
+
+    /// The signed code is authentic but carries an unsupported tier.
+    #[error("激活失败：此 Key 的层级无效。")]
+    LicenseTier,
 }
 
 #[allow(dead_code)]
@@ -108,6 +125,10 @@ impl AppError {
             AppError::MissingCredentials(_) => "MISSING_CREDENTIALS",
             AppError::InsecureUrl(_) => "INSECURE_URL",
             AppError::Store(_) => "STORE",
+            AppError::LicenseSigner => "LICENSE_SIGNER",
+            AppError::LicenseDevice => "LICENSE_DEVICE",
+            AppError::LicenseExpired => "LICENSE_EXPIRED",
+            AppError::LicenseTier => "LICENSE_TIER",
         }
     }
 

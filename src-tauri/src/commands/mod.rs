@@ -9,6 +9,7 @@ pub mod covers;
 pub mod desktop_lyric;
 pub mod editor;
 pub mod fonts;
+pub mod license;
 pub mod lyrics;
 pub mod media;
 pub mod playback;

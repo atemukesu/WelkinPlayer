@@ -1,13 +1,15 @@
 <script setup lang="ts">
-import { ref } from "vue";
-import { ArrowLeft, Check, Coffee, Copy, ExternalLink, HeartHandshake, KeyRound, LoaderCircle, X } from "@lucide/vue";
+import { computed, onMounted, ref } from "vue";
+import { ArrowLeft, BadgeCheck, Check, Coffee, Copy, ExternalLink, HeartHandshake, KeyRound, LoaderCircle, X } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { describeError, invoke } from "../api";
+import { describeError, invoke, toAppError } from "../api";
 import { pushToast } from "../lib/toast";
+import { useLicenseStore } from "../stores/license";
 
 const emit = defineEmits<{ back: [] }>();
 const { t } = useI18n();
+const license = useLicenseStore();
 const sponsorUrl = "https://ifdian.net/a/atommix";
 
 const claimOpen = ref(false);
@@ -17,6 +19,23 @@ const claimError = ref("");
 
 const activateOpen = ref(false);
 const activationCode = ref("");
+const activationLoading = ref(false);
+const activationError = ref("");
+
+/** Maps stable Rust error codes to localized activation messages. */
+const ACTIVATION_ERROR_KEYS: Record<string, string> = {
+  LICENSE_SIGNER: "sponsor.activateModal.invalidSigner",
+  LICENSE_DEVICE: "sponsor.activateModal.deviceMismatch",
+  LICENSE_EXPIRED: "sponsor.activateModal.expired",
+  LICENSE_TIER: "sponsor.activateModal.invalidTier",
+};
+
+/** Formatted expiry date, or an em dash when unknown. */
+const activationExpiry = computed(() => {
+  const seconds = license.status.expiresAt;
+  if (!seconds) return "—";
+  return new Date(seconds * 1000).toLocaleDateString();
+});
 
 async function openSponsor() {
   try {
@@ -75,14 +94,35 @@ async function copyClaim() {
 
 function openActivate() {
   activationCode.value = "";
+  activationError.value = "";
   activateOpen.value = true;
 }
 
-/** Activation is not wired to a backend yet; acknowledge the input for now. */
-function submitActivation() {
-  if (!activationCode.value.trim()) return;
-  pushToast("info", t("sponsor.activateModal.pending"));
+/** Verify the code in Rust and, on success, persist and reflect Pro status. */
+async function submitActivation() {
+  const code = activationCode.value.trim();
+  if (!code || activationLoading.value) return;
+  activationLoading.value = true;
+  activationError.value = "";
+  try {
+    const status = await license.activate(code);
+    pushToast("success", t("sponsor.activateModal.success", { signer: status.signer ?? "" }));
+    activationCode.value = "";
+    activateOpen.value = false;
+  } catch (error) {
+    const appError = toAppError(error);
+    const key = ACTIVATION_ERROR_KEYS[appError.code];
+    activationError.value = key
+      ? t(key)
+      : t("sponsor.activateModal.failed", { value: appError.message });
+  } finally {
+    activationLoading.value = false;
+  }
 }
+
+onMounted(() => {
+  void license.refresh();
+});
 </script>
 
 <template>
@@ -156,7 +196,7 @@ function submitActivation() {
       </div>
       <div class="flex flex-col gap-3 sm:flex-row sm:items-center">
         <button type="button" class="ak-clip-tr flex h-12 items-center justify-center gap-2 bg-accent px-6 text-[13px] font-bold uppercase tracking-[0.25em] text-accent-fg transition-transform hover:scale-[1.01] active:scale-95" @click="openClaim">{{ t("sponsor.claim") }}<KeyRound :size="15" :stroke-width="2.2" /></button>
-        <button type="button" class="ak-clip-tr flex h-12 items-center justify-center gap-2 border border-line px-6 text-[13px] font-bold uppercase tracking-[0.25em] text-fg transition-colors hover:border-accent hover:text-accent" @click="openActivate">{{ t("sponsor.activate") }}<Check :size="15" :stroke-width="2.4" /></button>
+        <button type="button" class="ak-clip-tr flex h-12 items-center justify-center gap-2 border border-line px-6 text-[13px] font-bold uppercase tracking-[0.25em] text-fg transition-colors hover:border-accent hover:text-accent" @click="openActivate">{{ license.isPro ? t("sponsor.activateModal.activeTitle") : t("sponsor.activate") }}<BadgeCheck v-if="license.isPro" :size="15" :stroke-width="2.4" /><Check v-else :size="15" :stroke-width="2.4" /></button>
       </div>
       <button type="button" class="flex w-fit max-w-full items-center gap-1.5 truncate font-mono text-xs tracking-wide text-dim transition-colors hover:text-fg" @click="openSponsor"><span class="truncate">{{ sponsorUrl }}</span><ExternalLink class="shrink-0" :size="13" :stroke-width="2" /></button>
     </section>
@@ -202,9 +242,23 @@ function submitActivation() {
             <h3 class="text-sm font-bold uppercase tracking-[0.2em]">{{ t("sponsor.activateModal.title") }}</h3>
             <button type="button" class="grid h-8 w-8 place-items-center text-dim hover:text-fg" @click="activateOpen = false"><X :size="16" /></button>
           </div>
-          <p class="mt-3 text-sm leading-relaxed text-muted">{{ t("sponsor.activateModal.desc") }}</p>
-          <input v-model="activationCode" class="mt-3 h-11 w-full border border-line bg-bg px-3 font-mono text-sm text-fg outline-none focus:border-accent" :placeholder="t('sponsor.activateModal.placeholder')" @keydown.enter="submitActivation" />
-          <button type="button" class="ak-clip-tr mt-4 flex h-11 w-full items-center justify-center gap-2 bg-accent px-6 text-[13px] font-bold uppercase tracking-[0.25em] text-accent-fg transition-transform hover:scale-[1.01] active:scale-95 disabled:opacity-50" :disabled="!activationCode.trim()" @click="submitActivation">{{ t("sponsor.activateModal.submit") }}<Check :size="15" :stroke-width="2.4" /></button>
+          <template v-if="license.isPro">
+            <div class="mt-3 flex items-center gap-3 border border-accent/40 bg-accent/10 px-4 py-3 text-accent">
+              <BadgeCheck :size="20" :stroke-width="2.2" />
+              <span class="text-sm font-bold uppercase tracking-[0.15em]">{{ t("sponsor.activateModal.activeTitle") }}</span>
+            </div>
+            <p class="mt-3 text-sm leading-relaxed text-muted">{{ t("sponsor.activateModal.activeDesc") }}</p>
+            <dl class="mt-3 grid gap-1.5 text-sm">
+              <div class="flex justify-between gap-4"><dt class="text-dim">{{ t("sponsor.activateModal.signer") }}</dt><dd class="min-w-0 truncate font-semibold">{{ license.status.signer ?? "—" }}</dd></div>
+              <div class="flex justify-between gap-4"><dt class="text-dim">{{ t("sponsor.activateModal.expires") }}</dt><dd class="font-semibold tabular-nums">{{ activationExpiry }}</dd></div>
+            </dl>
+          </template>
+          <template v-else>
+            <p class="mt-3 text-sm leading-relaxed text-muted">{{ t("sponsor.activateModal.desc") }}</p>
+            <input v-model="activationCode" class="mt-3 h-11 w-full border border-line bg-bg px-3 font-mono text-sm text-fg outline-none focus:border-accent disabled:opacity-50" :placeholder="t('sponsor.activateModal.placeholder')" :disabled="activationLoading" @keydown.enter="submitActivation" />
+            <p v-if="activationError" class="mt-3 text-xs leading-relaxed text-accent">{{ activationError }}</p>
+            <button type="button" class="ak-clip-tr mt-4 flex h-11 w-full items-center justify-center gap-2 bg-accent px-6 text-[13px] font-bold uppercase tracking-[0.25em] text-accent-fg transition-transform hover:scale-[1.01] active:scale-95 disabled:opacity-50" :disabled="!activationCode.trim() || activationLoading" @click="submitActivation"><LoaderCircle v-if="activationLoading" class="animate-spin" :size="15" :stroke-width="2.2" /><Check v-else :size="15" :stroke-width="2.4" />{{ activationLoading ? t("sponsor.activateModal.activating") : t("sponsor.activateModal.submit") }}</button>
+          </template>
         </div>
       </div>
       </Transition>

@@ -44,6 +44,8 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 base64 = "0.22"
 # Content-addressed naming for standalone playlist cover files.
 sha2 = "0.10"
+# Verifies developer-issued Pro activation codes (Ed25519-signed JWTs).
+ed25519-dalek = "2"
 # Cryptographically secure random bytes for the loopback streaming proxy token.
 getrandom = "0.2"
 # Enumerate installed font families for the lyrics font picker (loads the

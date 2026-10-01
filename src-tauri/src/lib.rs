@@ -88,6 +88,8 @@ pub fn run() {
             commands::sources::test_source_write,
             commands::sponsor::get_install_id,
             commands::sponsor::build_sponsor_claim,
+            commands::license::activate_pro,
+            commands::license::get_pro_status,
             commands::profile::load_local_profile,
             commands::profile::load_remote_profile,
             commands::profile::save_profile,

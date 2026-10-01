@@ -10,6 +10,7 @@ import type { Accent, Theme } from "../lib/app";
 import { localeOptions } from "../i18n";
 import { useProfileStore } from "../stores/profile";
 import { useSourcesStore } from "../stores/sources";
+import { useLicenseStore } from "../stores/license";
 import LyricsSettings from "../components/LyricsSettings.vue";
 import DesktopLyricSettings from "../components/DesktopLyricSettings.vue";
 import pkg from "../../package.json";
@@ -21,6 +22,9 @@ const { t, locale } = useI18n();
 const appVersion = pkg.version;
 const profile = useProfileStore();
 const sources = useSourcesStore();
+const license = useLicenseStore();
+/** Edition label shown in the About card's edition dial. */
+const editionLabel = computed(() => (license.isPro ? t("sponsor.compare.badgePro") : t("settings.about.edition")));
 const cacheDir = ref("");
 const cacheLimit = ref(1024);
 const cacheUsed = ref(0);
@@ -90,7 +94,7 @@ button.text-dim:hover:not(:disabled) {
             <p class="flex flex-wrap items-baseline gap-1.5"><span class="font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.about.author") }}</span><span class="text-dim">{{ locale === "zh-CN" ? "：" : ":" }}</span><span class="font-semibold">{{ t("settings.about.authorName") }}</span></p>
           </div>
         </div>
-        <div class="flex items-center justify-center py-4"><span class="grid h-32 w-32 place-items-center rounded-full border border-line"><span class="grid h-[100px] w-[100px] place-items-center rounded-full border-2 border-line-strong text-center text-fg"><button type="button" class="px-3 text-base font-black uppercase leading-tight tracking-[0.1em] transition-opacity hover:opacity-80" @click="emit('sponsor')">{{ t("settings.about.edition") }}</button></span></span></div>
+        <div class="flex items-center justify-center py-4"><span class="grid h-32 w-32 place-items-center rounded-full border border-line"><span class="grid h-[100px] w-[100px] place-items-center rounded-full border-2 border-line-strong text-center text-fg"><button type="button" class="px-3 text-base font-black uppercase leading-tight tracking-[0.1em] transition-opacity hover:opacity-80" @click="emit('sponsor')">{{ editionLabel }}</button></span></span></div>
       </div>
     </section>
 
