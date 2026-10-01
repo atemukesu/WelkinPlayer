@@ -12,13 +12,10 @@
 //! Commands arrive from `src/lib/mediaControl.ts`; transport events are emitted
 //! to the frontend as `media:control`.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 
 use crate::error::AppError;
-
-#[cfg(desktop)]
-use serde::Serialize;
 
 #[cfg(desktop)]
 use std::time::Duration;
@@ -33,7 +30,7 @@ use souvlaki::{
 use tauri::Emitter;
 
 /// One metadata + playback snapshot pushed by the frontend.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaControlPayload {
     pub title: String,

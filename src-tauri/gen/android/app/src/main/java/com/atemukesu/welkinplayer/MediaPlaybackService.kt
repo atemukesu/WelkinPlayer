@@ -115,7 +115,7 @@ class MediaPlaybackService : Service() {
             ).toLong()
         val playback = PlaybackState.Builder()
             .setActions(actions)
-            .setState(state.toLong(), position, if (playing) 1f else 0f)
+            .setState(state, position, if (playing) 1f else 0f)
             .build()
         session?.setPlaybackState(playback)
 

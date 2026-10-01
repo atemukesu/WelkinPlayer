@@ -13,8 +13,11 @@
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
+#[cfg(desktop)]
 use tauri::webview::PageLoadEvent;
-use tauri::{AppHandle, Emitter, Manager};
+#[cfg(desktop)]
+use tauri::Emitter;
+use tauri::{AppHandle, Manager};
 
 use crate::error::AppError;
 
@@ -27,6 +30,7 @@ pub struct DesktopLyricCache {
 }
 
 /// Label of the desktop floating window; shared with the frontend.
+#[cfg(desktop)]
 const WINDOW_LABEL: &str = "desktop-lyrics";
 
 /// Overlay markup, shared by the desktop window and the Android WebView.
@@ -106,11 +110,14 @@ fn status(app: &AppHandle) -> DesktopLyricStatus {
         active: app.get_webview_window(WINDOW_LABEL).is_some(),
     };
     #[cfg(target_os = "android")]
-    return DesktopLyricStatus {
-        supported: crate::android::desktop_lyric_supported(),
-        permission_granted: crate::android::desktop_lyric_has_permission(),
-        active: crate::android::desktop_lyric_is_running(),
-    };
+    {
+        let _ = app;
+        return DesktopLyricStatus {
+            supported: crate::android::desktop_lyric_supported(),
+            permission_granted: crate::android::desktop_lyric_has_permission(),
+            active: crate::android::desktop_lyric_is_running(),
+        };
+    }
 }
 
 /// Bring the floating renderer up (idempotent).
@@ -139,6 +146,7 @@ pub async fn desktop_lyric_open(app: AppHandle) -> Result<DesktopLyricStatus, Ap
             .always_on_top(true)
             .skip_taskbar(true)
             .focused(false)
+            .additional_browser_args(crate::WEBVIEW_BROWSER_ARGS)
             .on_page_load(move |window, payload| {
                 if payload.event() != PageLoadEvent::Finished {
                     return;
@@ -191,6 +199,7 @@ pub fn desktop_lyric_close(app: AppHandle) -> Result<(), AppError> {
     }
     #[cfg(target_os = "android")]
     {
+        let _ = &app;
         crate::android::desktop_lyric_stop().map_err(AppError::other)?;
     }
     Ok(())
@@ -223,6 +232,7 @@ pub fn desktop_lyric_tick(app: AppHandle, payload: DesktopLyricTickPayload) -> R
     }
     #[cfg(target_os = "android")]
     {
+        let _ = &app;
         let json = serde_json::to_string(&payload)?;
         crate::android::desktop_lyric_update("tick", &json).map_err(AppError::other)?;
     }

@@ -15,6 +15,15 @@ mod stream_cache;
 
 use tauri::Manager;
 
+/// Extra WebView2 browser arguments applied to every window.
+///
+/// Disables Chromium's own system media controls so only the `souvlaki` session
+/// remains. WebView2 requires every window sharing a data directory to use
+/// identical options, so the main window's `additionalBrowserArgs` in
+/// `tauri.conf.json` MUST stay byte-for-byte identical to this value.
+#[cfg(desktop)]
+pub(crate) const WEBVIEW_BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,HardwareMediaKeyHandling --autoplay-policy=no-user-gesture-required";
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     logging::init();

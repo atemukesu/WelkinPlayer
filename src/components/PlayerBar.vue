@@ -2,6 +2,8 @@
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import {
+  Captions,
+  CaptionsOff,
   ChevronUp,
   ListMusic,
   LoaderCircle,
@@ -16,6 +18,8 @@ import {
   VolumeX,
 } from "@lucide/vue";
 import { usePlayerStore } from "../stores/player";
+import { useDesktopLyricsStore } from "../stores/desktopLyrics";
+import { requestDesktopLyricPermission } from "../composables/useDesktopLyrics";
 import { coverPending, initial, percent } from "../lib/format";
 import { seekPercent } from "../lib/audio";
 
@@ -23,11 +27,23 @@ const emit = defineEmits<{ open: []; queue: []; openArtist: [artist: string]; op
 
 const { t } = useI18n();
 const player = usePlayerStore();
+const desktopLyrics = useDesktopLyricsStore();
 /** Mobile control tray; desktop always renders the full set of controls. */
 const expanded = ref(false);
 
 const repeatTitle = computed(() => player.repeat === "one" ? t("controls.repeatOne") : player.repeat === "all" ? t("controls.repeatAll") : t("controls.repeatOff"));
 const shuffleTitle = computed(() => player.shuffle ? t("controls.shuffleOn") : t("controls.shuffleOff"));
+const desktopLyricsTitle = computed(() => desktopLyrics.settings.enabled ? t("settings.desktopLyrics.close") : t("settings.desktopLyrics.open"));
+
+/** Toggle the floating lyrics; on Android ask for the overlay grant first. */
+function toggleDesktopLyrics() {
+  if (!desktopLyrics.supported) return;
+  if (desktopLyrics.platform === "android" && !desktopLyrics.permissionGranted && !desktopLyrics.settings.enabled) {
+    void requestDesktopLyricPermission();
+    return;
+  }
+  desktopLyrics.update({ enabled: !desktopLyrics.settings.enabled });
+}
 
 function onSeek(event: Event) {
   seekPercent(Number((event.target as HTMLInputElement).value));
@@ -101,6 +117,19 @@ function onSeek(event: Event) {
           {{ player.elapsedTime }} / {{ player.totalTime }}
         </span>
         <button
+          type="button"
+          class="hidden transition-colors md:block"
+          :class="desktopLyrics.settings.enabled ? 'text-accent' : 'text-muted hover:text-fg'"
+          :title="desktopLyricsTitle"
+          :aria-label="desktopLyricsTitle"
+          :aria-pressed="desktopLyrics.settings.enabled"
+          :disabled="!desktopLyrics.supported"
+          @click="toggleDesktopLyrics"
+        >
+          <Captions v-if="desktopLyrics.settings.enabled" :size="17" :stroke-width="1.8" />
+          <CaptionsOff v-else :size="17" :stroke-width="1.8" />
+        </button>
+        <button
           class="hidden text-muted transition-colors hover:text-fg sm:block"
           :title="t('controls.queue')"
           :aria-label="t('controls.queue')"
@@ -167,6 +196,10 @@ function onSeek(event: Event) {
         <button class="grid h-10 w-10 place-items-center" :class="player.repeat !== 'off' ? 'text-accent' : 'text-muted'" :title="repeatTitle" :aria-label="repeatTitle" @click="player.cycleRepeat()">
           <Repeat1 v-if="player.repeat === 'one'" :size="17" :stroke-width="1.8" />
           <Repeat v-else :size="17" :stroke-width="1.8" />
+        </button>
+        <button class="grid h-10 w-10 place-items-center transition-colors" :class="desktopLyrics.settings.enabled ? 'text-accent' : 'text-muted hover:text-fg'" :title="desktopLyricsTitle" :aria-label="desktopLyricsTitle" :aria-pressed="desktopLyrics.settings.enabled" :disabled="!desktopLyrics.supported" @click="toggleDesktopLyrics">
+          <Captions v-if="desktopLyrics.settings.enabled" :size="18" :stroke-width="1.8" />
+          <CaptionsOff v-else :size="18" :stroke-width="1.8" />
         </button>
         <button class="grid h-10 w-10 place-items-center text-muted transition-colors hover:text-fg" :title="t('controls.queue')" :aria-label="t('controls.queue')" @click="emit('queue')">
           <ListMusic :size="18" :stroke-width="1.8" />
