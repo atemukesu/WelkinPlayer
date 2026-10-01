@@ -25,13 +25,16 @@ const cacheDir = ref("");
 const cacheLimit = ref(1024);
 const cacheUsed = ref(0);
 const cacheLimitBytes = ref(1024 * 1024 * 1024);
+/** Manually pinned tracks; kept outside the automatic budget. */
+const cachePinned = ref(0);
 const cachePercent = computed(() => (cacheLimitBytes.value > 0 ? Math.min(100, (cacheUsed.value / cacheLimitBytes.value) * 100) : 0));
 let usageTimer = 0;
 async function refreshUsage() {
   try {
-    const usage = await invoke<{ usedBytes: number; limitBytes: number }>("cache_usage");
+    const usage = await invoke<{ usedBytes: number; limitBytes: number; pinnedBytes: number }>("cache_usage");
     cacheUsed.value = usage.usedBytes;
     cacheLimitBytes.value = usage.limitBytes;
+    cachePinned.value = usage.pinnedBytes;
   } catch { /* ignore */ }
 }
 async function saveCacheDir() { try { cacheDir.value = await invoke<string>("set_cache_dir", { dir: cacheDir.value }); pushToast("success", t("settings.cache.saved")); } catch (error) { emit("friendlyError", error); } }
@@ -120,7 +123,17 @@ button.text-dim:hover:not(:disabled) {
 
       <section class="ak-frame grid gap-6 border border-line bg-surface p-6 lg:grid-cols-[1fr_1.3fr]">
         <div><h2 class="text-sm font-bold uppercase tracking-[0.2em]">{{ t("settings.cache.title") }}</h2><p class="mt-2 text-sm text-muted">{{ t("settings.cache.desc") }}</p></div>
-        <div class="grid gap-4"><label class="grid gap-2 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.cache.dir") }}<input v-model="cacheDir" class="h-10 border border-line bg-bg px-3 text-sm font-normal normal-case tracking-normal text-fg outline-none focus:border-accent" /></label><label class="grid gap-2 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.cache.limit") }}<input v-model.number="cacheLimit" type="number" min="128" step="128" class="h-10 border border-line bg-bg px-3 text-sm font-normal normal-case tracking-normal text-fg outline-none focus:border-accent" /></label><div class="grid gap-2"><div class="flex items-baseline justify-between text-[11px] font-semibold uppercase tracking-[0.2em] text-dim"><span>{{ t("settings.cache.used") }}</span><span class="tabular-nums">{{ formatBytes(cacheUsed) }} / {{ formatBytes(cacheLimitBytes) }}</span></div><span class="block h-2 w-full overflow-hidden bg-fg/10"><span class="block h-full bg-accent transition-[width]" :style="{ width: `${cachePercent}%` }"></span></span></div><div class="flex justify-end gap-2"><button type="button" class="ak-clip-tr h-10 border border-line px-5 text-[13px] font-semibold uppercase tracking-[0.25em]" @click="saveCacheDir">{{ t("settings.cache.save") }}</button><button type="button" class="ak-clip-tr h-10 border border-line px-5 text-[13px] font-semibold uppercase tracking-[0.25em]" @click="saveCacheLimit">{{ t("settings.cache.limitSave") }}</button></div></div>
+        <div class="grid gap-4">
+          <label class="grid gap-2 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.cache.dir") }}<input v-model="cacheDir" class="h-10 border border-line bg-bg px-3 text-sm font-normal normal-case tracking-normal text-fg outline-none focus:border-accent" /></label>
+          <label class="grid gap-2 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.cache.limit") }}<input v-model.number="cacheLimit" type="number" min="128" step="128" class="h-10 border border-line bg-bg px-3 text-sm font-normal normal-case tracking-normal text-fg outline-none focus:border-accent" /></label>
+          <p class="text-[11px] leading-relaxed text-dim">{{ t("settings.cache.limitDesc") }}</p>
+          <div class="grid gap-2">
+            <div class="flex items-baseline justify-between text-[11px] font-semibold uppercase tracking-[0.2em] text-dim"><span>{{ t("settings.cache.used") }}</span><span class="tabular-nums">{{ formatBytes(cacheUsed) }} / {{ formatBytes(cacheLimitBytes) }}</span></div>
+            <span class="block h-2 w-full overflow-hidden bg-fg/10"><span class="block h-full bg-accent transition-[width]" :style="{ width: `${cachePercent}%` }"></span></span>
+            <div class="flex items-baseline justify-between text-[11px] font-semibold uppercase tracking-[0.2em] text-dim"><span>{{ t("settings.cache.pinned") }}</span><span class="tabular-nums">{{ formatBytes(cachePinned) }}</span></div>
+          </div>
+          <div class="flex justify-end gap-2"><button type="button" class="ak-clip-tr h-10 border border-line px-5 text-[13px] font-semibold uppercase tracking-[0.25em]" @click="saveCacheDir">{{ t("settings.cache.save") }}</button><button type="button" class="ak-clip-tr h-10 border border-line px-5 text-[13px] font-semibold uppercase tracking-[0.25em]" @click="saveCacheLimit">{{ t("settings.cache.limitSave") }}</button></div>
+        </div>
       </section>
 
       <section class="ak-frame grid gap-6 border border-line bg-surface p-6 lg:grid-cols-[1fr_1.3fr]">

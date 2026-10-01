@@ -54,6 +54,23 @@ pub fn run() {
                 }
                 Err(error) => log::error!("failed to start streaming proxy: {error}"),
             }
+            // Closing the main window must take the floating lyrics (and the
+            // whole app) down with it; otherwise the overlay window keeps the
+            // process alive and the lyrics linger on screen.
+            #[cfg(desktop)]
+            {
+                if let Some(main) = app.get_webview_window("main") {
+                    let handle = app.handle().clone();
+                    main.on_window_event(move |event| {
+                        if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                            if let Some(overlay) = handle.get_webview_window("desktop-lyrics") {
+                                let _ = overlay.close();
+                            }
+                            handle.exit(0);
+                        }
+                    });
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

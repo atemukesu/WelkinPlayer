@@ -32,7 +32,15 @@
     activeIndices: [],
     activeSig: "",
     currentNode: null,
-    currentKey: "",
+    currentWordSets: [],
+    currentBaseElement: null,
+    currentExtraElement: null,
+    currentPrimaryIndex: null,
+    primaryWordSet: null,
+    extraItems: {},
+    baseHeight: null,
+    extraHeight: 0,
+    androidVisibleSignaled: false,
     raf: 0,
   };
 
@@ -70,8 +78,7 @@
     root.setProperty("--active-color", settings.activeColor);
     root.setProperty("--translation-color", settings.translationColor);
     root.setProperty("--stroke-width", settings.stroke ? "1px" : "0px");
-    root.setProperty("--stroke-color", settings.stroke ? "rgba(0,0,0,.55)" : "transparent");
-    root.setProperty("--align", settings.align || "center");
+    root.setProperty("--stroke-color", settings.stroke ? settings.strokeColor || "#000000" : "transparent");
     body.style.fontFamily = cssFontFamily(settings.fontFamilies) || "";
     body.classList.toggle("karaoke", !!settings.karaoke);
     applyLocked(!!settings.locked);
@@ -109,6 +116,19 @@
     }
   }
 
+  // The Android overlay WebView starts hidden, and because `visible` defaults to
+  // true the first tick never triggers a change. Signal it visible exactly once,
+  // after the first frame of content is actually on screen.
+  function signalAndroidVisible() {
+    if (state.androidVisibleSignaled) return;
+    if (!window.AndroidDesktopLyric || typeof window.AndroidDesktopLyric.setVisible !== "function") return;
+    if (!state.visible) return;
+    state.androidVisibleSignaled = true;
+    requestAnimationFrame(function () {
+      try { window.AndroidDesktopLyric.setVisible(true); } catch (error) {}
+    });
+  }
+
   function activeBlock() {
     var indices = state.activeIndices && state.activeIndices.length ? state.activeIndices : state.activeIndex >= 0 ? [state.activeIndex] : [];
     var result = [];
@@ -119,14 +139,13 @@
     return result;
   }
 
-  function makeWords(line, secondary) {
+  function makeWords(line) {
     var words = Array.isArray(line.words) && line.words.length ? line.words : [{ text: line.text || "", start: 0, end: 0 }];
     var fragment = document.createDocumentFragment();
     var elements = [];
     for (var i = 0; i < words.length; i++) {
       var element = document.createElement("span");
       element.className = "word";
-      if (secondary) element.classList.add("is-unplayed");
       element.textContent = words[i].text;
       fragment.appendChild(element);
       elements.push(element);
@@ -134,66 +153,230 @@
     return { fragment: fragment, elements: elements, data: words };
   }
 
-  function makeLine(line, secondary) {
+  // The second voice of a duet hugs the right edge; everything else is left.
+  function isCounterLine(line) {
+    return !!(line.isDuet && !line.isBG);
+  }
+
+  // Display order: left voice on top, right voice below, background last.
+  function lineRank(line) {
+    if (line.isBG) return 2;
+    return line.isDuet ? 1 : 0;
+  }
+
+  // `kind` is "primary" for the lead / duet lines and "bg" for background
+  // vocals. Both participate in the karaoke sweep; only the size differs.
+  function makeLine(line, kind) {
     var paragraph = document.createElement("div");
-    paragraph.className = "lyric-line " + (secondary ? "secondary" : "primary");
-    if (line.isBG) paragraph.classList.add("line-bg");
-    var words = makeWords(line, secondary);
+    paragraph.className = "lyric-line " + kind + (isCounterLine(line) ? " duet" : "");
+    var words = makeWords(line);
     paragraph.appendChild(words.fragment);
     return { el: paragraph, words: words.elements, wordData: words.data };
   }
 
+  function makeSubline(text, className, counter) {
+    var paragraph = document.createElement("p");
+    paragraph.className = className + (counter ? " duet" : "");
+    paragraph.textContent = text;
+    return paragraph;
+  }
+
+  function buildPrimaryGroup(entry) {
+    var group = document.createElement("div");
+    group.className = "primary-group";
+    var line = makeLine(entry.line, entry.line.isBG ? "bg" : "primary");
+    group.appendChild(line.el);
+    var counter = isCounterLine(entry.line);
+    if (state.settings && state.settings.translation && entry.line.translation) group.appendChild(makeSubline(entry.line.translation, "translation", counter));
+    if (entry.line.roman) group.appendChild(makeSubline(entry.line.roman, "roman", counter));
+    return { el: group, wordSets: [{ elements: line.words, data: line.wordData }] };
+  }
+
+  function buildExtraItem(entry) {
+    var wrapper = document.createElement("div");
+    wrapper.className = "extra-item";
+    wrapper.setAttribute("data-rank", String(lineRank(entry.line)));
+    var wordSets = [];
+    if (entry.line.isBG) {
+      var bg = makeLine(entry.line, "bg");
+      wrapper.appendChild(bg.el);
+      wordSets.push({ elements: bg.words, data: bg.wordData });
+      if (state.settings && state.settings.translation && entry.line.translation) wrapper.appendChild(makeSubline(entry.line.translation, "translation bg-translation", false));
+    } else {
+      var duet = makeLine(entry.line, "primary");
+      wrapper.appendChild(duet.el);
+      wordSets.push({ elements: duet.words, data: duet.wordData });
+      var counter = isCounterLine(entry.line);
+      if (state.settings && state.settings.translation && entry.line.translation) wrapper.appendChild(makeSubline(entry.line.translation, "translation", counter));
+      if (entry.line.roman) wrapper.appendChild(makeSubline(entry.line.roman, "roman", counter));
+    }
+    return { el: wrapper, wordSets: wordSets };
+  }
+
+  function resetBlock() {
+    if (state.currentNode && state.currentNode.parentNode) state.currentNode.parentNode.removeChild(state.currentNode);
+    state.currentNode = null;
+    state.currentBaseElement = null;
+    state.currentExtraElement = null;
+    state.currentPrimaryIndex = null;
+    state.primaryWordSet = null;
+    state.extraItems = {};
+    state.currentWordSets = [];
+  }
+
   function renderCurrent(animate) {
     var block = activeBlock();
-    var primaryEntry = null;
-    for (var i = 0; i < block.length; i++) {
-      if (block[i].index === state.activeIndex) { primaryEntry = block[i]; break; }
+    block.sort(function (a, b) { return lineRank(a.line) - lineRank(b.line); });
+    var primaryEntry = block[0] || null;
+
+    if (!primaryEntry) {
+      var leaving = state.currentNode;
+      if (leaving && animate) {
+        leaving.classList.add("is-leaving");
+        window.setTimeout(function () { if (leaving.parentNode === current) leaving.parentNode.removeChild(leaving); }, 580);
+      } else if (leaving && leaving.parentNode === current) {
+        current.removeChild(leaving);
+      }
+      state.currentNode = null;
+      state.currentBaseElement = null;
+      state.currentExtraElement = null;
+      state.currentPrimaryIndex = null;
+      state.primaryWordSet = null;
+      state.extraItems = {};
+      state.currentWordSets = [];
+      return;
     }
-    if (!primaryEntry) primaryEntry = block[0] || null;
-    var key = block.map(function (entry) { return entry.index; }).join(",") + ":" + (primaryEntry ? primaryEntry.index : -1);
-    if (key === state.currentKey && state.currentNode) return;
-    state.currentKey = key;
 
-    var old = state.currentNode;
-    if (old && animate) {
-      old.classList.add("is-leaving");
-      window.setTimeout(function () { if (old.parentNode === current) old.parentNode.removeChild(old); }, 190);
-    } else if (old && old.parentNode === current) {
-      current.removeChild(old);
+    if (!state.currentNode) {
+      var blockElement = document.createElement("div");
+      blockElement.className = "lyric-block";
+      var extraGroup = document.createElement("div");
+      extraGroup.className = "extra-group";
+      blockElement.appendChild(extraGroup);
+      current.appendChild(blockElement);
+      state.currentNode = blockElement;
+      state.currentExtraElement = extraGroup;
     }
 
-    if (!primaryEntry) { state.currentNode = null; return; }
-    var blockElement = document.createElement("div");
-    blockElement.className = "lyric-block";
-    var primary = makeLine(primaryEntry.line, false);
-    blockElement.appendChild(primary.el);
+    // The lead line is only rebuilt (and blurred) when the lead line itself
+    // changes; extra lines fade in / out without disturbing it.
+    if (state.currentPrimaryIndex !== primaryEntry.index || !state.currentBaseElement) {
+      var newPrimary = buildPrimaryGroup(primaryEntry);
+      var oldPrimary = state.currentBaseElement;
+      if (oldPrimary && animate) {
+        oldPrimary.classList.add("is-leaving");
+        (function (el) { window.setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 580); })(oldPrimary);
+      } else if (oldPrimary && oldPrimary.parentNode) {
+        oldPrimary.parentNode.removeChild(oldPrimary);
+      }
+      newPrimary.el.classList.toggle("is-entering", !!animate);
+      if (animate) (function (el) { window.setTimeout(function () { el.classList.remove("is-entering"); }, 660); })(newPrimary.el);
+      state.currentNode.insertBefore(newPrimary.el, state.currentExtraElement);
+      state.currentBaseElement = newPrimary.el;
+      state.currentPrimaryIndex = primaryEntry.index;
+      state.primaryWordSet = newPrimary.wordSets[0];
+    }
 
+    var desired = {};
     for (var j = 0; j < block.length; j++) {
-      if (block[j].index === primaryEntry.index) continue;
-      var companion = makeLine(block[j].line, true);
-      blockElement.appendChild(companion.el);
+      if (block[j].index !== primaryEntry.index) desired[block[j].index] = block[j];
     }
 
-    if (state.settings && state.settings.translation && primaryEntry.line.translation) {
-      var translation = document.createElement("p");
-      translation.className = "translation";
-      translation.textContent = primaryEntry.line.translation;
-      blockElement.appendChild(translation);
+    var index;
+    for (index in state.extraItems) {
+      if (!desired[index]) {
+        var gone = state.extraItems[index];
+        delete state.extraItems[index];
+        if (animate) {
+          gone.el.classList.add("is-leaving");
+          (function (el) {
+            window.setTimeout(function () {
+              if (el.parentNode) el.parentNode.removeChild(el);
+              if (state.currentExtraElement && state.currentExtraElement.children.length === 0) state.currentExtraElement.hidden = true;
+              remeasure();
+            }, 260);
+          })(gone.el);
+        } else if (gone.el.parentNode) {
+          gone.el.parentNode.removeChild(gone.el);
+        }
+      }
     }
-    if (primaryEntry.line.roman) {
-      var roman = document.createElement("p");
-      roman.className = "roman";
-      roman.textContent = primaryEntry.line.roman;
-      blockElement.appendChild(roman);
+    for (var m = 0; m < block.length; m++) {
+      var entry = block[m];
+      if (entry.index === primaryEntry.index || state.extraItems[entry.index]) continue;
+      var item = buildExtraItem(entry);
+      state.extraItems[entry.index] = item;
+      var rank = lineRank(entry.line);
+      var children = state.currentExtraElement.children;
+      var placed = false;
+      for (var c = 0; c < children.length; c++) {
+        var sibling = children[c];
+        if (sibling.classList.contains("is-leaving")) continue;
+        if (Number(sibling.getAttribute("data-rank")) > rank) {
+          state.currentExtraElement.insertBefore(item.el, sibling);
+          placed = true;
+          break;
+        }
+      }
+      if (!placed) state.currentExtraElement.appendChild(item.el);
+      if (animate) {
+        item.el.classList.add("is-entering");
+        (function (el) { window.setTimeout(function () { el.classList.remove("is-entering"); }, 300); })(item.el);
+      }
+    }
+    state.currentExtraElement.hidden = state.currentExtraElement.children.length === 0;
+
+    state.currentWordSets = state.primaryWordSet ? [state.primaryWordSet] : [];
+    for (index in state.extraItems) {
+      var sets = state.extraItems[index].wordSets;
+      for (var k = 0; k < sets.length; k++) state.currentWordSets.push(sets[k]);
     }
 
-    blockElement.classList.toggle("is-entering", animate);
-    current.appendChild(blockElement);
-    state.currentNode = blockElement;
-    state.currentWords = primary.words;
-    state.currentWordData = primary.wordData;
-    if (animate) window.setTimeout(function () { blockElement.classList.remove("is-entering"); }, 240);
     updateProgress(state.positionMs);
+    remeasure();
+    signalAndroidVisible();
+  }
+
+  function remeasure() {
+    if (!state.currentNode) return;
+    updateWindowHeight(state.currentNode);
+  }
+
+  // The lead line is pinned below `--stage-top`: a single-line block is centred
+  // in the baseline window, and the inset stays fixed while the window grows for
+  // extra lines, so the text never drifts.
+  function applyStageOffset() {
+    if (!win) return;
+    if (state.baseHeight == null && window.innerHeight) state.baseHeight = window.innerHeight;
+    if (state.baseHeight == null) return;
+    var base = state.currentBaseElement ? state.currentBaseElement.getBoundingClientRect().height : 0;
+    if (base <= 0) return;
+    var padY = state.settings && state.settings.paddingY != null ? state.settings.paddingY : 18;
+    var offset = Math.max(padY, Math.round((state.baseHeight - base) / 2));
+    document.documentElement.style.setProperty("--stage-top", offset + "px");
+  }
+
+  // Size the floating window so extra lines fit below the lead line. The extra
+  // height is measured from the extra group alone, so a previous line that is
+  // still fading out cannot inflate it (which made the next line resize/jump).
+  function updateWindowHeight(blockElement) {
+    var extra = 0;
+    if (state.currentExtraElement && !state.currentExtraElement.hidden) {
+      var rowGap = parseFloat(getComputedStyle(blockElement).rowGap) || 0;
+      extra = Math.round(state.currentExtraElement.getBoundingClientRect().height + rowGap);
+    }
+    if (state.baseHeight == null && window.innerHeight) state.baseHeight = window.innerHeight;
+    applyStageOffset();
+    state.extraHeight = extra;
+    if (!win || typeof win.setSize !== "function" || state.baseHeight == null) return;
+    var desired = state.baseHeight + extra;
+    if (Math.abs(desired - window.innerHeight) <= 1) return;
+    var width = window.innerWidth;
+    var LogicalSize = tauri && tauri.window && tauri.window.LogicalSize;
+    try {
+      var size = LogicalSize ? new LogicalSize(width, desired) : { width: width, height: desired };
+      win.setSize(size).catch(function () {});
+    } catch (error) {}
   }
 
   function nowMs() {
@@ -201,13 +384,18 @@
   }
 
   function updateProgress(position) {
-    if (!state.currentNode || !state.currentWords || !state.settings) return;
-    for (var i = 0; i < state.currentWords.length; i++) {
-      var word = state.currentWordData[i];
-      var progress = 0;
-      if (word) progress = Math.max(0, Math.min(1, (position - word.start) / Math.max(1, word.end - word.start)));
-      state.currentWords[i].style.setProperty("--p", progress * 100 + "%");
-      state.currentWords[i].classList.toggle("is-unplayed", progress <= 0);
+    if (!state.currentNode || !state.settings) return;
+    var sets = state.currentWordSets;
+    for (var s = 0; s < sets.length; s++) {
+      var elements = sets[s].elements;
+      var data = sets[s].data;
+      for (var i = 0; i < elements.length; i++) {
+        var word = data[i];
+        var progress = 0;
+        if (word) progress = Math.max(0, Math.min(1, (position - word.start) / Math.max(1, word.end - word.start)));
+        elements[i].style.setProperty("--p", progress * 100 + "%");
+        elements[i].classList.toggle("is-unplayed", progress <= 0);
+      }
     }
   }
 
@@ -225,13 +413,15 @@
     if (!payload) return;
     state.lines = Array.isArray(payload.lines) ? payload.lines : [];
     if (payload.settings) applySettings(payload.settings);
-    state.currentKey = "";
+    resetBlock();
     renderCurrent(false);
   }
 
   function setSettings(settings) {
     applySettings(settings);
-    state.currentKey = "";
+    // Style changes can alter the block structure (translation toggle, ...), so
+    // rebuild it silently; the karaoke playhead is re-applied right after.
+    resetBlock();
     renderCurrent(false);
   }
 
@@ -254,9 +444,17 @@
   }
 
   if (tauri && tauri.event) {
-    tauri.event.listen("desktop-lyric:load", function (event) { setLines(event.payload); });
-    tauri.event.listen("desktop-lyric:settings", function (event) { setSettings(event.payload); });
-    tauri.event.listen("desktop-lyric:tick", function (event) { tick(event.payload); });
+    Promise.all([
+      tauri.event.listen("desktop-lyric:load", function (event) { setLines(event.payload); }),
+      tauri.event.listen("desktop-lyric:settings", function (event) { setSettings(event.payload); }),
+      tauri.event.listen("desktop-lyric:tick", function (event) { tick(event.payload); }),
+    ]).then(function () {
+      // Tell the main window we can receive documents now; it answers with a
+      // fresh snapshot. Lets a re-opened layer paint the current lyric at once.
+      if (typeof tauri.event.emit === "function") {
+        try { tauri.event.emit("desktop-lyric:ready"); } catch (error) {}
+      }
+    });
   }
   window.__welkinOverlay = { load: setLines, settings: setSettings, tick: tick };
 
@@ -264,9 +462,13 @@
     try { return JSON.parse(localStorage.getItem("welkin-desktop-lyric-geometry") || "null"); } catch (error) { return null; }
   }
 
+  if (window.AndroidDesktopLyric) document.documentElement.classList.add("android");
+
   if (win) {
+    body.classList.add("desktop");
     var geometry = readGeometry();
     if (geometry && Number.isFinite(geometry.x) && Number.isFinite(geometry.y)) {
+      if (Number.isFinite(geometry.height)) state.baseHeight = geometry.height;
       if (typeof win.setPosition === "function") {
         try { var LogicalPosition = tauri.window.LogicalPosition; win.setPosition(LogicalPosition ? new LogicalPosition(geometry.x, geometry.y) : { x: geometry.x, y: geometry.y }).catch(function () {}); } catch (error) {}
       }
@@ -274,6 +476,8 @@
         try { var LogicalSize = tauri.window.LogicalSize; win.setSize(LogicalSize ? new LogicalSize(geometry.width, geometry.height) : { width: geometry.width, height: geometry.height }).catch(function () {}); } catch (error) {}
       }
     }
+    // Persist the user's baseline height (without the temporary extra line), so
+    // the auto-grow never leaks into the remembered geometry.
     var saveGeometry = function () {
       Promise.all([
         typeof win.outerPosition === "function" ? win.outerPosition() : null,
@@ -282,11 +486,34 @@
       ]).then(function (values) {
         var pos = values[0], size = values[1], scale = values[2] || 1;
         if (!pos || !size) return;
-        try { localStorage.setItem("welkin-desktop-lyric-geometry", JSON.stringify({ x: pos.x / scale, y: pos.y / scale, width: size.width / scale, height: size.height / scale })); } catch (error) {}
+        var height = state.baseHeight != null ? state.baseHeight : size.height / scale;
+        try { localStorage.setItem("welkin-desktop-lyric-geometry", JSON.stringify({ x: pos.x / scale, y: pos.y / scale, width: size.width / scale, height: height })); } catch (error) {}
       });
     };
     if (typeof win.onMoved === "function") win.onMoved(saveGeometry);
-    if (typeof win.onResized === "function") win.onResized(saveGeometry);
+    if (typeof win.onResized === "function") win.onResized(function () {
+      requestAnimationFrame(function () {
+        var logical = window.innerHeight;
+        state.baseHeight = state.extraHeight ? logical - state.extraHeight : logical;
+        applyStageOffset();
+        saveGeometry();
+      });
+      if (userResizing) markResizing();
+    });
+  }
+
+  var userResizing = false;
+  var resizeClassTimer = 0;
+
+  // Keep the hover background up while resizing: the OS owns the drag and the
+  // webview stops receiving hover, so `:hover` alone would blink the panel off.
+  function markResizing() {
+    body.classList.add("resizing");
+    window.clearTimeout(resizeClassTimer);
+    resizeClassTimer = window.setTimeout(function () {
+      body.classList.remove("resizing");
+      userResizing = false;
+    }, 400);
   }
 
   function startDragging(event) {
@@ -294,29 +521,65 @@
     win.startDragging().catch(function () {});
   }
 
+  var RESIZE_EDGE = 8;
+  var RESIZE_DIRECTIONS = {
+    n: "North", s: "South", e: "East", w: "West",
+    ne: "NorthEast", nw: "NorthWest", se: "SouthEast", sw: "SouthWest",
+  };
+  var RESIZE_CURSORS = {
+    North: "ns-resize", South: "ns-resize",
+    East: "ew-resize", West: "ew-resize",
+    NorthWest: "nwse-resize", SouthEast: "nwse-resize",
+    NorthEast: "nesw-resize", SouthWest: "nesw-resize",
+  };
+
+  function resizeDirectionAt(event) {
+    if (!win || (state.settings && state.settings.locked)) return null;
+    var width = window.innerWidth;
+    var height = window.innerHeight;
+    var x = event.clientX;
+    var y = event.clientY;
+    var vertical = y <= RESIZE_EDGE ? "n" : y >= height - RESIZE_EDGE ? "s" : "";
+    var horizontal = x <= RESIZE_EDGE ? "w" : x >= width - RESIZE_EDGE ? "e" : "";
+    var key = vertical + horizontal;
+    return key ? RESIZE_DIRECTIONS[key] : null;
+  }
+
+  stage.addEventListener("pointermove", function (event) {
+    var direction = resizeDirectionAt(event);
+    stage.style.cursor = direction ? RESIZE_CURSORS[direction] : "";
+  });
+  stage.addEventListener("pointerleave", function () { stage.style.cursor = ""; });
+
   document.getElementById("drag").addEventListener("pointerdown", startDragging);
+  document.getElementById("resize").addEventListener("pointerdown", function (event) {
+    if (!win || typeof win.startResizeDragging !== "function" || event.button !== 0) return;
+    event.preventDefault();
+    userResizing = true;
+    markResizing();
+    win.startResizeDragging("SouthEast").catch(function () {
+      body.classList.remove("resizing");
+      userResizing = false;
+    });
+  });
   stage.addEventListener("pointerdown", function (event) {
     if (!state.settings || state.settings.locked || event.target.closest("button")) return;
+    if (event.button === 0) {
+      var direction = resizeDirectionAt(event);
+      if (direction && typeof win.startResizeDragging === "function") {
+        event.preventDefault();
+        userResizing = true;
+        markResizing();
+        win.startResizeDragging(direction).catch(function () {
+          body.classList.remove("resizing");
+          userResizing = false;
+        });
+        return;
+      }
+    }
     startDragging(event);
   });
   document.getElementById("close").addEventListener("click", function () { if (win && typeof win.close === "function") win.close().catch(function () {}); });
   document.getElementById("lock").addEventListener("click", function () { if (state.settings) { state.settings.locked = !state.settings.locked; applyLocked(state.settings.locked); } });
 
-  function nudgeFont(delta) {
-    if (!state.settings) return;
-    state.settings.fontSize = Math.max(14, Math.min(96, state.settings.fontSize + delta));
-    document.documentElement.style.setProperty("--font-size", state.settings.fontSize + "px");
-  }
-  document.getElementById("fontUp").addEventListener("click", function () { nudgeFont(2); });
-  document.getElementById("fontDown").addEventListener("click", function () { nudgeFont(-2); });
-
-  window.addEventListener("wheel", function (event) {
-    if (!state.settings) return;
-    event.preventDefault();
-    if (state.settings.wheelAction === "fontSize") nudgeFont(event.deltaY < 0 ? 2 : -2);
-    else if (state.settings.wheelAction === "opacity") {
-      state.settings.opacity = Math.max(10, Math.min(100, state.settings.opacity + (event.deltaY < 0 ? 5 : -5)));
-      document.documentElement.style.setProperty("--opacity", state.settings.opacity / 100);
-    }
-  }, { passive: false });
 })();

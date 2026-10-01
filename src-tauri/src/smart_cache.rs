@@ -268,13 +268,29 @@ impl SmartCache {
         }
     }
 
-    /// Bytes currently occupied on disk by the smart cache.
-    pub fn used_bytes(&self) -> u64 {
+    /// Bytes occupied by automatically cached (non-pinned) complete tracks.
+    /// Only this counts toward the configured cache budget.
+    pub fn automatic_bytes(&self) -> u64 {
         self.state
             .lock()
             .unwrap()
             .entries
             .values()
+            .filter(|entry| entry.complete && !entry.pinned)
+            .map(|entry| file_len(&entry.file))
+            .sum()
+    }
+
+    /// Bytes occupied by manually pinned (user-cached) tracks. These are an
+    /// explicit user choice: they never count toward the budget and are never
+    /// evicted.
+    pub fn pinned_bytes(&self) -> u64 {
+        self.state
+            .lock()
+            .unwrap()
+            .entries
+            .values()
+            .filter(|entry| entry.pinned)
             .map(|entry| file_len(&entry.file))
             .sum()
     }
@@ -409,10 +425,12 @@ impl SmartCache {
             // tracks already cached are the most valuable ones.
             let limit = self.limit_bytes.load(Ordering::Relaxed);
             if limit > 0 && !pinned {
+                // Pinned tracks are an explicit user choice and are excluded
+                // from the budget, so they never crowd out automatic caching.
                 let cached: u64 = state
                     .entries
                     .values()
-                    .filter(|entry| entry.complete)
+                    .filter(|entry| entry.complete && !entry.pinned)
                     .map(|entry| file_len(&entry.file))
                     .sum();
                 if cached >= limit {
@@ -541,10 +559,12 @@ impl SmartCache {
             return;
         }
         let mut state = self.state.lock().unwrap();
+        // Pinned tracks are excluded: they are never evicted and do not consume
+        // the automatic caching budget.
         let mut total: u64 = state
             .entries
             .values()
-            .filter(|entry| entry.complete)
+            .filter(|entry| entry.complete && !entry.pinned)
             .map(|entry| file_len(&entry.file))
             .sum();
         if total <= limit {

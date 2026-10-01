@@ -636,16 +636,24 @@ pub fn cache_status(
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CacheUsage {
+    /// Automatic cache (read-ahead + non-pinned whole tracks), counted against
+    /// `limit_bytes`.
     pub used_bytes: u64,
+    /// Configured budget for the automatic cache.
     pub limit_bytes: u64,
+    /// Manually pinned (user-cached) tracks. Excluded from the budget and never
+    /// evicted, so they are reported separately.
+    pub pinned_bytes: u64,
 }
 
-/// Total cache usage (read-ahead + persistent) and budget, in bytes.
+/// Automatic cache usage (read-ahead + persistent) and budget, plus the
+/// separately tracked manual (pinned) cache size, in bytes.
 #[tauri::command]
 pub fn cache_usage(proxy: tauri::State<StreamProxy>) -> Result<CacheUsage, crate::error::AppError> {
     Ok(CacheUsage {
-        used_bytes: proxy.cache.used_bytes() + proxy.smart.used_bytes(),
+        used_bytes: proxy.cache.used_bytes() + proxy.smart.automatic_bytes(),
         limit_bytes: proxy.cache.limit_bytes() + proxy.smart.limit_bytes(),
+        pinned_bytes: proxy.smart.pinned_bytes(),
     })
 }
 

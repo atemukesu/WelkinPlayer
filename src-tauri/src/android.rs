@@ -9,11 +9,16 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
-use jni::objects::{JObject, JValue};
+use jni::objects::{GlobalRef, JObject, JValue};
 use jni::JavaVM;
 
-/// Kotlin bridge that owns the floating overlay service.
-const DESKTOP_LYRIC_BRIDGE: &str = "com/atemukesu/welkinplayer/DesktopLyricBridge";
+/// Kotlin bridge that owns the floating overlay service (binary name).
+const BRIDGE_CLASS_NAME: &str = "com.atemukesu.welkinplayer.DesktopLyricBridge";
+
+/// Cached global reference to the bridge class. A plain `FindClass` only reaches
+/// the system class loader from an attached worker thread, so the app class is
+/// resolved once through the Application's class loader instead.
+static BRIDGE_CLASS: OnceLock<GlobalRef> = OnceLock::new();
 
 /// Whether the floating overlay service is currently running.
 static DESKTOP_LYRIC_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -110,6 +115,45 @@ pub fn desktop_lyric_has_permission() -> bool {
     }
 }
 
+/// Resolve the Kotlin bridge class through the application class loader.
+///
+/// `FindClass` on an attached worker thread only reaches the system class
+/// loader, which cannot see app classes, so the class is loaded once via the
+/// `Application`'s loader and cached as a global reference.
+fn bridge_class<'local>(env: &mut jni::JNIEnv<'local>) -> Result<&'static GlobalRef, String> {
+    if let Some(class) = BRIDGE_CLASS.get() {
+        return Ok(class);
+    }
+    let context_raw = ndk_context::android_context().context();
+    let context = unsafe { JObject::from_raw(context_raw as jni::sys::jobject) };
+    let loader = env
+        .call_method(&context, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])
+        .map_err(|error| error.to_string())?
+        .l()
+        .map_err(|error| error.to_string())?;
+    let name = JObject::from(
+        env.new_string(BRIDGE_CLASS_NAME)
+            .map_err(|error| error.to_string())?,
+    );
+    let class = env
+        .call_method(
+            &loader,
+            "loadClass",
+            "(Ljava/lang/String;)Ljava/lang/Class;",
+            &[JValue::Object(&name)],
+        )
+        .map_err(|error| error.to_string())?
+        .l()
+        .map_err(|error| error.to_string())?;
+    let global = env
+        .new_global_ref(class)
+        .map_err(|error| error.to_string())?;
+    let _ = BRIDGE_CLASS.set(global);
+    BRIDGE_CLASS
+        .get()
+        .ok_or_else(|| "desktop lyric bridge class unavailable".to_string())
+}
+
 fn overlay_permission() -> Result<bool, String> {
     let java_vm = JAVA_VM
         .get()
@@ -120,8 +164,9 @@ fn overlay_permission() -> Result<bool, String> {
     let context_raw = ndk_context::android_context().context();
     let context = unsafe { JObject::from_raw(context_raw as jni::sys::jobject) };
 
+    let class = bridge_class(&mut env)?;
     env.call_static_method(
-        DESKTOP_LYRIC_BRIDGE,
+        class,
         "hasOverlayPermission",
         "(Landroid/content/Context;)Z",
         &[JValue::Object(&context)],
@@ -142,8 +187,9 @@ pub fn desktop_lyric_open_settings() -> Result<(), String> {
     let context_raw = ndk_context::android_context().context();
     let context = unsafe { JObject::from_raw(context_raw as jni::sys::jobject) };
 
+    let class = bridge_class(&mut env)?;
     env.call_static_method(
-        DESKTOP_LYRIC_BRIDGE,
+        class,
         "openOverlaySettings",
         "(Landroid/content/Context;)V",
         &[JValue::Object(&context)],
@@ -165,8 +211,9 @@ pub fn desktop_lyric_start(html: &str, js: &str) -> Result<(), String> {
     let html = JObject::from(env.new_string(html).map_err(|error| error.to_string())?);
     let js = JObject::from(env.new_string(js).map_err(|error| error.to_string())?);
 
+    let class = bridge_class(&mut env)?;
     env.call_static_method(
-        DESKTOP_LYRIC_BRIDGE,
+        class,
         "start",
         "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)V",
         &[
@@ -191,8 +238,9 @@ pub fn desktop_lyric_stop() -> Result<(), String> {
     let context_raw = ndk_context::android_context().context();
     let context = unsafe { JObject::from_raw(context_raw as jni::sys::jobject) };
 
+    let class = bridge_class(&mut env)?;
     env.call_static_method(
-        DESKTOP_LYRIC_BRIDGE,
+        class,
         "stop",
         "(Landroid/content/Context;)V",
         &[JValue::Object(&context)],
@@ -213,8 +261,9 @@ pub fn desktop_lyric_update(method: &str, json: &str) -> Result<(), String> {
     let method = JObject::from(env.new_string(method).map_err(|error| error.to_string())?);
     let json = JObject::from(env.new_string(json).map_err(|error| error.to_string())?);
 
+    let class = bridge_class(&mut env)?;
     env.call_static_method(
-        DESKTOP_LYRIC_BRIDGE,
+        class,
         "update",
         "(Ljava/lang/String;Ljava/lang/String;)V",
         &[JValue::Object(&method), JValue::Object(&json)],

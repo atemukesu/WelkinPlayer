@@ -60,7 +60,7 @@ class DesktopLyricService : Service() {
         when (intent?.action) {
             ACTION_TOGGLE_LOCK -> {
                 setLocked(!locked)
-                return START_STICKY
+                return START_NOT_STICKY
             }
             ACTION_CLOSE -> {
                 stopSelf()
@@ -69,7 +69,13 @@ class DesktopLyricService : Service() {
         }
         // A plain start (no action): load the renderer once.
         loadRenderer()
-        return START_STICKY
+        return START_NOT_STICKY
+    }
+
+    /** The app's task was swiped away: the lyrics should go with it. */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        stopSelf()
+        super.onTaskRemoved(rootIntent)
     }
 
     override fun onDestroy() {

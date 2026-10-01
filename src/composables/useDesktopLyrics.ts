@@ -1,5 +1,7 @@
 import { effectScope, watch } from "vue";
 import type { EffectScope } from "vue";
+import { listen } from "@tauri-apps/api/event";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import { findActiveLyricIndices, pickPrimaryIndex } from "lyric-kit";
 import { invoke } from "../api";
 import { currentTime } from "../lib/audio";
@@ -19,6 +21,7 @@ let running = false;
 let timer = 0;
 let scope: EffectScope | null = null;
 let lastKey = "";
+let unlistenReady: UnlistenFn | null = null;
 
 /** Flatten the parsed lyric lines into the renderer's transfer shape. */
 function toLines(): DesktopLyricLine[] {
@@ -136,6 +139,18 @@ export function startDesktopLyrics() {
     );
   });
 
+  // The renderer announces readiness once its event listeners are attached;
+  // re-push then so a freshly (re)opened layer shows the current lyric at once
+  // instead of waiting for the next track.
+  void listen("desktop-lyric:ready", () => {
+    if (!useDesktopLyricsStore().settings.enabled) return;
+    lastKey = "";
+    syncSnapshot();
+    pushSettings();
+  }).then((unlisten) => {
+    unlistenReady = unlisten;
+  });
+
   timer = window.setInterval(tick, TICK_INTERVAL_MS);
 }
 
@@ -147,6 +162,8 @@ export function stopDesktopLyrics() {
   scope = null;
   window.clearInterval(timer);
   timer = 0;
+  unlistenReady?.();
+  unlistenReady = null;
   lastKey = "";
 }
 
@@ -160,11 +177,12 @@ async function openFloating() {
     dl.permissionGranted = status.permissionGranted;
     dl.supported = status.supported;
     dl.error = status.active ? "" : status.supported ? "permission" : "unsupported";
-    if (status.active) {
-      lastKey = "";
-      syncSnapshot();
-      pushSettings();
-    }
+    // Seed the cache for the renderer's page-load replay; the renderer's
+    // `desktop-lyric:ready` event triggers the authoritative re-push once its
+    // listeners are actually attached.
+    lastKey = "";
+    syncSnapshot();
+    pushSettings();
   } catch (error) {
     dl.active = false;
     dl.error = String(error);

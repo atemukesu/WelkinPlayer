@@ -2,9 +2,7 @@ import { computed, ref, watch } from "vue";
 import { defineStore } from "pinia";
 import {
   DEFAULT_DESKTOP_LYRIC,
-  type DesktopLyricAlign,
   type DesktopLyricSettings,
-  type DesktopLyricWheelAction,
 } from "../lib/preferences";
 import { isAndroid } from "../lib/desktopLyric";
 
@@ -21,10 +19,6 @@ function clampWeight(value: unknown, fallback: number): number {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return fallback;
   return Math.min(900, Math.max(100, Math.round(numeric / 100) * 100));
-}
-
-function pickEnum<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
-  return typeof value === "string" && (allowed as readonly string[]).includes(value) ? (value as T) : fallback;
 }
 
 function asColor(value: unknown, fallback: string): string {
@@ -59,7 +53,6 @@ export function normalizeDesktopLyric(raw: unknown): DesktopLyricSettings {
     // Legacy field retained so existing preferences remain readable. The
     // current overlay intentionally never renders surrounding lyric lines.
     contextLines: clampNumber(data.contextLines, 0, 5, fallback.contextLines),
-    align: pickEnum<DesktopLyricAlign>(data.align, ["left", "center", "right"], fallback.align),
     fontSize: clampNumber(data.fontSize, 14, 96, fallback.fontSize),
     translationSize: clampNumber(data.translationSize, 10, 56, fallback.translationSize),
     lineSpacing: clampNumber(data.lineSpacing, 0, 64, fallback.lineSpacing),
@@ -72,12 +65,12 @@ export function normalizeDesktopLyric(raw: unknown): DesktopLyricSettings {
     translationColor: asColor(data.translationColor, fallback.translationColor),
     opacity: clampNumber(data.opacity, 10, 100, fallback.opacity),
     stroke: bool("stroke"),
+    strokeColor: asColor(data.strokeColor, fallback.strokeColor),
     paddingX: clampNumber(data.paddingX, 0, 80, fallback.paddingX),
     paddingY: clampNumber(data.paddingY, 0, 80, fallback.paddingY),
     hideOnPause: bool("hideOnPause"),
     hideWhenNoLyrics: bool("hideWhenNoLyrics"),
     autoHideMs: clampNumber(data.autoHideMs, 0, 300_000, fallback.autoHideMs),
-    wheelAction: pickEnum<DesktopLyricWheelAction>(data.wheelAction, ["none", "fontSize", "opacity"], fallback.wheelAction),
   };
 }
 

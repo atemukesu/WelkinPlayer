@@ -653,8 +653,12 @@ fn run_downloader(
             }
             state.seg_end = cursor;
             state.last_advanced = Instant::now();
+            // Only a segment that starts at the file's beginning covers a whole
+            // file; a forward seek rebases `seg_start` and leaves an unwritten
+            // hole below it, so marking it complete would let a later read from
+            // offset 0 stream those zero bytes.
             if let Some(total) = state.total {
-                if cursor >= total {
+                if cursor >= total && state.seg_start == 0 {
                     state.complete = true;
                 }
             }
@@ -663,12 +667,16 @@ fn run_downloader(
     }
 }
 
+/// Mark the entry complete, but only when its cached segment spans the whole
+/// file from offset 0. A segment rebased forward (after a seek) only covers
+/// `[seg_start, total)` and leaves a hole below `seg_start`; treating it as
+/// complete would let subsequent readers of the leading range serve zeros.
 fn mark_complete(entry: &Arc<Entry>, generation: u64) {
     let mut state = entry.state.lock().unwrap();
-    if state.generation == generation {
+    if state.generation == generation && state.seg_start == 0 {
         state.complete = true;
-        entry.cv.notify_all();
     }
+    entry.cv.notify_all();
 }
 
 fn file_len(path: &std::path::Path) -> u64 {

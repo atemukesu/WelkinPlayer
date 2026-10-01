@@ -22,11 +22,6 @@ export interface LyricDisplaySettings {
   fontFamilies: string[];
 }
 
-/** Horizontal alignment of the floating desktop-lyrics text. */
-export type DesktopLyricAlign = "left" | "center" | "right";
-/** What the mouse wheel adjusts while hovering the floating lyrics. */
-export type DesktopLyricWheelAction = "none" | "fontSize" | "opacity";
-
 /**
  * Typography, colours and behaviour of the floating desktop-lyrics layer.
  *
@@ -48,8 +43,6 @@ export interface DesktopLyricSettings {
   karaoke: boolean;
   /** Legacy storage field; the desktop overlay only renders the active block. */
   contextLines: number;
-  /** Text alignment inside the window. */
-  align: DesktopLyricAlign;
   fontSize: number;
   /** Sub-line (translation) size in px. */
   translationSize: number;
@@ -68,6 +61,8 @@ export interface DesktopLyricSettings {
   opacity: number;
   /** Draw a 1px outline around the text. */
   stroke: boolean;
+  /** Outline colour used when `stroke` is enabled. */
+  strokeColor: string;
   /** Horizontal / vertical inset inside the floating window. */
   paddingX: number;
   paddingY: number;
@@ -77,8 +72,6 @@ export interface DesktopLyricSettings {
   hideWhenNoLyrics: boolean;
   /** Auto-hide after this many ms while paused; 0 keeps it visible. */
   autoHideMs: number;
-  /** What the mouse wheel adjusts while hovering (desktop only). */
-  wheelAction: DesktopLyricWheelAction;
 }
 
 export const DEFAULT_DESKTOP_LYRIC: DesktopLyricSettings = {
@@ -91,7 +84,6 @@ export const DEFAULT_DESKTOP_LYRIC: DesktopLyricSettings = {
   // Kept in the type and storage normalizer for backwards compatibility;
   // the single-line overlay no longer renders surrounding context.
   contextLines: 0,
-  align: "center",
   fontSize: 38,
   translationSize: 17,
   lineSpacing: 12,
@@ -102,12 +94,12 @@ export const DEFAULT_DESKTOP_LYRIC: DesktopLyricSettings = {
   translationColor: "#b9bec8",
   opacity: 100,
   stroke: false,
+  strokeColor: "#000000",
   paddingX: 28,
   paddingY: 18,
   hideOnPause: false,
   hideWhenNoLyrics: true,
   autoHideMs: 0,
-  wheelAction: "fontSize",
 };
 
 /** Where a lyric provider may be selected on the settings page. */

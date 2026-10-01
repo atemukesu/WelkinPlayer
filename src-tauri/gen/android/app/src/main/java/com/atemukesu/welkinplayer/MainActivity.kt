@@ -8,4 +8,11 @@ class MainActivity : TauriActivity() {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
   }
+
+  override fun onDestroy() {
+    // Quitting the app must also tear the floating lyrics down; backgrounding
+    // it (home button) keeps them, which is the point of an overlay.
+    if (isFinishing) DesktopLyricBridge.stop(this)
+    super.onDestroy()
+  }
 }

@@ -5,7 +5,6 @@ import { useDesktopLyricsStore } from "../stores/desktopLyrics";
 import { requestDesktopLyricPermission } from "../composables/useDesktopLyrics";
 import { DEFAULT_DESKTOP_LYRIC } from "../lib/preferences";
 import { DESKTOP_LYRIC_GEOMETRY_KEY } from "../lib/desktopLyric";
-import type { DesktopLyricAlign, DesktopLyricWheelAction } from "../lib/preferences";
 import { useSystemFonts } from "../lib/fonts";
 import DesktopLyricField from "./DesktopLyricField.vue";
 import FontFamilyList from "./FontFamilyList.vue";
@@ -17,18 +16,6 @@ const { allFonts } = useSystemFonts();
 const settings = computed(() => store.settings);
 const isAndroid = computed(() => store.platform === "android");
 const needsPermission = computed(() => isAndroid.value && settings.value.enabled && !store.permissionGranted);
-
-const alignOptions = computed(() => [
-  { value: "left", label: t("settings.desktopLyrics.alignLeft") },
-  { value: "center", label: t("settings.desktopLyrics.alignCenter") },
-  { value: "right", label: t("settings.desktopLyrics.alignRight") },
-]);
-
-const wheelOptions = computed(() => [
-  { value: "none", label: t("settings.desktopLyrics.wheelNone") },
-  { value: "fontSize", label: t("settings.desktopLyrics.wheelFontSize") },
-  { value: "opacity", label: t("settings.desktopLyrics.wheelOpacity") },
-]);
 
 const autoHideOptions = computed(() => [
   { value: "0", label: t("settings.desktopLyrics.autoHideNever") },
@@ -75,13 +62,6 @@ function reset() {
       <div class="grid gap-4 border border-line bg-bg/40 p-4">
         <DesktopLyricField v-model="settings.translation" type="toggle" :label="t('settings.desktopLyrics.translation')" />
         <DesktopLyricField v-model="settings.karaoke" type="toggle" :label="t('settings.desktopLyrics.karaoke')" :hint="t('settings.desktopLyrics.karaokeHint')" />
-        <DesktopLyricField
-          :model-value="settings.align"
-          type="select"
-          :label="t('settings.desktopLyrics.align')"
-          :options="alignOptions"
-          @update:model-value="(value) => (settings.align = value as DesktopLyricAlign)"
-        />
       </div>
 
       <!-- Typography -->
@@ -108,6 +88,7 @@ function reset() {
       <!-- Outline -->
       <div class="grid gap-4 border border-line bg-bg/40 p-4">
         <DesktopLyricField v-model="settings.stroke" type="toggle" :label="t('settings.desktopLyrics.stroke')" />
+        <DesktopLyricField v-model="settings.strokeColor" type="color" :label="t('settings.desktopLyrics.strokeColor')" />
       </div>
 
       <!-- Layout -->
@@ -126,14 +107,6 @@ function reset() {
           :label="t('settings.desktopLyrics.autoHide')"
           :options="autoHideOptions"
           @update:model-value="(value) => (settings.autoHideMs = Number(value))"
-        />
-        <DesktopLyricField
-          v-if="!isAndroid"
-          :model-value="settings.wheelAction"
-          type="select"
-          :label="t('settings.desktopLyrics.wheelAction')"
-          :options="wheelOptions"
-          @update:model-value="(value) => (settings.wheelAction = value as DesktopLyricWheelAction)"
         />
       </div>
 
