@@ -79,6 +79,7 @@ pub fn run() {
             commands::playback::load_remote_playback,
             commands::playback::save_playback,
             commands::media::read_track_metadata,
+            commands::media::read_track_metadata_batch,
             commands::media::download_track_metadata,
             commands::media::probe_track,
             commands::media::read_track_lyrics,

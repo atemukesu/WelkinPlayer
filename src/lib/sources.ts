@@ -25,6 +25,15 @@ export interface SongSource {
   rootPath?: string;
 }
 
+/**
+ * Selectable source kinds, in the order shown when adding a source. Adding a
+ * new kind later means appending here plus a form branch in the editor.
+ */
+export const SOURCE_KINDS: { kind: SourceKind; labelKey: string }[] = [
+  { kind: "webdav", labelKey: "sources.kindWebdav" },
+  { kind: "local", labelKey: "sources.kindLocal" },
+];
+
 /** Separator between a source id and a track path inside a profile key. */
 const KEY_SEPARATOR = "::";
 

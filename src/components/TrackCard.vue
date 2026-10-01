@@ -3,6 +3,9 @@ import { Check, Play, Trash2 } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import type { Track } from "../stores/player";
 import { initial } from "../lib/format";
+import { requestMeta } from "../directives/requestMeta";
+
+const vRequestMeta = requestMeta;
 
 withDefaults(defineProps<{ track: Track; active?: boolean; playing?: boolean; removable?: boolean; selectable?: boolean; selected?: boolean }>(), { removable: false, selectable: false, selected: false });
 const emit = defineEmits<{ play: [track: Track]; menu: [event: MouseEvent, track: Track]; remove: [track: Track]; openArtist: [artist: string]; toggle: [track: Track, event: MouseEvent] }>();
@@ -11,6 +14,7 @@ const { t } = useI18n();
 
 <template>
   <article
+    v-request-meta="track"
     class="group relative cursor-pointer border bg-surface p-3 transition-all hover:-translate-y-0.5"
     :class="[selected ? 'border-accent ring-1 ring-accent' : 'border-line hover:border-accent', active ? 'border-accent' : '']"
     @click="selectable ? emit('toggle', track, $event) : emit('play', track)"

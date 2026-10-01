@@ -15,6 +15,7 @@ import { useSourcesStore } from "./stores/sources";
 import { useProfileStore } from "./stores/profile";
 import { usePlaybackStore } from "./stores/playback";
 import { useLyricsStore } from "./stores/lyrics";
+import { useMetadataStore } from "./stores/metadata";
 import AppNavigation from "./components/AppNavigation.vue";
 import QueuePanel from "./components/QueuePanel.vue";
 import PlayerBar from "./components/PlayerBar.vue";
@@ -34,6 +35,7 @@ import PlaylistEditorView from "./views/PlaylistEditorView.vue";
 import LyricsEditorView from "./views/LyricsEditorView.vue";
 import TrackEditorView from "./views/TrackEditorView.vue";
 import TrackInfoView from "./views/TrackInfoView.vue";
+import SourceConfigView from "./views/SourceConfigView.vue";
 
 const AmllPlayerView = defineAsyncComponent(() => import("./views/AmllPlayerView.vue"));
 
@@ -43,7 +45,8 @@ const sources = useSourcesStore();
 const profile = useProfileStore();
 const playback = usePlaybackStore();
 const lyrics = useLyricsStore();
-const { loadingLibrary, enriching, refreshing, enrichDone, enrichTotal, friendlyError, loadCachedLibrary, loadRemoteLibrary, refreshLibrary, downloadTrackMetadata } = useLibrary();
+const metadata = useMetadataStore();
+const { loadingLibrary, refreshing, friendlyError, loadCachedLibrary, loadRemoteLibrary, refreshLibrary, downloadTrackMetadata } = useLibrary();
 const view = ref<View>(getViewFromHash());
 const baseView = ref<View>(view.value === "player" || view.value === "track-info" ? "library" : view.value);
 const theme = ref<Theme>(localStorage.getItem("welkin-theme") === "dark" ? "dark" : "light");
@@ -55,6 +58,7 @@ const playlistFilter = ref<string | null>(null);
 const artistFilter = ref<string | null>(null);
 const albumFilter = ref<string | null>(null);
 const sourceFilter = ref<string | null>(null);
+const sourceConfigReturn = ref<View>("sources");
 const editingPlaylist = ref<string | null>(null);
 const editingLyricsTrack = ref<Track | null>(null);
 const editingTrack = ref<Track | null>(null);
@@ -72,6 +76,15 @@ let lastPositionSavedAt = 0;
 const POSITION_SAVE_INTERVAL_MS = 30_000;
 
 watch(view, (next) => { if (next !== "player" && next !== "track-info") baseView.value = next; });
+
+// Reload the library shortly after a source is added, removed or reconfigured,
+// so configuring a source in Settings takes effect without a manual refresh.
+let sourceReloadTimer = 0;
+watch(() => sources.revision, () => {
+  if (!booted.value || profile.firstRun || !sources.hasSources) return;
+  window.clearTimeout(sourceReloadTimer);
+  sourceReloadTimer = window.setTimeout(() => void loadRemoteLibrary({ silent: true }), 400);
+});
 watchEffect(() => { document.documentElement.classList.toggle("dark", theme.value === "dark"); document.documentElement.dataset.accent = accent.value; localStorage.setItem("welkin-theme", theme.value); localStorage.setItem("welkin-accent", accent.value); });
 watchEffect(() => { document.documentElement.lang = locale.value; localStorage.setItem("welkin-locale", locale.value); });
 
@@ -93,6 +106,9 @@ function dismissSplash() {
 watch(booted, (ready) => { if (ready) dismissSplash(); });
 
 watch(() => trackKey(player.currentTrack), (key) => { if (booted.value && key && player.isPlaying) profile.recordPlay(key); });
+
+// The playing track's metadata is wanted immediately, regardless of visibility.
+watch(() => player.currentTrack?.id, () => metadata.request(player.currentTrack));
 
 // Resume the last track/position once the playback state and library are ready.
 watch([() => playback.ready, () => player.tracks.length], () => {
@@ -146,13 +162,15 @@ watch(() => player.isPlaying, (playing) => {
 });
 
 function readAccent(): Accent { const value = localStorage.getItem("welkin-accent"); return (accents.some((item) => item.id === value) ? value : "amber") as Accent; }
-function getViewFromHash(): View { const route = window.location.hash.slice(1); return route === "settings" || route === "sponsor" || route === "player" || route === "tracks" || route === "favorites" || route === "stats" || route === "artists" || route === "albums" || route === "sources" || route === "playlists" || route === "playlist-new" || route === "lyrics-edit" || route === "track-edit" || route === "track-info" ? route : "library"; }
+function getViewFromHash(): View { const route = window.location.hash.slice(1); return route === "settings" || route === "sponsor" || route === "player" || route === "tracks" || route === "favorites" || route === "stats" || route === "artists" || route === "albums" || route === "sources" || route === "source-config" || route === "playlists" || route === "playlist-new" || route === "lyrics-edit" || route === "track-edit" || route === "track-info" ? route : "library"; }
 function setView(nextView: View) { view.value = nextView; window.location.hash = nextView === "library" ? "" : nextView; }
 function clearCollectionFilters() { playlistFilter.value = null; artistFilter.value = null; albumFilter.value = null; sourceFilter.value = null; }
 function navigate(nextView: View) { clearCollectionFilters(); setView(nextView); }
 function syncViewFromHash() { view.value = getViewFromHash(); }
 function openUserPlaylist(id: string) { clearCollectionFilters(); playlistFilter.value = id; setView("tracks"); }
 function openSource(id: string) { clearCollectionFilters(); sourceFilter.value = id; setView("tracks"); }
+function openSourceConfig(from: View) { sourceConfigReturn.value = from; setView("source-config"); }
+function closeSourceConfig() { setView(sourceConfigReturn.value); }
 function openGroup(kind: "artists" | "albums", key: string) { playlistFilter.value = null; artistFilter.value = kind === "artists" ? key : null; albumFilter.value = kind === "albums" ? key : null; sourceFilter.value = null; setView("tracks"); }
 function onOpenGroup(key: string) { openGroup(baseView.value === "albums" ? "albums" : "artists", key); }
 /** Clicking an artist name on a track opens that artist's collection. */
@@ -197,13 +215,6 @@ function onWizardFinish() {
   else void loadCachedLibrary();
 }
 
-async function saveSettings() {
-  profile.setNickname(profile.nickname);
-  await sources.persist();
-  await profile.flush();
-  pushToast("success", t("settings.saved"));
-  if (sources.hasSources) await loadRemoteLibrary();
-}
 function showError(error: unknown) { pushToast("error", friendlyError(error)); }
 async function downloadMetadata(track: Track) {
   downloadingTrackId.value = track.id;
@@ -242,18 +253,19 @@ onUnmounted(() => { savePlaybackPosition(true); window.removeEventListener("hash
       <AppNavigation placement="sidebar" :active-view="baseView" :collapsed="sidebarCollapsed" :active-playlist-id="playlistFilter" :active-artist="artistFilter" :active-album="albumFilter" :active-source="sourceFilter" @navigate="navigate" @toggle="toggleSidebar" @create-playlist="createPlaylist" @open-playlist="openUserPlaylist" />
       <main class="min-w-0 flex-1 overflow-y-auto">
         <Transition name="page" mode="out-in">
-          <LibraryView v-if="baseView === 'library'" key="library" :loading="loadingLibrary" :enriching="enriching" :enrich-done="enrichDone" :enrich-total="enrichTotal" :downloading-track-id="downloadingTrackId" @settings="navigate('settings')" @navigate="navigate" @open-playlist="openUserPlaylist" @download-metadata="downloadMetadata" @edit-lyrics="editLyrics" @edit-info="editInfo" @show-info="showTrackInfo" />
-          <TracksView v-else-if="baseView === 'tracks'" key="tracks" @open-artist="openArtist" @open-album="openAlbum" :playlist-id="playlistFilter" :artist="artistFilter" :album="albumFilter" :source-id="sourceFilter" :loading="loadingLibrary" :enriching="enriching" :refreshing="refreshing" :enrich-done="enrichDone" :enrich-total="enrichTotal" :downloading-track-id="downloadingTrackId" @refresh="refreshLibrary" @edit="editPlaylist" @download-metadata="downloadMetadata" @edit-lyrics="editLyrics" @edit-info="editInfo" @show-info="showTrackInfo" />
-          <SourcesView v-else-if="baseView === 'sources'" key="sources" :loading="loadingLibrary" @open="openSource" @settings="navigate('settings')" />
+          <LibraryView v-if="baseView === 'library'" key="library" :loading="loadingLibrary" :downloading-track-id="downloadingTrackId" @settings="navigate('settings')" @navigate="navigate" @open-playlist="openUserPlaylist" @download-metadata="downloadMetadata" @edit-lyrics="editLyrics" @edit-info="editInfo" @show-info="showTrackInfo" />
+          <TracksView v-else-if="baseView === 'tracks'" key="tracks" @open-artist="openArtist" @open-album="openAlbum" :playlist-id="playlistFilter" :artist="artistFilter" :album="albumFilter" :source-id="sourceFilter" :loading="loadingLibrary" :refreshing="refreshing" :downloading-track-id="downloadingTrackId" @refresh="refreshLibrary" @edit="editPlaylist" @download-metadata="downloadMetadata" @edit-lyrics="editLyrics" @edit-info="editInfo" @show-info="showTrackInfo" />
+          <SourcesView v-else-if="baseView === 'sources'" key="sources" :loading="loadingLibrary" @open="openSource" @manage="openSourceConfig('sources')" />
+          <SourceConfigView v-else-if="baseView === 'source-config'" key="source-config" @back="closeSourceConfig" />
           <GroupedLibraryView v-else-if="baseView === 'artists' || baseView === 'albums'" :key="baseView" :kind="baseView === 'artists' ? 'artists' : 'albums'" :loading="loadingLibrary" @open="onOpenGroup" />
-          <FavoritesView v-else-if="baseView === 'favorites'" key="favorites" @open-artist="openArtist" @open-album="openAlbum" :loading="loadingLibrary" :enriching="enriching" :enrich-done="enrichDone" :enrich-total="enrichTotal" :downloading-track-id="downloadingTrackId" @download-metadata="downloadMetadata" @edit-lyrics="editLyrics" @edit-info="editInfo" @show-info="showTrackInfo" />
+          <FavoritesView v-else-if="baseView === 'favorites'" key="favorites" @open-artist="openArtist" @open-album="openAlbum" :loading="loadingLibrary" :downloading-track-id="downloadingTrackId" @download-metadata="downloadMetadata" @edit-lyrics="editLyrics" @edit-info="editInfo" @show-info="showTrackInfo" />
           <PlaylistsView v-else-if="baseView === 'playlists'" key="playlists" @open-playlist="openUserPlaylist" @edit-playlist="editPlaylist" @create-playlist="createPlaylist" />
           <StatsView v-else-if="baseView === 'stats'" key="stats" :loading="loadingLibrary" :downloading-track-id="downloadingTrackId" @download-metadata="downloadMetadata" @edit-lyrics="editLyrics" @edit-info="editInfo" @show-info="showTrackInfo" />
           <PlaylistEditorView v-else-if="baseView === 'playlist-new'" key="playlist-new" :playlist-id="editingPlaylist" @done="onPlaylistSaved" @deleted="onPlaylistDeleted" @cancel="onPlaylistEditorCancel" />
           <LyricsEditorView v-else-if="baseView === 'lyrics-edit'" key="lyrics-edit" :path="editingLyricsTrack?.path ?? null" :source-id="editingLyricsTrack?.sourceId" @back="navigate('library')" @friendly-error="showError" />
           <TrackEditorView v-else-if="baseView === 'track-edit'" key="track-edit" :path="editingTrack?.path ?? null" :source-id="editingTrack?.sourceId" @back="navigate('library')" @friendly-error="showError" />
           <SponsorView v-else-if="baseView === 'sponsor'" key="sponsor" @back="navigate('library')" />
-          <SettingsView v-else key="settings" v-model:theme="theme" v-model:accent="accent" @save="saveSettings" @sponsor="navigate('sponsor')" @friendly-error="showError" />
+          <SettingsView v-else key="settings" v-model:theme="theme" v-model:accent="accent" @sponsor="navigate('sponsor')" @sources="openSourceConfig('settings')" @friendly-error="showError" />
         </Transition>
       </main>
       <Transition name="queue-panel"><div v-if="showQueue" class="absolute inset-y-0 right-0 z-20 w-80 border-l border-line bg-surface"><QueuePanel @close="closeQueue" /></div></Transition>

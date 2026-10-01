@@ -12,6 +12,7 @@
 use std::path::{Path, PathBuf};
 
 use base64::Engine;
+use futures_util::stream::{self, StreamExt};
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_store::StoreExt;
@@ -395,6 +396,95 @@ pub async fn read_track_metadata(
 
     write_meta(&dir, &hash, &result)?;
     Ok(result)
+}
+
+/// How many metadata reads may be in flight for one batch call.
+const METADATA_CONCURRENCY: usize = 4;
+
+/// Read metadata for many paths in a single IPC call.
+///
+/// Cached entries are returned as-is; the rest are fetched with bounded
+/// concurrency. This backs the lazy, viewport-driven enrichment: the frontend
+/// only asks for the tracks it is about to show, never the whole library.
+#[tauri::command]
+pub async fn read_track_metadata_batch(
+    app: AppHandle,
+    source_id: String,
+    paths: Vec<String>,
+) -> Result<Vec<CachedTrack>, AppError> {
+    let backend = backend_for(&app, &source_id)?;
+    let dir = resolve_cache_dir(&app);
+    let source = source_id.clone();
+
+    let results = stream::iter(paths)
+        .map(|path| {
+            let backend = &backend;
+            let dir = &dir;
+            let source = &source;
+            async move { read_or_fetch_metadata(backend, dir, source, path).await }
+        })
+        .buffer_unordered(METADATA_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
+
+    Ok(results)
+}
+
+/// Serve one track's cached metadata, fetching and caching it when missing.
+async fn read_or_fetch_metadata(
+    backend: &Backend,
+    dir: &Path,
+    source_id: &str,
+    path: String,
+) -> CachedTrack {
+    let hash = asset_hash(source_id, &path);
+    if let Some(metadata) = read_meta(dir, &hash) {
+        return CachedTrack {
+            path,
+            metadata: Some(metadata),
+            cover_path: cover_path_for(dir, &hash),
+        };
+    }
+
+    match fetch_metadata(backend, &path).await {
+        Ok(Some(parsed)) => {
+            let mut result = parsed.metadata;
+            if let Some(cover) = parsed.cover {
+                match metadata::encode_thumbnail(&cover) {
+                    Ok(thumbnail) => match write_cover(dir, &hash, &thumbnail) {
+                        Ok(()) => result.cover_hash = Some(hash.clone()),
+                        Err(error) => log::warn!("failed to cache cover for {path}: {error}"),
+                    },
+                    Err(error) => log::warn!("failed to encode cover for {path}: {error}"),
+                }
+            }
+            if let Err(error) = write_meta(dir, &hash, &result) {
+                log::warn!("failed to cache metadata for {path}: {error}");
+            }
+            CachedTrack {
+                cover_path: cover_path_for(dir, &hash),
+                path,
+                metadata: Some(result),
+            }
+        }
+        Ok(None) => {
+            let result = TrackMetadata::default();
+            let _ = write_meta(dir, &hash, &result);
+            CachedTrack {
+                path,
+                metadata: Some(result),
+                cover_path: None,
+            }
+        }
+        Err(error) => {
+            log::warn!("metadata batch failed for {path}: {error}");
+            CachedTrack {
+                path,
+                metadata: None,
+                cover_path: None,
+            }
+        }
+    }
 }
 
 /// Download a complete track before extracting its metadata.

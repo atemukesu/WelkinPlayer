@@ -33,12 +33,12 @@ function isMobileTabActive(key: string): boolean {
   if (key === "tracks") return props.activeView === "tracks" && !props.activePlaylistId && !props.activeArtist && !props.activeAlbum && !props.activeSource;
   if (key === "favorites") return props.activeView === "favorites";
   if (key === "playlists") return props.activeView === "playlists" || props.activeView === "playlist-new" || (props.activeView === "tracks" && !!props.activePlaylistId);
-  return props.activeView === "stats" || props.activeView === "settings" || props.activeView === "artists" || props.activeView === "albums" || props.activeView === "sources" || !!props.activeArtist || !!props.activeAlbum || !!props.activeSource;
+  return props.activeView === "stats" || props.activeView === "settings" || props.activeView === "artists" || props.activeView === "albums" || props.activeView === "sources" || props.activeView === "source-config" || !!props.activeArtist || !!props.activeAlbum || !!props.activeSource;
 }
 function isClassificationActive(id: View): boolean {
   if (id === "artists") return props.activeView === "artists" || !!props.activeArtist;
   if (id === "albums") return props.activeView === "albums" || !!props.activeAlbum;
-  if (id === "sources") return props.activeView === "sources" || !!props.activeSource;
+  if (id === "sources") return props.activeView === "sources" || props.activeView === "source-config" || !!props.activeSource;
   return false;
 }
 function isActivePlaylist(id: string): boolean { return props.activePlaylistId === id; }

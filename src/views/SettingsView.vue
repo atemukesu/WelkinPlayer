@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
-import { Moon, Music, Save, Sun } from "@lucide/vue";
+import { HardDrive, Moon, Music, Sun } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { invoke } from "../api";
 import { pushToast } from "../lib/toast";
@@ -10,12 +10,11 @@ import { localeOptions } from "../i18n";
 import { useProfileStore } from "../stores/profile";
 import { useSourcesStore } from "../stores/sources";
 import LyricsSettings from "../components/LyricsSettings.vue";
-import SourcesSettings from "../components/SourcesSettings.vue";
 import pkg from "../../package.json";
 
 const theme = defineModel<Theme>("theme", { required: true });
 const accent = defineModel<Accent>("accent", { required: true });
-const emit = defineEmits<{ save: []; sponsor: []; friendlyError: [error: unknown] }>();
+const emit = defineEmits<{ sponsor: []; sources: []; friendlyError: [error: unknown] }>();
 const { t, locale } = useI18n();
 const appVersion = pkg.version;
 const profile = useProfileStore();
@@ -71,11 +70,11 @@ button.text-dim:hover:not(:disabled) {
       </div>
     </section>
 
-    <form class="mt-8 space-y-6" @submit.prevent="emit('save')">
+    <div class="mt-8 space-y-6">
       <section class="ak-frame grid gap-6 border border-line bg-surface p-6 lg:grid-cols-[1fr_1.3fr]">
         <div><h2 class="text-sm font-bold uppercase tracking-[0.2em]">{{ t("settings.profile.title") }}</h2><p class="mt-2 text-sm text-muted">{{ t("settings.profile.desc") }}</p></div>
         <div class="grid gap-4">
-          <label class="grid gap-2 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.profile.nickname") }}<input v-model="profile.profile.nickname" maxlength="32" class="h-10 border border-line bg-bg px-3 text-sm font-normal normal-case tracking-normal text-fg outline-none focus:border-accent" :placeholder="t('settings.profile.nicknamePlaceholder')" /></label>
+          <label class="grid gap-2 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.profile.nickname") }}<input v-model="profile.profile.nickname" maxlength="32" class="h-10 border border-line bg-bg px-3 text-sm font-normal normal-case tracking-normal text-fg outline-none focus:border-accent" :placeholder="t('settings.profile.nicknamePlaceholder')" @change="profile.setNickname(profile.profile.nickname)" /></label>
           <p class="flex items-center gap-2 text-[11px] normal-case text-dim"><span class="h-2 w-2" :class="sources.hasCloudSync ? 'bg-accent' : 'bg-dim'"></span>{{ sources.hasCloudSync ? t("settings.profile.synced") : t("settings.profile.localOnly") }}</p>
         </div>
       </section>
@@ -103,13 +102,16 @@ button.text-dim:hover:not(:disabled) {
         <div class="grid gap-4"><label class="grid gap-2 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.cache.dir") }}<input v-model="cacheDir" class="h-10 border border-line bg-bg px-3 text-sm font-normal normal-case tracking-normal text-fg outline-none focus:border-accent" /></label><div class="flex justify-end"><button type="button" class="ak-clip-tr h-10 border border-line px-5 text-[13px] font-semibold uppercase tracking-[0.25em]" @click="saveCacheDir">{{ t("settings.cache.save") }}</button></div></div>
       </section>
 
-      <SourcesSettings />
+      <section class="ak-frame grid gap-6 border border-line bg-surface p-6 lg:grid-cols-[1fr_1.3fr]">
+        <div><h2 class="text-sm font-bold uppercase tracking-[0.2em]">{{ t("settings.sources.title") }}</h2><p class="mt-2 text-sm text-muted">{{ t("settings.sources.desc") }}</p></div>
+        <div class="grid gap-4">
+          <p class="text-sm text-muted">{{ t("settings.sources.count", { count: sources.sources.length }) }}</p>
+          <p class="flex items-center gap-2 text-[11px] text-dim"><span class="h-2 w-2" :class="sources.hasCloudSync ? 'bg-accent' : 'bg-dim'"></span>{{ sources.hasCloudSync ? t("settings.sources.cloudAvailable") : t("settings.sources.cloudUnavailable") }}</p>
+          <div class="flex justify-end"><button type="button" class="ak-clip-tr flex h-10 items-center gap-2 bg-accent px-5 text-[13px] font-bold uppercase tracking-[0.25em] text-accent-fg" @click="emit('sources')"><HardDrive :size="15" />{{ t("settings.sources.manage") }}</button></div>
+        </div>
+      </section>
 
       <LyricsSettings />
-
-      <div class="flex justify-end">
-        <button type="submit" class="ak-clip-tr flex h-11 items-center gap-2 bg-accent px-6 text-[13px] font-bold uppercase tracking-[0.25em] text-accent-fg disabled:opacity-50" :disabled="sources.saving"><Save :size="15" />{{ t("settings.saved") }}</button>
-      </div>
-    </form>
+    </div>
   </div>
 </template>

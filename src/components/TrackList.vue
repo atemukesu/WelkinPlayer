@@ -8,7 +8,10 @@ import type { Track } from "../stores/player";
 import { initial, pad } from "../lib/format";
 import { trackKey } from "../lib/sources";
 import { trackViewMode } from "../lib/ui";
+import { requestMeta } from "../directives/requestMeta";
 import TrackCard from "./TrackCard.vue";
+
+const vRequestMeta = requestMeta;
 
 const props = withDefaults(defineProps<{ tracks: Track[]; emptyKey: string; removable?: boolean; selectable?: boolean; selected?: Set<string>; scroller?: HTMLElement | null }>(), { removable: false, selectable: false, scroller: null });
 const emit = defineEmits<{ play: [track: Track]; menu: [event: MouseEvent, track: Track]; remove: [track: Track]; openArtist: [artist: string]; openAlbum: [album: string]; "update:selected": [value: Set<string>] }>();
@@ -232,6 +235,7 @@ function scrollToTop() {
         <component :is="listComponent" ref="listRef" :data="tracks" :item-size="LIST_ROW_HEIGHT" v-bind="listProps">
           <template #default="{ item: track, index }">
             <div
+              v-request-meta="track"
               role="button"
               tabindex="0"
               :key="track.id"

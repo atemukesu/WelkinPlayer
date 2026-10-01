@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { ArrowRight, Check, FolderOpen, HardDrive, LoaderCircle, Palette, Server, Sparkles, User } from "@lucide/vue";
+import { ArrowRight, Check, FolderOpen, HardDrive, LoaderCircle, Palette, Plus, Server, Sparkles, User } from "@lucide/vue";
 import { describeError } from "../api";
 import { accents } from "../lib/app";
 import type { Accent, Theme } from "../lib/app";
 import { pushToast } from "../lib/toast";
 import { useProfileStore } from "../stores/profile";
 import { useSourcesStore } from "../stores/sources";
-import type { SongSource } from "../lib/sources";
+import { SOURCE_KINDS } from "../lib/sources";
+import type { SongSource, SourceKind } from "../lib/sources";
+import LayeredSelect from "./LayeredSelect.vue";
 
 const theme = defineModel<Theme>("theme", { required: true });
 const accent = defineModel<Accent>("accent", { required: true });
@@ -39,8 +41,10 @@ const canContinue = computed(() => {
   return true;
 });
 
-function add(kind: "webdav" | "local") {
-  const draft = sources.draft(kind);
+const sourceKindOptions = computed(() => SOURCE_KINDS.map((item) => ({ value: item.kind, label: t(item.labelKey) })));
+const newKind = ref<SourceKind>("webdav");
+function add() {
+  const draft = sources.draft(newKind.value);
   void sources.addSource(draft);
   passwordDrafts.value = { ...passwordDrafts.value, [draft.id]: "" };
 }
@@ -146,38 +150,42 @@ onMounted(() => {
             <p class="mt-2 text-sm text-muted">{{ t("wizard.sources.desc") }}</p>
           </div>
 
-          <div class="flex flex-wrap gap-2">
-            <button type="button" class="ak-clip-tr flex h-9 items-center gap-2 border border-line px-3 text-[12px] font-semibold" @click="add('webdav')"><Server :size="14" />{{ t("wizard.sources.addWebdav") }}</button>
-            <button type="button" class="ak-clip-tr flex h-9 items-center gap-2 border border-line px-3 text-[12px] font-semibold" @click="add('local')"><HardDrive :size="14" />{{ t("wizard.sources.addLocal") }}</button>
+          <div class="flex flex-wrap items-center gap-2">
+            <LayeredSelect v-model="newKind" :options="sourceKindOptions" :label="t('settings.sources.kind')" class="w-40" />
+            <button type="button" class="ak-clip-tr inline-flex h-10 items-center gap-2 border border-line px-4 text-[12px] font-semibold uppercase tracking-[0.2em] whitespace-nowrap" @click="add"><Plus :size="14" />{{ t("settings.sources.add") }}</button>
           </div>
 
           <p v-if="!sources.hasSources" class="border-l-2 border-accent/60 pl-3 text-xs text-muted">{{ t("wizard.sources.empty") }}</p>
           <p v-else-if="!hasCloud" class="border-l-2 border-accent/60 pl-3 text-xs text-muted">{{ t("wizard.sources.localOnly") }}</p>
 
           <div v-for="source in sources.sources" :key="source.id" class="grid gap-3 border border-line bg-bg p-4">
-            <div class="flex flex-wrap items-center gap-3">
-              <Server v-if="source.kind === 'webdav'" :size="16" class="text-accent" /><HardDrive v-else :size="16" class="text-accent" />
-              <input v-model="source.name" class="h-9 min-w-0 flex-1 border border-line bg-surface px-2 text-sm outline-none focus:border-accent" :placeholder="t('settings.sources.name')" @change="sources.updateSource(source.id, { name: source.name })" />
-              <button type="button" class="ak-clip-tr h-9 border px-3 text-[11px] font-semibold uppercase tracking-[0.15em]" :class="sources.syncId === source.id ? 'border-accent text-accent' : 'border-line text-muted'" @click="sources.setSyncId(source.id)">{{ sources.syncId === source.id ? t("settings.sources.syncCurrent") : t("settings.sources.useForSync") }}</button>
-              <button type="button" class="grid h-9 w-9 place-items-center border border-line text-dim hover:text-fg" @click="sources.removeSource(source.id)">×</button>
+            <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
+              <div class="flex min-w-[12rem] flex-1 items-center gap-3">
+                <Server v-if="source.kind === 'webdav'" :size="17" class="shrink-0 text-accent" /><HardDrive v-else :size="17" class="shrink-0 text-accent" />
+                <input v-model="source.name" class="h-10 min-w-0 flex-1 border border-line bg-surface px-3 text-sm outline-none focus:border-accent" :placeholder="t('settings.sources.name')" @change="sources.updateSource(source.id, { name: source.name })" />
+              </div>
+              <div class="ml-auto flex shrink-0 items-center gap-2">
+                <button type="button" class="ak-clip-tr inline-flex h-10 items-center gap-2 border px-4 text-[12px] font-semibold uppercase tracking-[0.2em] whitespace-nowrap" :class="sources.syncId === source.id ? 'border-accent text-accent' : 'border-line text-muted'" @click="sources.setSyncId(source.id)">{{ sources.syncId === source.id ? t("settings.sources.syncCurrent") : t("settings.sources.useForSync") }}</button>
+                <button type="button" class="grid h-10 w-10 place-items-center border border-line text-dim hover:text-fg" @click="sources.removeSource(source.id)">×</button>
+              </div>
             </div>
 
             <template v-if="source.kind === 'webdav'">
-              <input v-model="source.url" type="url" class="h-9 border border-line bg-surface px-2 text-sm outline-none focus:border-accent" placeholder="https://dav.example.com/music" @change="sources.updateSource(source.id, { url: source.url })" />
+              <input v-model="source.url" type="url" class="h-10 border border-line bg-surface px-3 text-sm outline-none focus:border-accent" placeholder="https://dav.example.com/music" @change="sources.updateSource(source.id, { url: source.url })" />
               <div class="grid gap-3 sm:grid-cols-2">
-                <input v-model="source.username" autocomplete="username" class="h-9 border border-line bg-surface px-2 text-sm outline-none focus:border-accent" :placeholder="t('settings.webdav.username')" @change="sources.updateSource(source.id, { username: source.username })" />
-                <input v-model="passwordDrafts[source.id]" type="password" autocomplete="current-password" class="h-9 border border-line bg-surface px-2 text-sm outline-none focus:border-accent" :placeholder="sources.hasPassword(source.id) ? t('settings.webdav.passwordStored') : t('settings.webdav.password')" />
+                <input v-model="source.username" autocomplete="username" class="h-10 border border-line bg-surface px-3 text-sm outline-none focus:border-accent" :placeholder="t('settings.webdav.username')" @change="sources.updateSource(source.id, { username: source.username })" />
+                <input v-model="passwordDrafts[source.id]" type="password" autocomplete="current-password" class="h-10 border border-line bg-surface px-3 text-sm outline-none focus:border-accent" :placeholder="sources.hasPassword(source.id) ? t('settings.webdav.passwordStored') : t('settings.webdav.password')" />
               </div>
             </template>
             <template v-else>
               <span class="flex items-stretch gap-2">
-                <input v-model="source.rootPath" class="h-9 min-w-0 flex-1 border border-line bg-surface px-2 text-sm outline-none focus:border-accent" :placeholder="t('settings.sources.localFolderPlaceholder')" @change="sources.updateSource(source.id, { rootPath: source.rootPath })" />
-                <button type="button" class="ak-clip-tr flex h-9 shrink-0 items-center gap-2 border border-line px-3 text-[12px] font-semibold" @click="chooseFolder(source)"><FolderOpen :size="14" />{{ t("settings.sources.chooseFolder") }}</button>
+                <input v-model="source.rootPath" class="h-10 min-w-0 flex-1 border border-line bg-surface px-3 text-sm outline-none focus:border-accent" :placeholder="t('settings.sources.localFolderPlaceholder')" @change="sources.updateSource(source.id, { rootPath: source.rootPath })" />
+                <button type="button" class="ak-clip-tr flex h-10 shrink-0 items-center gap-2 border border-line px-4 text-[12px] font-semibold uppercase tracking-[0.2em] whitespace-nowrap" @click="chooseFolder(source)"><FolderOpen :size="14" />{{ t("settings.sources.chooseFolder") }}</button>
               </span>
             </template>
 
             <div class="flex justify-end">
-              <button type="button" class="ak-clip-tr flex h-9 items-center gap-2 border border-line px-4 text-[12px] font-semibold" :disabled="testing === source.id" @click="verify(source)"><LoaderCircle v-if="testing === source.id" :size="14" class="animate-spin" />{{ t("wizard.sources.verify") }}</button>
+              <button type="button" class="ak-clip-tr flex h-10 items-center gap-2 border border-line px-5 text-[12px] font-semibold uppercase tracking-[0.2em] whitespace-nowrap" :disabled="testing === source.id" @click="verify(source)"><LoaderCircle v-if="testing === source.id" :size="14" class="animate-spin" />{{ t("wizard.sources.verify") }}</button>
             </div>
           </div>
 

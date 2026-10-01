@@ -41,6 +41,8 @@ export const useSourcesStore = defineStore("sources", () => {
   /** Whether a WebDAV password is stored for each source id. */
   const passwords = ref<Record<string, boolean>>({});
   const keychainAvailable = ref(true);
+  /** Bumped when the sources that affect the library change, so it can reload. */
+  const revision = ref(0);
 
   let store: Store | null = null;
 
@@ -113,12 +115,26 @@ export const useSourcesStore = defineStore("sources", () => {
     }
   }
 
+  /** A display name that never collides with another source's name. */
+  function uniqueName(base: string, excludeId?: string): string {
+    const trimmed = base.trim() || "Source";
+    const taken = new Set(
+      sources.value
+        .filter((source) => source.id !== excludeId)
+        .map((source) => source.name.trim()),
+    );
+    if (!taken.has(trimmed)) return trimmed;
+    let index = 2;
+    while (taken.has(`${trimmed} ${index}`)) index += 1;
+    return `${trimmed} ${index}`;
+  }
+
   /** Build a fresh source of the requested kind with a stable id. */
   function draft(kind: SourceKind): SongSource {
     return {
       id: createId(),
       kind,
-      name: kind === "local" ? "本地音乐" : "WebDAV",
+      name: uniqueName(kind === "local" ? "本地音乐" : "WebDAV"),
       url: kind === "webdav" ? "" : undefined,
       username: kind === "webdav" ? "" : undefined,
       allowInsecure: kind === "webdav" ? false : undefined,
@@ -128,12 +144,25 @@ export const useSourcesStore = defineStore("sources", () => {
 
   async function addSource(source: SongSource) {
     sources.value = [...sources.value, source];
-    if (!syncId.value) syncId.value = source.id;
+    const current = sources.value.find((item) => item.id === syncId.value);
+    // Auto-pick a sync location: use the new source when none is set, or
+    // upgrade a local-only selection to a newly added cloud source, so the
+    // user never has to select it manually.
+    if (!current || (isCloudSource(source) && current.kind === "local")) {
+      syncId.value = source.id;
+    }
+    revision.value += 1;
     await persist();
   }
 
   async function updateSource(id: string, patch: Partial<SongSource>) {
-    sources.value = sources.value.map((source) => (source.id === id ? { ...source, ...patch } : source));
+    const next: Partial<SongSource> = { ...patch };
+    if (next.name !== undefined) next.name = uniqueName(next.name, id);
+    sources.value = sources.value.map((source) => (source.id === id ? { ...source, ...next } : source));
+    // Only connection-relevant edits change what the library should load.
+    if ("url" in patch || "username" in patch || "rootPath" in patch || "allowInsecure" in patch || "kind" in patch) {
+      revision.value += 1;
+    }
     await persist();
   }
 
@@ -143,6 +172,7 @@ export const useSourcesStore = defineStore("sources", () => {
       syncId.value = cloudSources.value[0]?.id ?? sources.value[0]?.id ?? null;
     }
     await invoke("delete_source_password", { sourceId: id }).catch(() => {});
+    revision.value += 1;
     await persist();
   }
 
@@ -157,6 +187,8 @@ export const useSourcesStore = defineStore("sources", () => {
       const status = await invoke<KeychainStatus>("save_source_password", { sourceId: id, password });
       keychainAvailable.value = status.available;
       passwords.value = { ...passwords.value, [id]: status.hasPassword };
+      // A newly saved credential can make the source readable: reload.
+      revision.value += 1;
       return status.available ? null : status.warning ?? "keychain-unavailable";
     } catch (cause) {
       error.value = describeError(cause);
@@ -201,6 +233,7 @@ export const useSourcesStore = defineStore("sources", () => {
     error,
     passwords,
     keychainAvailable,
+    revision,
     hasSources,
     cloudSources,
     hasCloudSync,

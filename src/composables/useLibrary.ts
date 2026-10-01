@@ -36,10 +36,7 @@ export function useLibrary() {
   const player = usePlayerStore();
   const sources = useSourcesStore();
   const loadingLibrary = ref(false);
-  const enriching = ref(false);
   const refreshing = ref(false);
-  const enrichDone = ref(0);
-  const enrichTotal = ref(0);
 
   function friendlyError(error: unknown): string {
     const appError = toAppError(error);
@@ -73,9 +70,9 @@ export function useLibrary() {
   function showTracks(groups: SourceEntries[], invalidate: Set<string> = new Set()): Track[] {
     const tracks = mergeTracks(groups, invalidate);
     player.setTracks(tracks);
-    // Render fully from the on-disk cache first, then only hit the source for
-    // whatever is still missing.
-    void (async () => { await hydrateCachedAssets(tracks); await enrichTracks(tracks); })();
+    // Render from the on-disk cache only. Anything still missing is fetched
+    // lazily by the metadata store once a row/card becomes visible.
+    void hydrateCachedAssets(tracks);
     return tracks;
   }
 
@@ -133,27 +130,6 @@ export function useLibrary() {
       if (url) resolved.cover = url;
     }
     player.updateTrack(track.id, resolved);
-  }
-
-  async function enrichTracks(tracks: Track[]) {
-    const queue = tracks.filter((track) => track.path && track.sourceId && !track.metaLoaded);
-    if (queue.length === 0) return;
-    enriching.value = true;
-    enrichDone.value = 0;
-    enrichTotal.value = queue.length;
-    const worker = async () => {
-      for (let track = queue.shift(); track; track = queue.shift()) {
-        if (!track.path || !track.sourceId) continue;
-        try {
-          await applyMetadata(track, await invoke<TrackMetadata>("read_track_metadata", { sourceId: track.sourceId, path: track.path }));
-        } catch (error) {
-          console.warn(`[welkin] metadata failed for ${track.path}`, error);
-          player.updateTrack(track.id, { metaLoaded: true });
-        } finally { enrichDone.value += 1; }
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(4, queue.length) }, worker));
-    enriching.value = false;
   }
 
   async function downloadTrackMetadata(track: Track) {
@@ -227,5 +203,5 @@ export function useLibrary() {
     }
   }
 
-  return { loadingLibrary, enriching, refreshing, enrichDone, enrichTotal, friendlyError, loadCachedLibrary, loadRemoteLibrary, refreshLibrary, downloadTrackMetadata };
+  return { loadingLibrary, refreshing, friendlyError, loadCachedLibrary, loadRemoteLibrary, refreshLibrary, downloadTrackMetadata };
 }

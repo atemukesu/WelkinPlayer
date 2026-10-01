@@ -14,7 +14,7 @@ import TrackSortMenu from "../components/TrackSortMenu.vue";
 import ViewModeToggle from "../components/ViewModeToggle.vue";
 import PlaylistCover from "../components/PlaylistCover.vue";
 
-const props = withDefaults(defineProps<{ playlistId?: string | null; artist?: string | null; album?: string | null; sourceId?: string | null; loading: boolean; enriching: boolean; refreshing?: boolean; enrichDone: number; enrichTotal: number; downloadingTrackId?: number | null }>(), { playlistId: null, artist: null, album: null, sourceId: null, refreshing: false, downloadingTrackId: null });
+const props = withDefaults(defineProps<{ playlistId?: string | null; artist?: string | null; album?: string | null; sourceId?: string | null; loading: boolean; refreshing?: boolean; downloadingTrackId?: number | null }>(), { playlistId: null, artist: null, album: null, sourceId: null, refreshing: false, downloadingTrackId: null });
 const emit = defineEmits<{ refresh: []; edit: [id: string]; openArtist: [artist: string]; openAlbum: [album: string]; downloadMetadata: [track: Track]; editLyrics: [track: Track]; editInfo: [track: Track]; showInfo: [track: Track] }>();
 const { t } = useI18n();
 const player = usePlayerStore();
@@ -129,8 +129,6 @@ function downloadMetadata(track: Track) { emit("downloadMetadata", track); }
           </div>
         </div>
       </header>
-
-      <div v-if="enriching" class="mb-3 mt-8 flex shrink-0 items-center gap-2 font-mono text-[11px] uppercase tracking-[0.2em] text-accent"><span class="ak-pulse" style="width: 12px; height: 12px"></span>{{ t("library.enriching", { done: enrichDone, total: enrichTotal }) }}</div>
 
       <div v-if="player.tracks.length === 0" class="ak-frame grid shrink-0 place-items-center gap-4 border border-dashed border-line bg-surface/50 px-6 py-20 text-center">
         <template v-if="loading"><span class="ak-pulse"></span><p class="text-sm font-semibold uppercase tracking-[0.2em] text-muted">{{ t("library.loading") }}</p></template>

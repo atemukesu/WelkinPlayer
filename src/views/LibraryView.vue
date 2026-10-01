@@ -13,7 +13,7 @@ import PlaylistCover from "../components/PlaylistCover.vue";
 import TrackCard from "../components/TrackCard.vue";
 import TrackContextMenu from "../components/TrackContextMenu.vue";
 
-withDefaults(defineProps<{ loading: boolean; enriching: boolean; enrichDone: number; enrichTotal: number; downloadingTrackId?: number | null }>(), { downloadingTrackId: null });
+withDefaults(defineProps<{ loading: boolean; downloadingTrackId?: number | null }>(), { downloadingTrackId: null });
 const emit = defineEmits<{ settings: []; downloadMetadata: [track: Track]; editLyrics: [track: Track]; editInfo: [track: Track]; showInfo: [track: Track]; navigate: [view: View]; openPlaylist: [id: string] }>();
 const { t } = useI18n();
 const player = usePlayerStore();
