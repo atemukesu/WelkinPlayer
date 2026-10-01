@@ -45,7 +45,7 @@ function isActivePlaylist(id: string): boolean { return props.activePlaylistId =
 </script>
 
 <template>
-  <header v-if="placement === 'header'" class="flex h-14 items-center justify-between border-b border-line bg-surface px-4 md:hidden">
+  <header v-if="placement === 'header'" class="flex h-[calc(3.5rem_+_env(safe-area-inset-top))] items-center justify-between border-b border-line bg-surface px-4 pt-[env(safe-area-inset-top)] md:hidden">
     <span class="flex items-center gap-2 text-sm font-black uppercase tracking-[0.25em]"><span class="h-3 w-3 bg-accent"></span>Welkin</span>
     <button type="button" class="bg-accent px-2 py-1 text-xs font-bold uppercase leading-none tracking-[0.2em] text-accent-fg transition-opacity hover:opacity-80" @click="emit('navigate', 'sponsor')">{{ t("nav.freeEdition") }}</button>
   </header>
@@ -95,6 +95,7 @@ function isActivePlaylist(id: string): boolean { return props.activePlaylistId =
             <button type="button" class="flex h-11 items-center gap-3 px-2 text-left text-[13px] font-semibold uppercase tracking-[0.15em] transition-colors" :class="activeView === 'stats' ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg'" @click="navigateMobile('stats')"><Activity :size="16" :stroke-width="1.8" /><span>{{ t("nav.stats") }}</span></button>
             <button type="button" class="flex h-11 items-center gap-3 px-2 text-left text-[13px] font-semibold uppercase tracking-[0.15em] transition-colors" :class="activeView === 'playlist-new' ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg'" @click="createMobilePlaylist"><Plus :size="16" :stroke-width="2" /><span>{{ t("library.playlists.new") }}</span></button>
             <button type="button" class="flex h-11 items-center gap-3 px-2 text-left text-[13px] font-semibold uppercase tracking-[0.15em] transition-colors" :class="activeView === 'settings' ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg'" @click="navigateMobile('settings')"><Settings2 :size="16" :stroke-width="1.8" /><span>{{ t("nav.settings") }}</span></button>
+            <button type="button" class="flex h-11 items-center gap-3 px-2 text-left text-[13px] font-semibold uppercase tracking-[0.15em] transition-colors" :class="activeView === 'sponsor' ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg'" @click="navigateMobile('sponsor')"><HeartHandshake :size="16" :stroke-width="1.8" /><span>{{ t("nav.sponsor") }}</span></button>
           </div>
         </section>
       </Transition>
