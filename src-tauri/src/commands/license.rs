@@ -12,24 +12,25 @@
 //! embedded developer public key *and* the three bound fields match this
 //! installation exactly.
 //!
-//! The raw code is persisted in the settings store; the status is always
-//! re-derived from it (signature + binding + expiry), so a stored code cannot be
-//! forged by editing `settings.json` either.
+//! Only the raw code is persisted, in the OS keychain — never the verification
+//! result. Every `get_pro_status` call re-derives the status from the code
+//! (signature + device binding + expiry + tier), so a stored flag can neither be
+//! forged nor go stale.
 
 use base64::Engine;
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
-use tauri_plugin_store::StoreExt;
 
-use crate::commands::sponsor::{get_install_id, InstallId};
 use crate::commands::profile::local_nickname;
+use crate::commands::sponsor::{get_install_id, InstallId};
+use crate::commands::webdav::keychain_init_error;
 use crate::error::AppError;
 
-/// Settings store the activation code is persisted in.
-const STORE_FILE: &str = "settings.json";
-/// Key under which the raw activation code is stored.
-const LICENSE_KEY: &str = "license.code";
+/// Keychain service/account holding the activation code. Kept separate from the
+/// install-id (`...instid`) and WebDAV (`...webdav`) entries.
+const SERVICE: &str = "com.atemukesu.welkinplayer.license";
+const LICENSE_ACCOUNT: &str = "activation-code";
 
 /// Developer's Ed25519 public key, base64-encoded (32 bytes).
 ///
@@ -227,12 +228,30 @@ fn current_device(app: &AppHandle) -> Result<Device, AppError> {
     })
 }
 
-fn read_stored_code(app: &AppHandle) -> Option<String> {
-    app.store(STORE_FILE)
-        .ok()
-        .and_then(|store| store.get(LICENSE_KEY))
-        .and_then(|value| value.as_str().map(str::to_string))
-        .filter(|code| !code.trim().is_empty())
+fn entry() -> Result<keyring::Entry, keyring::Error> {
+    keyring::Entry::new(SERVICE, LICENSE_ACCOUNT)
+}
+
+/// Read the stored activation code from the OS keychain, if any.
+fn read_stored_code() -> Option<String> {
+    if keychain_init_error().is_some() {
+        return None;
+    }
+    match entry().ok()?.get_password() {
+        Ok(code) if !code.trim().is_empty() => Some(code),
+        _ => None,
+    }
+}
+
+/// Persist the activation code in the OS keychain.
+fn store_code(code: &str) -> Result<(), AppError> {
+    if let Some(reason) = keychain_init_error() {
+        return Err(AppError::Store(format!("系统钥匙串不可用：{reason}")));
+    }
+    let entry = entry().map_err(|error| AppError::Store(format!("系统钥匙串不可用：{error}")))?;
+    entry
+        .set_password(code)
+        .map_err(|error| AppError::Store(format!("无法保存激活码：{error}")))
 }
 
 /// How long a verification is held before the result is returned.
@@ -247,9 +266,7 @@ fn verify_and_store(app: &AppHandle, code: &str) -> Result<ProStatus, AppError> 
     let device = current_device(app)?;
     let claims = verify_token(code, &key, &device, now_seconds())?;
 
-    let store = app.store(STORE_FILE)?;
-    store.set(LICENSE_KEY, code);
-    store.save()?;
+    store_code(code)?;
 
     log::info!(
         "pro activation succeeded (tier {}, signer {})",
@@ -285,7 +302,7 @@ pub async fn activate_pro(app: AppHandle, code: String) -> Result<ProStatus, App
 /// Report the current Pro status, re-verifying any stored code from scratch.
 #[tauri::command]
 pub fn get_pro_status(app: AppHandle) -> Result<ProStatus, AppError> {
-    let Some(code) = read_stored_code(&app) else {
+    let Some(code) = read_stored_code() else {
         return Ok(ProStatus::inactive());
     };
 

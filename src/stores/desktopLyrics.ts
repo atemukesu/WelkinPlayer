@@ -61,7 +61,6 @@ export function normalizeDesktopLyric(raw: unknown): DesktopLyricSettings {
     opacity: clampNumber(data.opacity, 10, 100, fallback.opacity),
     stroke: bool("stroke"),
     strokeColor: asColor(data.strokeColor, fallback.strokeColor),
-    autoHideMs: clampNumber(data.autoHideMs, 0, 300_000, fallback.autoHideMs),
   };
 }
 

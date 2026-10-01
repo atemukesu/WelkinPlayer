@@ -17,11 +17,6 @@ const settings = computed(() => store.settings);
 const isAndroid = computed(() => store.platform === "android");
 const needsPermission = computed(() => isAndroid.value && settings.value.enabled && !store.permissionGranted);
 
-const autoHideOptions = computed(() => [
-  { value: "0", label: t("settings.desktopLyrics.autoHideNever") },
-  ...[5, 10, 30, 60, 300].map((value) => ({ value: String(value), label: t("settings.desktopLyrics.autoHideSeconds", { value }) })),
-]);
-
 function reset() {
   Object.assign(store.settings, { ...DEFAULT_DESKTOP_LYRIC, fontFamilies: [] });
   // Forget the remembered floating-window bounds too, so a window that was
@@ -88,17 +83,6 @@ function reset() {
       <div class="grid gap-4 border border-line bg-bg/40 p-4">
         <DesktopLyricField v-model="settings.stroke" type="toggle" :label="t('settings.desktopLyrics.stroke')" />
         <DesktopLyricField v-model="settings.strokeColor" type="color" :label="t('settings.desktopLyrics.strokeColor')" />
-      </div>
-
-      <!-- Behaviour -->
-      <div class="grid gap-4 border border-line bg-bg/40 p-4">
-        <DesktopLyricField
-          :model-value="String(settings.autoHideMs)"
-          type="select"
-          :label="t('settings.desktopLyrics.autoHide')"
-          :options="autoHideOptions"
-          @update:model-value="(value) => (settings.autoHideMs = Number(value))"
-        />
       </div>
 
       <!-- Desktop window behaviour -->

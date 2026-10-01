@@ -60,8 +60,6 @@ export interface DesktopLyricSettings {
   stroke: boolean;
   /** Outline colour used when `stroke` is enabled. */
   strokeColor: string;
-  /** Auto-hide after this many ms while paused; 0 keeps it visible. */
-  autoHideMs: number;
 }
 
 export const DEFAULT_DESKTOP_LYRIC: DesktopLyricSettings = {
@@ -83,7 +81,6 @@ export const DEFAULT_DESKTOP_LYRIC: DesktopLyricSettings = {
   opacity: 100,
   stroke: false,
   strokeColor: "#000000",
-  autoHideMs: 0,
 };
 
 /** Where a lyric provider may be selected on the settings page. */

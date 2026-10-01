@@ -300,6 +300,7 @@ onUnmounted(() => {
             <p class="mt-3 text-sm leading-relaxed text-muted">{{ t("sponsor.activateModal.activeDesc") }}</p>
             <dl class="mt-3 grid gap-1.5 text-sm">
               <div class="flex justify-between gap-4"><dt class="text-dim">{{ t("sponsor.activateModal.signer") }}</dt><dd class="min-w-0 truncate font-semibold">{{ license.status.signer ?? "—" }}</dd></div>
+              <div class="flex justify-between gap-4"><dt class="text-dim">{{ t("sponsor.activateModal.tier") }}</dt><dd class="font-semibold tabular-nums">{{ license.status.tier ?? "—" }}</dd></div>
               <div class="flex justify-between gap-4"><dt class="text-dim">{{ t("sponsor.activateModal.expires") }}</dt><dd class="font-semibold tabular-nums">{{ activationExpiry }}</dd></div>
             </dl>
           </template>

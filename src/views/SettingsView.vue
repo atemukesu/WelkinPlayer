@@ -75,6 +75,80 @@ button.ak-clip-tr.bg-accent:active:not(:disabled) {
 button.text-dim:hover:not(:disabled) {
   color: var(--fg);
 }
+
+/* Edition dial. Standard is a plain dial; Pro wraps it in a slowly rotating
+   accent aura and makes hover/active react, matching the splash language. */
+.ak-tier-dial {
+  position: relative;
+  isolation: isolate;
+}
+
+.ak-tier-aura {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 8rem;
+  height: 8rem;
+  border-radius: 9999px;
+  opacity: 0;
+  pointer-events: none;
+  background: conic-gradient(from 0deg, transparent 0 54%, var(--accent) 78%, transparent 100%);
+  filter: blur(10px);
+  animation: ak-tier-spin 4.5s linear infinite;
+  transition: opacity 520ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.ak-tier-disc {
+  z-index: 1;
+  background: var(--surface);
+  transition: transform 320ms cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 320ms cubic-bezier(0.2, 0.8, 0.2, 1), border-color 320ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.ak-tier-inner {
+  transition: border-color 320ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.ak-tier-button {
+  transition: opacity 240ms cubic-bezier(0.2, 0.8, 0.2, 1), text-shadow 320ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.ak-tier-button:hover {
+  opacity: 0.85;
+}
+
+.ak-tier-dial.is-pro .ak-tier-aura {
+  opacity: 0.9;
+}
+
+.ak-tier-dial.is-pro .ak-tier-disc {
+  border-color: var(--accent);
+  box-shadow: 0 0 26px var(--accent-soft);
+}
+
+.ak-tier-dial.is-pro .ak-tier-inner {
+  border-color: var(--accent);
+}
+
+.ak-tier-dial.is-pro .ak-tier-button {
+  text-shadow: 0 0 14px var(--accent-soft);
+}
+
+.ak-tier-dial.is-pro:hover .ak-tier-disc {
+  transform: scale(1.05);
+  box-shadow: 0 0 42px var(--accent-soft);
+}
+
+.ak-tier-dial.is-pro:hover .ak-tier-aura {
+  opacity: 1;
+}
+
+.ak-tier-dial.is-pro:active .ak-tier-disc {
+  transform: scale(0.97);
+}
+
+@keyframes ak-tier-spin {
+  to { transform: rotate(360deg); }
+}
 </style>
 
 <template>
@@ -85,7 +159,7 @@ button.text-dim:hover:not(:disabled) {
     </header>
 
     <section class="ak-frame relative mt-8 border border-line bg-surface">
-      <div class="pointer-events-none absolute inset-0 overflow-hidden"><div class="absolute inset-0 opacity-[0.18]" style="background: radial-gradient(circle at 90% 4%, var(--accent), transparent 55%)"></div><div class="absolute inset-0 opacity-[0.06]" style="background-image: linear-gradient(var(--fg) 1px, transparent 1px), linear-gradient(90deg, var(--fg) 1px, transparent 1px); background-size: 26px 26px"></div></div>
+      <div v-if="license.isPro" class="pointer-events-none absolute inset-0 overflow-hidden"><div class="absolute inset-0 opacity-[0.18]" style="background: radial-gradient(circle at 90% 4%, var(--accent), transparent 55%)"></div><div class="absolute inset-0 opacity-[0.06]" style="background-image: linear-gradient(var(--fg) 1px, transparent 1px), linear-gradient(90deg, var(--fg) 1px, transparent 1px); background-size: 26px 26px"></div></div>
       <div class="relative grid gap-8 p-8 lg:grid-cols-[1.5fr_1fr] lg:items-center">
         <div class="grid gap-6">
           <div class="flex items-center gap-5"><span class="grid h-24 w-24 shrink-0 place-items-center bg-accent text-accent-fg"><Music :size="42" :stroke-width="2" /></span><div class="min-w-0"><h2 class="text-3xl font-black uppercase leading-none tracking-tight sm:text-4xl">{{ t("settings.about.title") }}</h2><p class="mt-3 max-w-lg text-sm leading-[1.7] text-muted">{{ t("settings.about.tagline") }}</p></div></div>
@@ -94,7 +168,14 @@ button.text-dim:hover:not(:disabled) {
             <p class="flex flex-wrap items-baseline gap-1.5"><span class="font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.about.author") }}</span><span class="text-dim">{{ locale === "zh-CN" ? "：" : ":" }}</span><span class="font-semibold">{{ t("settings.about.authorName") }}</span></p>
           </div>
         </div>
-        <div class="flex items-center justify-center py-4"><span class="grid h-32 w-32 place-items-center rounded-full border border-line"><span class="grid h-[100px] w-[100px] place-items-center rounded-full border-2 border-line-strong text-center text-fg"><button type="button" class="px-3 text-base font-black uppercase leading-tight tracking-[0.1em] transition-opacity hover:opacity-80" @click="emit('sponsor')">{{ editionLabel }}</button></span></span></div>
+        <div class="ak-tier-dial flex items-center justify-center py-4" :class="{ 'is-pro': license.isPro }">
+          <span class="ak-tier-aura" aria-hidden="true"></span>
+          <span class="ak-tier-disc relative grid h-32 w-32 place-items-center rounded-full border border-line">
+            <span class="ak-tier-inner grid h-[100px] w-[100px] place-items-center rounded-full border-2 border-line-strong text-center text-fg">
+              <button type="button" class="ak-tier-button px-3 text-base font-black uppercase leading-tight tracking-[0.1em]" @click="emit('sponsor')">{{ editionLabel }}</button>
+            </span>
+          </span>
+        </div>
       </div>
     </section>
 
@@ -103,6 +184,7 @@ button.text-dim:hover:not(:disabled) {
         <div><h2 class="text-sm font-bold uppercase tracking-[0.2em]">{{ t("settings.profile.title") }}</h2><p class="mt-2 text-sm text-muted">{{ t("settings.profile.desc") }}</p></div>
         <div class="grid gap-4">
           <label class="grid gap-2 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.profile.nickname") }}<input v-model="profile.profile.nickname" maxlength="32" class="h-10 border border-line bg-bg px-3 text-sm font-normal normal-case tracking-normal text-fg outline-none focus:border-accent" :placeholder="t('settings.profile.nicknamePlaceholder')" @change="profile.setNickname(profile.profile.nickname)" /></label>
+          <p v-if="license.isPro" class="text-[11px] font-semibold leading-relaxed text-amber-500">{{ t("settings.profile.nicknameWarning") }}</p>
           <p class="flex items-center gap-2 text-[11px] normal-case text-dim"><span class="h-2 w-2" :class="sources.hasCloudSync ? 'bg-accent' : 'bg-dim'"></span>{{ sources.hasCloudSync ? t("settings.profile.synced") : t("settings.profile.localOnly") }}</p>
         </div>
       </section>

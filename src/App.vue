@@ -104,8 +104,8 @@ watch(() => sources.revision, () => {
 watchEffect(() => { document.documentElement.classList.toggle("dark", theme.value === "dark"); document.documentElement.dataset.accent = accent.value; localStorage.setItem("welkin-theme", theme.value); localStorage.setItem("welkin-accent", accent.value); });
 watchEffect(() => { document.documentElement.lang = locale.value; localStorage.setItem("welkin-locale", locale.value); });
 
-/** Minimum time (ms) the inline splash stays visible so a fast boot doesn't flash it. */
-const SPLASH_MIN_MS = 500;
+/** Minimum time (ms) the inline splash stays visible so its reveal can play and a fast boot doesn't flash it. */
+const SPLASH_MIN_MS = 3000;
 /** Dismisses the static splash screen inlined in index.html once the app is ready. */
 function dismissSplash() {
   const splash = document.getElementById("splash");
@@ -217,6 +217,9 @@ async function bootstrap() {
   const firstRun = await profile.hydrate();
   const seeded = await playback.hydrate({ path: profile.profile.lastTrack, position: profile.profile.lastPosition });
   if (seeded) profile.clearLegacyPlayback();
+  // Ask Rust for the re-verified edition before revealing the app so the splash
+  // shows the right one; never let a slow backend stall boot.
+  await Promise.race([license.refresh(), new Promise((resolve) => window.setTimeout(resolve, 1500))]);
   booted.value = true;
   void loadCachedLibrary();
   if (!firstRun) {
@@ -242,6 +245,8 @@ async function downloadMetadata(track: Track) {
   } finally { downloadingTrackId.value = null; }
 }
 function toggleSidebar() { sidebarCollapsed.value = !sidebarCollapsed.value; localStorage.setItem("welkin-sidebar-collapsed", sidebarCollapsed.value ? "1" : "0"); }
+/** Re-verify the Pro license from scratch whenever the app regains focus. */
+function recheckLicense() { void license.refresh(); }
 function onGlobalKeydown(event: KeyboardEvent) {
   if (event.code !== "Space" && event.key !== " ") return;
   const target = event.target as HTMLElement | null;
@@ -254,8 +259,8 @@ function onGlobalKeydown(event: KeyboardEvent) {
   player.togglePlayback();
 }
 
-onMounted(() => { window.addEventListener("hashchange", syncViewFromHash); window.addEventListener("keydown", onGlobalKeydown); window.addEventListener("beforeunload", savePlaybackPositionOnLeave); window.addEventListener("pagehide", savePlaybackPositionOnLeave); document.addEventListener("visibilitychange", onVisibilityChange); void initAudio(); void network.start(); void cache.start(); void license.refresh(); bootDesktopLyrics(); void invoke<string>("ping").catch((error) => console.warn("[welkin] ping failed", describeError(error))); void bootstrap(); });
-onUnmounted(() => { savePlaybackPosition(true); stopDesktopLyrics(); window.removeEventListener("hashchange", syncViewFromHash); window.removeEventListener("keydown", onGlobalKeydown); window.removeEventListener("beforeunload", savePlaybackPositionOnLeave); window.removeEventListener("pagehide", savePlaybackPositionOnLeave); document.removeEventListener("visibilitychange", onVisibilityChange); void profile.flush(); });
+onMounted(() => { window.addEventListener("hashchange", syncViewFromHash); window.addEventListener("keydown", onGlobalKeydown); window.addEventListener("beforeunload", savePlaybackPositionOnLeave); window.addEventListener("pagehide", savePlaybackPositionOnLeave); window.addEventListener("focus", recheckLicense); document.addEventListener("visibilitychange", onVisibilityChange); void initAudio(); void network.start(); void cache.start(); bootDesktopLyrics(); void invoke<string>("ping").catch((error) => console.warn("[welkin] ping failed", describeError(error))); void bootstrap(); });
+onUnmounted(() => { savePlaybackPosition(true); stopDesktopLyrics(); window.removeEventListener("hashchange", syncViewFromHash); window.removeEventListener("keydown", onGlobalKeydown); window.removeEventListener("beforeunload", savePlaybackPositionOnLeave); window.removeEventListener("pagehide", savePlaybackPositionOnLeave); window.removeEventListener("focus", recheckLicense); document.removeEventListener("visibilitychange", onVisibilityChange); void profile.flush(); });
 </script>
 
 <template>

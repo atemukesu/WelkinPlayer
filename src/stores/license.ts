@@ -28,24 +28,39 @@ const INACTIVE: ProStatus = {
   error: null,
 };
 
+/**
+ * Reflect the Rust-verified edition onto the root element and the pre-boot
+ * splash. Nothing is cached client-side: the status is asked of Rust on every
+ * launch and never stored in localStorage (where it could be forged).
+ */
+function applyEdition(active: boolean) {
+  document.documentElement.classList.toggle("is-pro", active);
+  const edition = document.querySelector<HTMLElement>("#splash .splash-edition");
+  if (edition) edition.textContent = active ? "Pro Edition" : "Standard Edition";
+  // Triggers the splash's fade-in instead of letting the edition pop in.
+  document.documentElement.classList.add("edition-ready");
+}
+
 export const useLicenseStore = defineStore("license", () => {
   const status = ref<ProStatus>({ ...INACTIVE });
 
   /** Whether a valid, unexpired, device-bound Pro code is active. */
   const isPro = computed(() => status.value.active);
 
-  /** Load and re-verify any stored activation code. */
+  /** Load and re-verify any stored activation code from Rust. */
   async function refresh() {
     try {
       status.value = await invoke<ProStatus>("get_pro_status");
     } catch {
       // A failed probe must never be treated as activation.
     }
+    applyEdition(status.value.active);
   }
 
   /** Verify and persist a code; throws a structured AppError on failure. */
   async function activate(code: string): Promise<ProStatus> {
     status.value = await invoke<ProStatus>("activate_pro", { code });
+    applyEdition(status.value.active);
     return status.value;
   }
 
