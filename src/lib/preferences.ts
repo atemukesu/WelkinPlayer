@@ -22,6 +22,109 @@ export interface LyricDisplaySettings {
   fontFamilies: string[];
 }
 
+/** Horizontal alignment of the floating desktop-lyrics text. */
+export type DesktopLyricAlign = "left" | "center" | "right";
+/** What the mouse wheel adjusts while hovering the floating lyrics. */
+export type DesktopLyricWheelAction = "none" | "fontSize" | "opacity";
+
+/**
+ * Typography, colours and behaviour of the floating desktop-lyrics layer.
+ *
+ * Kept client-local alongside the other lyric display settings: window size,
+ * screen and personal taste differ per device, so syncing would fight the user.
+ */
+export interface DesktopLyricSettings {
+  /** Master switch for the floating layer. */
+  enabled: boolean;
+  /** When locked the window is click-through and ignores the cursor. */
+  locked: boolean;
+  /** Keep the floating window above every other window (desktop only). */
+  alwaysOnTop: boolean;
+  /** Hide the floating window from the taskbar / dock (desktop only). */
+  skipTaskbar: boolean;
+  /** Render the translated sub-line under each primary line. */
+  translation: boolean;
+  /** Draw a word-by-word karaoke sweep instead of plain line highlighting. */
+  karaoke: boolean;
+  /** How many context lines to draw around the active block (1–5). */
+  contextLines: number;
+  /** Text alignment inside the window. */
+  align: DesktopLyricAlign;
+  fontSize: number;
+  /** Sub-line (translation) size in px. */
+  translationSize: number;
+  lineSpacing: number;
+  /** CSS font weight (100–900). */
+  fontWeight: number;
+  /** Ordered `font-family` fallback list; empty uses the app font. */
+  fontFamilies: string[];
+  /** Idle (non-active) text colour. */
+  textColor: string;
+  /** Colour of a line while it is being sung. */
+  activeColor: string;
+  /** Translation sub-line colour. */
+  translationColor: string;
+  /** Whole-layer opacity, 0–100. */
+  opacity: number;
+  /** Outline thickness in px; 0 disables the outline. */
+  strokeWidth: number;
+  strokeColor: string;
+  shadow: boolean;
+  shadowBlur: number;
+  shadowColor: string;
+  /** Draw a filled panel behind the text. */
+  background: boolean;
+  backgroundColor: string;
+  /** Background opacity, 0–100. */
+  backgroundOpacity: number;
+  borderRadius: number;
+  paddingX: number;
+  paddingY: number;
+  /** Hide the layer while playback is paused. */
+  hideOnPause: boolean;
+  /** Hide the layer while the current track has no lyrics. */
+  hideWhenNoLyrics: boolean;
+  /** Auto-hide after this many ms while paused; 0 keeps it visible. */
+  autoHideMs: number;
+  /** What the mouse wheel adjusts while hovering (desktop only). */
+  wheelAction: DesktopLyricWheelAction;
+}
+
+export const DEFAULT_DESKTOP_LYRIC: DesktopLyricSettings = {
+  enabled: false,
+  locked: false,
+  alwaysOnTop: true,
+  skipTaskbar: true,
+  translation: true,
+  karaoke: true,
+  contextLines: 1,
+  align: "center",
+  fontSize: 34,
+  translationSize: 20,
+  lineSpacing: 18,
+  fontWeight: 700,
+  fontFamilies: [],
+  textColor: "#ffffff",
+  activeColor: "#f0a500",
+  translationColor: "#d0d3d8",
+  opacity: 100,
+  strokeWidth: 2,
+  strokeColor: "#000000",
+  shadow: true,
+  shadowBlur: 6,
+  shadowColor: "#000000",
+  background: false,
+  backgroundColor: "#000000",
+  backgroundOpacity: 35,
+  borderRadius: 12,
+  paddingX: 22,
+  paddingY: 12,
+  hideOnPause: false,
+  hideWhenNoLyrics: true,
+  autoHideMs: 0,
+  wheelAction: "fontSize",
+};
+
 /** Where a lyric provider may be selected on the settings page. */
 export type LyricProvider = "qq" | "local" | "netease" | "amll";
 

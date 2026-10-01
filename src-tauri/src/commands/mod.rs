@@ -6,6 +6,7 @@
 //! `tauri::generate_handler!`.
 
 pub mod covers;
+pub mod desktop_lyric;
 pub mod editor;
 pub mod fonts;
 pub mod lyrics;

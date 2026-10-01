@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Welkin Desktop Lyrics</title>
+    <style>
+      :root {
+        --line-spacing: 18px;
+        --pad-x: 22px;
+        --pad-y: 12px;
+        --radius: 12px;
+        --opacity: 1;
+        --font-size: 34px;
+        --translation-size: 20px;
+        --font-weight: 700;
+        --text-color: #ffffff;
+        --active-color: #f0a500;
+        --translation-color: #d0d3d8;
+        --stroke-width: 0px;
+        --stroke-color: #000000;
+        --bg-color: transparent;
+        --align: center;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        background: transparent;
+        color-scheme: light dark;
+      }
+
+      body {
+        font-family: "Noto Sans SC Variable", "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+        user-select: none;
+        -webkit-user-select: none;
+        -webkit-font-smoothing: antialiased;
+        text-rendering: optimizeLegibility;
+      }
+
+      body.is-hidden #stage {
+        opacity: 0;
+        visibility: hidden;
+      }
+
+      body.shadow #stage {
+        filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.55));
+      }
+
+      #stage {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        justify-content: center;
+        gap: var(--line-spacing);
+        padding: var(--pad-y) var(--pad-x);
+        text-align: var(--align);
+        border-radius: var(--radius);
+        background: var(--bg-color);
+        opacity: var(--opacity);
+        transition: opacity 200ms ease;
+      }
+
+      .line {
+        line-height: 1.28;
+        transition: opacity 200ms ease;
+      }
+
+      .primary {
+        margin: 0;
+        font-size: var(--font-size);
+        font-weight: var(--font-weight);
+        color: var(--text-color);
+        -webkit-text-stroke: var(--stroke-width) var(--stroke-color);
+        transition: color 160ms ease;
+      }
+
+      .line.is-bg .primary {
+        font-size: calc(var(--font-size) * 0.68);
+        opacity: 0.72;
+      }
+
+      .line.is-active .primary {
+        color: var(--active-color);
+      }
+
+      .line.is-duet {
+        text-align: right;
+      }
+
+      .translation {
+        margin: 0.12em 0 0;
+        font-size: var(--translation-size);
+        color: var(--translation-color);
+      }
+
+      .roman {
+        margin: 0.08em 0 0;
+        font-size: calc(var(--translation-size) * 0.9);
+        color: var(--translation-color);
+        opacity: 0.82;
+      }
+
+      /* Karaoke: a gradient sweeps each word as it is sung. */
+      .karaoke .line.is-active .word {
+        --p: 0%;
+        background-image: linear-gradient(
+          90deg,
+          var(--active-color) 0 var(--p),
+          var(--text-color) var(--p) 100%
+        );
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+        -webkit-text-fill-color: transparent;
+      }
+
+      .karaoke .line.is-bg.is-active .word {
+        --p: 0%;
+        background-image: linear-gradient(
+          90deg,
+          var(--active-color) 0 var(--p),
+          var(--translation-color) var(--p) 100%
+        );
+      }
+
+      /* Toolbar: appears on hover, never when locked. */
+      #tools {
+        position: fixed;
+        top: 4px;
+        left: 50%;
+        transform: translateX(-50%) translateY(-8px);
+        display: flex;
+        gap: 4px;
+        padding: 3px;
+        border-radius: 999px;
+        background: rgba(20, 22, 26, 0.72);
+        backdrop-filter: blur(8px);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 160ms ease, transform 160ms ease;
+        z-index: 10;
+      }
+
+      body:not(.locked):hover #tools {
+        opacity: 1;
+        pointer-events: auto;
+        transform: translateX(-50%) translateY(0);
+      }
+
+      body.locked #tools {
+        display: none;
+      }
+
+      #tools button {
+        display: grid;
+        place-items: center;
+        width: 26px;
+        height: 26px;
+        border: 0;
+        border-radius: 999px;
+        background: transparent;
+        color: #fff;
+        font-size: 14px;
+        line-height: 1;
+        cursor: pointer;
+        transition: background 140ms ease;
+      }
+
+      #tools button:hover {
+        background: rgba(255, 255, 255, 0.18);
+      }
+
+      #drag {
+        cursor: grab;
+        letter-spacing: 1px;
+      }
+
+      #drag:active {
+        cursor: grabbing;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="stage"></div>
+    <div id="tools">
+      <button id="drag" type="button" title="拖动">⠿</button>
+      <button id="fontDown" type="button" title="减小字号">A-</button>
+      <button id="fontUp" type="button" title="增大字号">A+</button>
+      <button id="lock" type="button" title="锁定/解锁">🔓</button>
+      <button id="close" type="button" title="关闭桌面歌词">✕</button>
+    </div>
+    <script src="/desktop-lyric-overlay.js"></script>
+  </body>
+</html>

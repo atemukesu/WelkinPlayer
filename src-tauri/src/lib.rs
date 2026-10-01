@@ -29,6 +29,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::new().build())
+        .manage(commands::desktop_lyric::DesktopLyricCache::default())
         .setup(|app| {
             // Mint the per-install identifier on first launch so it is stable
             // from the very first run; later launches just read it back.
@@ -111,7 +112,14 @@ pub fn run() {
             proxy::network_status,
             proxy::get_stream_cache_limit,
             proxy::set_stream_cache_limit,
-            proxy::clear_stream_cache
+            proxy::clear_stream_cache,
+            commands::desktop_lyric::desktop_lyric_open,
+            commands::desktop_lyric::desktop_lyric_close,
+            commands::desktop_lyric::desktop_lyric_load,
+            commands::desktop_lyric::desktop_lyric_tick,
+            commands::desktop_lyric::desktop_lyric_set_settings,
+            commands::desktop_lyric::desktop_lyric_status,
+            commands::desktop_lyric::desktop_lyric_request_permission
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

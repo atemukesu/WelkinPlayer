@@ -11,6 +11,7 @@ import { localeOptions } from "../i18n";
 import { useProfileStore } from "../stores/profile";
 import { useSourcesStore } from "../stores/sources";
 import LyricsSettings from "../components/LyricsSettings.vue";
+import DesktopLyricSettings from "../components/DesktopLyricSettings.vue";
 import pkg from "../../package.json";
 
 const theme = defineModel<Theme>("theme", { required: true });
@@ -132,6 +133,8 @@ button.text-dim:hover:not(:disabled) {
       </section>
 
       <LyricsSettings />
+
+      <DesktopLyricSettings />
     </div>
   </div>
 </template>

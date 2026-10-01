@@ -6,9 +6,17 @@
 //! context is ready by the time the Tauri entry point runs on a worker thread.
 
 use std::ffi::c_void;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
+use jni::objects::{JObject, JValue};
 use jni::JavaVM;
+
+/// Kotlin bridge that owns the floating overlay service.
+const DESKTOP_LYRIC_BRIDGE: &str = "com/atemukesu/welkinplayer/DesktopLyricBridge";
+
+/// Whether the floating overlay service is currently running.
+static DESKTOP_LYRIC_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// The VM obtained in `JNI_OnLoad`; stays valid for the process lifetime.
 static JAVA_VM: OnceLock<JavaVM> = OnceLock::new();
@@ -75,6 +83,143 @@ pub fn initialize() -> Result<(), String> {
     }
     std::mem::forget(application);
 
+    Ok(())
+}
+
+/// The overlay exists on every supported Android version.
+pub fn desktop_lyric_supported() -> bool {
+    true
+}
+
+/// Whether the floating overlay service is currently running.
+pub fn desktop_lyric_is_running() -> bool {
+    DESKTOP_LYRIC_ACTIVE.load(Ordering::SeqCst)
+}
+
+/// Whether the "display over other apps" permission has been granted.
+///
+/// A failed query reports `true` so a broken JNI context cannot silently block
+/// the feature; the real failure surfaces when the service refuses to start.
+pub fn desktop_lyric_has_permission() -> bool {
+    match overlay_permission() {
+        Ok(value) => value,
+        Err(error) => {
+            log::warn!("overlay permission query failed: {error}");
+            true
+        }
+    }
+}
+
+fn overlay_permission() -> Result<bool, String> {
+    let java_vm = JAVA_VM
+        .get()
+        .ok_or_else(|| "JNI_OnLoad has not run yet".to_string())?;
+    let mut env = java_vm
+        .attach_current_thread()
+        .map_err(|error| error.to_string())?;
+    let context_raw = ndk_context::android_context().context();
+    let context = unsafe { JObject::from_raw(context_raw as jni::sys::jobject) };
+
+    env.call_static_method(
+        DESKTOP_LYRIC_BRIDGE,
+        "hasOverlayPermission",
+        "(Landroid/content/Context;)Z",
+        &[JValue::Object(&context)],
+    )
+    .map_err(|error| error.to_string())?
+    .z()
+    .map_err(|error| error.to_string())
+}
+
+/// Open the system screen where the user grants the overlay permission.
+pub fn desktop_lyric_open_settings() -> Result<(), String> {
+    let java_vm = JAVA_VM
+        .get()
+        .ok_or_else(|| "JNI_OnLoad has not run yet".to_string())?;
+    let mut env = java_vm
+        .attach_current_thread()
+        .map_err(|error| error.to_string())?;
+    let context_raw = ndk_context::android_context().context();
+    let context = unsafe { JObject::from_raw(context_raw as jni::sys::jobject) };
+
+    env.call_static_method(
+        DESKTOP_LYRIC_BRIDGE,
+        "openOverlaySettings",
+        "(Landroid/content/Context;)V",
+        &[JValue::Object(&context)],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+/// Start the foreground overlay service with the bundled renderer markup/script.
+pub fn desktop_lyric_start(html: &str, js: &str) -> Result<(), String> {
+    let java_vm = JAVA_VM
+        .get()
+        .ok_or_else(|| "JNI_OnLoad has not run yet".to_string())?;
+    let mut env = java_vm
+        .attach_current_thread()
+        .map_err(|error| error.to_string())?;
+    let context_raw = ndk_context::android_context().context();
+    let context = unsafe { JObject::from_raw(context_raw as jni::sys::jobject) };
+    let html = JObject::from(env.new_string(html).map_err(|error| error.to_string())?);
+    let js = JObject::from(env.new_string(js).map_err(|error| error.to_string())?);
+
+    env.call_static_method(
+        DESKTOP_LYRIC_BRIDGE,
+        "start",
+        "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)V",
+        &[
+            JValue::Object(&context),
+            JValue::Object(&html),
+            JValue::Object(&js),
+        ],
+    )
+    .map_err(|error| error.to_string())?;
+    DESKTOP_LYRIC_ACTIVE.store(true, Ordering::SeqCst);
+    Ok(())
+}
+
+/// Stop the foreground overlay service.
+pub fn desktop_lyric_stop() -> Result<(), String> {
+    let java_vm = JAVA_VM
+        .get()
+        .ok_or_else(|| "JNI_OnLoad has not run yet".to_string())?;
+    let mut env = java_vm
+        .attach_current_thread()
+        .map_err(|error| error.to_string())?;
+    let context_raw = ndk_context::android_context().context();
+    let context = unsafe { JObject::from_raw(context_raw as jni::sys::jobject) };
+
+    env.call_static_method(
+        DESKTOP_LYRIC_BRIDGE,
+        "stop",
+        "(Landroid/content/Context;)V",
+        &[JValue::Object(&context)],
+    )
+    .map_err(|error| error.to_string())?;
+    DESKTOP_LYRIC_ACTIVE.store(false, Ordering::SeqCst);
+    Ok(())
+}
+
+/// Forward one document (`load` / `tick` / `settings`) to the overlay WebView.
+pub fn desktop_lyric_update(method: &str, json: &str) -> Result<(), String> {
+    let java_vm = JAVA_VM
+        .get()
+        .ok_or_else(|| "JNI_OnLoad has not run yet".to_string())?;
+    let mut env = java_vm
+        .attach_current_thread()
+        .map_err(|error| error.to_string())?;
+    let method = JObject::from(env.new_string(method).map_err(|error| error.to_string())?);
+    let json = JObject::from(env.new_string(json).map_err(|error| error.to_string())?);
+
+    env.call_static_method(
+        DESKTOP_LYRIC_BRIDGE,
+        "update",
+        "(Ljava/lang/String;Ljava/lang/String;)V",
+        &[JValue::Object(&method), JValue::Object(&json)],
+    )
+    .map_err(|error| error.to_string())?;
     Ok(())
 }
 
