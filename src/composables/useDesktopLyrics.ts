@@ -5,6 +5,8 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import { findActiveLyricIndices, pickPrimaryIndex } from "lyric-kit";
 import { invoke } from "../api";
 import { currentTime } from "../lib/audio";
+import { i18n } from "../i18n";
+import { pushToast } from "../lib/toast";
 import type { DesktopLyricLine, DesktopLyricLoadPayload, DesktopLyricTickPayload } from "../lib/desktopLyric";
 import { isAndroid } from "../lib/desktopLyric";
 import { useDesktopLyricsStore } from "../stores/desktopLyrics";
@@ -222,6 +224,11 @@ async function openFloating() {
     dl.permissionGranted = status.permissionGranted;
     dl.supported = status.supported;
     dl.error = status.active ? "" : status.supported ? "permission" : "unsupported";
+    if (!status.active) {
+      pushToast("error", status.permissionGranted
+        ? i18n.global.t("settings.desktopLyrics.unsupported")
+        : i18n.global.t("settings.desktopLyrics.permission"));
+    }
     // Seed the cache for the renderer's page-load replay; the renderer's
     // `desktop-lyric:ready` event triggers the authoritative re-push once its
     // listeners are actually attached.
@@ -231,6 +238,7 @@ async function openFloating() {
   } catch (error) {
     dl.active = false;
     dl.error = String(error);
+    pushToast("error", String(error));
   } finally {
     dl.busy = false;
   }

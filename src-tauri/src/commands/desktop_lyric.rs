@@ -184,7 +184,12 @@ pub async fn desktop_lyric_open(app: AppHandle) -> Result<DesktopLyricStatus, Ap
     {
         if crate::android::desktop_lyric_has_permission() {
             let html = OVERLAY_HTML.replace(SCRIPT_TAG, "");
-            crate::android::desktop_lyric_start(&html, OVERLAY_JS).map_err(AppError::other)?;
+            crate::android::desktop_lyric_start(&html, OVERLAY_JS).map_err(|error| {
+                log::warn!("failed to start desktop lyric overlay: {error}");
+                AppError::other(error)
+            })?;
+        } else {
+            log::warn!("desktop lyric overlay skipped: overlay permission not granted");
         }
     }
     Ok(status(&app))

@@ -90,11 +90,17 @@ object DesktopLyricBridge {
     fun start(context: Context, rendererHtml: String, rendererJs: String) {
         html = rendererHtml
         js = rendererJs
-        val intent = Intent(context, DesktopLyricService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            context.startForegroundService(intent)
-        } else {
-            context.startService(intent)
+        try {
+            val intent = Intent(context, DesktopLyricService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        } catch (error: Throwable) {
+            // Starting a foreground service from the background is restricted on
+            // Android 12+; swallow it rather than letting the exception cross JNI
+            // and poison the main thread for every later call.
         }
     }
 

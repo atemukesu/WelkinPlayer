@@ -175,6 +175,10 @@ fn overlay_permission() -> Result<bool, String> {
     let mut env = java_vm
         .attach_current_thread()
         .map_err(|error| error.to_string())?;
+    // A failed JNI call leaves its Java exception pending. On an already-attached
+    // thread (the Android main thread) the attach guard does not detach, so the
+    // stale exception would poison every later call; clear it defensively.
+    let _ = env.exception_clear();
     let context_raw = ndk_context::android_context().context();
     let context = unsafe { JObject::from_raw(context_raw as jni::sys::jobject) };
 
@@ -198,6 +202,10 @@ pub fn desktop_lyric_open_settings() -> Result<(), String> {
     let mut env = java_vm
         .attach_current_thread()
         .map_err(|error| error.to_string())?;
+    // A failed JNI call leaves its Java exception pending. On an already-attached
+    // thread (the Android main thread) the attach guard does not detach, so the
+    // stale exception would poison every later call; clear it defensively.
+    let _ = env.exception_clear();
     let context_raw = ndk_context::android_context().context();
     let context = unsafe { JObject::from_raw(context_raw as jni::sys::jobject) };
 
@@ -220,6 +228,10 @@ pub fn desktop_lyric_start(html: &str, js: &str) -> Result<(), String> {
     let mut env = java_vm
         .attach_current_thread()
         .map_err(|error| error.to_string())?;
+    // A failed JNI call leaves its Java exception pending. On an already-attached
+    // thread (the Android main thread) the attach guard does not detach, so the
+    // stale exception would poison every later call; clear it defensively.
+    let _ = env.exception_clear();
     let context_raw = ndk_context::android_context().context();
     let context = unsafe { JObject::from_raw(context_raw as jni::sys::jobject) };
     let html = JObject::from(env.new_string(html).map_err(|error| error.to_string())?);
@@ -249,6 +261,10 @@ pub fn desktop_lyric_stop() -> Result<(), String> {
     let mut env = java_vm
         .attach_current_thread()
         .map_err(|error| error.to_string())?;
+    // A failed JNI call leaves its Java exception pending. On an already-attached
+    // thread (the Android main thread) the attach guard does not detach, so the
+    // stale exception would poison every later call; clear it defensively.
+    let _ = env.exception_clear();
     let context_raw = ndk_context::android_context().context();
     let context = unsafe { JObject::from_raw(context_raw as jni::sys::jobject) };
 
@@ -272,6 +288,10 @@ pub fn desktop_lyric_take_control() -> Result<Option<String>, String> {
     let mut env = java_vm
         .attach_current_thread()
         .map_err(|error| error.to_string())?;
+    // A failed JNI call leaves its Java exception pending. On an already-attached
+    // thread (the Android main thread) the attach guard does not detach, so the
+    // stale exception would poison every later call; clear it defensively.
+    let _ = env.exception_clear();
     let class = bridge_class(&mut env)?;
     let value = env
         .call_static_method(class, "takeControl", "()Ljava/lang/String;", &[])
@@ -296,6 +316,10 @@ pub fn desktop_lyric_update(method: &str, json: &str) -> Result<(), String> {
     let mut env = java_vm
         .attach_current_thread()
         .map_err(|error| error.to_string())?;
+    // A failed JNI call leaves its Java exception pending. On an already-attached
+    // thread (the Android main thread) the attach guard does not detach, so the
+    // stale exception would poison every later call; clear it defensively.
+    let _ = env.exception_clear();
     let method = JObject::from(env.new_string(method).map_err(|error| error.to_string())?);
     let json = JObject::from(env.new_string(json).map_err(|error| error.to_string())?);
 
@@ -318,6 +342,10 @@ pub fn media_control_start() -> Result<(), String> {
     let mut env = java_vm
         .attach_current_thread()
         .map_err(|error| error.to_string())?;
+    // A failed JNI call leaves its Java exception pending. On an already-attached
+    // thread (the Android main thread) the attach guard does not detach, so the
+    // stale exception would poison every later call; clear it defensively.
+    let _ = env.exception_clear();
     let context_raw = ndk_context::android_context().context();
     let context = unsafe { JObject::from_raw(context_raw as jni::sys::jobject) };
     let class = media_bridge_class(&mut env)?;
@@ -339,6 +367,10 @@ pub fn media_control_update(json: &str) -> Result<(), String> {
     let mut env = java_vm
         .attach_current_thread()
         .map_err(|error| error.to_string())?;
+    // A failed JNI call leaves its Java exception pending. On an already-attached
+    // thread (the Android main thread) the attach guard does not detach, so the
+    // stale exception would poison every later call; clear it defensively.
+    let _ = env.exception_clear();
     let json = JObject::from(env.new_string(json).map_err(|error| error.to_string())?);
     let class = media_bridge_class(&mut env)?;
     env.call_static_method(
@@ -359,6 +391,10 @@ pub fn media_control_stop() -> Result<(), String> {
     let mut env = java_vm
         .attach_current_thread()
         .map_err(|error| error.to_string())?;
+    // A failed JNI call leaves its Java exception pending. On an already-attached
+    // thread (the Android main thread) the attach guard does not detach, so the
+    // stale exception would poison every later call; clear it defensively.
+    let _ = env.exception_clear();
     let context_raw = ndk_context::android_context().context();
     let context = unsafe { JObject::from_raw(context_raw as jni::sys::jobject) };
     let class = media_bridge_class(&mut env)?;
@@ -380,6 +416,10 @@ pub fn media_control_take_control() -> Result<Option<String>, String> {
     let mut env = java_vm
         .attach_current_thread()
         .map_err(|error| error.to_string())?;
+    // A failed JNI call leaves its Java exception pending. On an already-attached
+    // thread (the Android main thread) the attach guard does not detach, so the
+    // stale exception would poison every later call; clear it defensively.
+    let _ = env.exception_clear();
     let class = media_bridge_class(&mut env)?;
     let value = env
         .call_static_method(class, "takeControl", "()Ljava/lang/String;", &[])
@@ -420,6 +460,10 @@ fn query_network() -> Result<crate::network::NetworkStatus, String> {
     let mut env = java_vm
         .attach_current_thread()
         .map_err(|error| error.to_string())?;
+    // A failed JNI call leaves its Java exception pending. On an already-attached
+    // thread (the Android main thread) the attach guard does not detach, so the
+    // stale exception would poison every later call; clear it defensively.
+    let _ = env.exception_clear();
     let context = unsafe { JObject::from_raw(context_raw as jni::sys::jobject) };
 
     let service = env

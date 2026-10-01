@@ -235,7 +235,13 @@ pub fn media_control_update(
 
     #[cfg(target_os = "android")]
     {
-        crate::android::media_control_start().map_err(AppError::other)?;
+        // A `mediaPlayback` foreground service may only be started while media
+        // is actually playing; starting it for a paused/restored track can be
+        // rejected (and take the lyric overlay down with it). Only start it on
+        // play; otherwise just refresh an already-running session.
+        if payload.playing {
+            crate::android::media_control_start().map_err(AppError::other)?;
+        }
         let json = android_payload(&app, &payload)?;
         crate::android::media_control_update(&json).map_err(AppError::other)?;
     }

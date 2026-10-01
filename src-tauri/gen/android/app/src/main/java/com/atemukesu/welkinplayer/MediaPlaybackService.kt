@@ -53,7 +53,18 @@ class MediaPlaybackService : Service() {
             })
             isActive = true
         }
-        startForegroundCompat(buildNotification("Welkin", "", false, null))
+        try {
+            startForegroundCompat(buildNotification("Welkin", "", false, null))
+        } catch (error: Throwable) {
+            // e.g. ForegroundServiceStartNotAllowedException / SecurityException.
+            // Never let this crash the process - that would also take the lyric
+            // overlay down. Abandon the service instead.
+            session?.release()
+            session = null
+            MediaControlBridge.detach()
+            stopSelf()
+            return
+        }
         MediaControlBridge.attach(this)
     }
 
@@ -82,6 +93,15 @@ class MediaPlaybackService : Service() {
 
     /** Apply a metadata / playback snapshot pushed from Rust. */
     fun update(json: String) {
+        try {
+            applySnapshot(json)
+        } catch (error: Throwable) {
+            // A Java exception must never cross the JNI boundary: it would stay
+            // pending on the Android main thread and break every later JNI call.
+        }
+    }
+
+    private fun applySnapshot(json: String) {
         val payload = try {
             JSONObject(json)
         } catch (error: Throwable) {
