@@ -6,7 +6,9 @@ mod dav;
 mod error;
 mod logging;
 mod metadata;
+mod network;
 mod proxy;
+mod smart_cache;
 mod sources;
 mod stream_cache;
 
@@ -100,6 +102,11 @@ pub fn run() {
             proxy::stream_endpoint,
             proxy::prefetch_track,
             proxy::report_stream_progress,
+            proxy::sync_smart_cache,
+            proxy::pin_track,
+            proxy::unpin_track,
+            proxy::cache_status,
+            proxy::network_status,
             proxy::get_stream_cache_limit,
             proxy::set_stream_cache_limit,
             proxy::clear_stream_cache

@@ -6,6 +6,7 @@
 //! write probes and per-source library listing.
 
 use tauri::AppHandle;
+#[cfg(desktop)]
 use tauri_plugin_dialog::DialogExt;
 
 use crate::backend::{backend_for, build_backend};
@@ -18,15 +19,23 @@ const WRITE_TEST_PATH: &str = "welkin-write-test.tmp";
 /// Show the native folder picker and return the chosen directory.
 #[tauri::command]
 pub async fn pick_local_folder(app: AppHandle) -> Result<Option<String>, AppError> {
-    let folder = app.dialog().file().blocking_pick_folder();
-    match folder {
-        Some(path) => {
-            let path = path
-                .into_path()
-                .map_err(|error| AppError::Other(format!("无法读取所选目录：{error}")))?;
-            Ok(Some(path.to_string_lossy().to_string()))
-        }
-        None => Ok(None),
+    #[cfg(desktop)]
+    {
+        let folder = app.dialog().file().blocking_pick_folder();
+        return match folder {
+            Some(path) => {
+                let path = path
+                    .into_path()
+                    .map_err(|error| AppError::Other(format!("无法读取所选目录：{error}")))?;
+                Ok(Some(path.to_string_lossy().to_string()))
+            }
+            None => Ok(None),
+        };
+    }
+    #[cfg(not(desktop))]
+    {
+        let _ = app;
+        Ok(None)
     }
 }
 

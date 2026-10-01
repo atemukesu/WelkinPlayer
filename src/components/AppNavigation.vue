@@ -1,16 +1,19 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { Activity, ChevronLeft, ChevronRight, Ellipsis, Heart, HeartHandshake, Library, ListMusic, ListPlus, Music2, Plus, Settings2, X } from "@lucide/vue";
+import { Activity, ChevronLeft, ChevronRight, Ellipsis, Heart, HeartHandshake, Library, ListMusic, ListPlus, Music2, Plus, Settings2, Signal, Wifi, WifiOff, X } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { classificationNavItems, navItems } from "../lib/app";
 import type { View } from "../lib/app";
 import { useProfileStore } from "../stores/profile";
+import { useNetworkStore } from "../stores/network";
 import PlaylistCover from "./PlaylistCover.vue";
 
 const props = withDefaults(defineProps<{ activeView: View; placement: "header" | "sidebar" | "mobile"; collapsed?: boolean; activePlaylistId?: string | null; activeArtist?: string | null; activeAlbum?: string | null; activeSource?: string | null }>(), { collapsed: false, activePlaylistId: null, activeArtist: null, activeAlbum: null, activeSource: null });
 const emit = defineEmits<{ navigate: [view: View]; toggle: []; createPlaylist: []; openPlaylist: [id: string] }>();
 const { t } = useI18n();
 const profile = useProfileStore();
+const network = useNetworkStore();
+const networkLabel = computed(() => (!network.available ? t("nav.networkOffline") : network.metered ? t("nav.networkCellular") : t("nav.networkWifi")));
 const playlistsActive = computed(() => props.activeView === "playlists" || (props.activeView === "tracks" && !!props.activePlaylistId));
 /** Mobile bottom bar: four primary destinations plus a "more" overflow sheet. */
 const mobileTabs = [
@@ -47,7 +50,7 @@ function isActivePlaylist(id: string): boolean { return props.activePlaylistId =
 <template>
   <header v-if="placement === 'header'" class="flex h-[calc(3.5rem_+_env(safe-area-inset-top))] items-center justify-between border-b border-line bg-surface px-4 pt-[env(safe-area-inset-top)] md:hidden">
     <span class="flex items-center gap-2 text-sm font-black uppercase tracking-[0.25em]"><span class="h-3 w-3 bg-accent"></span>Welkin</span>
-    <button type="button" class="bg-accent px-2 py-1 text-xs font-bold uppercase leading-none tracking-[0.2em] text-accent-fg transition-opacity hover:opacity-80" @click="emit('navigate', 'sponsor')">{{ t("nav.freeEdition") }}</button>
+    <span class="flex items-center gap-3"><span class="grid place-items-center text-dim" :title="networkLabel"><WifiOff v-if="!network.available" :size="16" :stroke-width="1.8" /><Wifi v-else-if="!network.metered" :size="16" :stroke-width="1.8" /><Signal v-else :size="16" :stroke-width="1.8" /></span><button type="button" class="bg-accent px-2 py-1 text-xs font-bold uppercase leading-none tracking-[0.2em] text-accent-fg transition-opacity hover:opacity-80" @click="emit('navigate', 'sponsor')">{{ t("nav.freeEdition") }}</button></span>
   </header>
   <aside v-if="placement === 'sidebar'" class="sidebar-shell hidden min-h-0 shrink-0 flex-col overflow-y-auto overscroll-contain border-r border-line bg-surface md:flex" :class="{ 'is-collapsed': collapsed }">
     <div class="sidebar-brand flex items-center border-b border-line pb-5" :class="collapsed ? 'justify-center' : 'gap-3'"><span class="grid h-9 w-9 shrink-0 place-items-center bg-accent text-accent-fg"><Music2 :size="18" :stroke-width="2.2" /></span><div class="sidebar-brand-copy"><p class="text-sm font-black uppercase tracking-[0.25em] leading-none">Welkin</p><button type="button" class="mt-2 w-fit bg-accent px-2 py-1 text-xs font-bold uppercase leading-none tracking-[0.2em] text-accent-fg transition-opacity hover:opacity-80" @click="emit('navigate', 'sponsor')">{{ t("nav.freeEdition") }}</button></div></div>
@@ -61,6 +64,7 @@ function isActivePlaylist(id: string): boolean { return props.activePlaylistId =
       <button class="relative mt-1.5 flex h-11 w-full items-center border border-transparent text-left text-[13px] font-semibold uppercase tracking-[0.2em] transition-colors" :class="[collapsed ? 'justify-center px-0' : 'gap-2 px-3', activeView === 'stats' ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg']" :title="collapsed ? t('nav.stats') : undefined" @click="emit('navigate', 'stats')"><Activity :size="16" :stroke-width="1.8" /><span class="sidebar-nav-label truncate">{{ t("nav.stats") }}</span></button>
     </div>
     <div class="mt-auto border-t border-line pt-3">
+      <div class="flex h-9 items-center text-[11px] font-semibold uppercase tracking-[0.2em] text-dim" :class="collapsed ? 'justify-center px-0' : 'gap-2 px-3'" :title="networkLabel"><WifiOff v-if="!network.available" :size="15" :stroke-width="1.8" /><Wifi v-else-if="!network.metered" :size="15" :stroke-width="1.8" /><Signal v-else :size="15" :stroke-width="1.8" /><span class="sidebar-nav-label truncate">{{ networkLabel }}</span></div>
       <button class="relative flex h-11 w-full items-center border border-transparent text-left text-[13px] font-semibold uppercase tracking-[0.2em] transition-colors" :class="[collapsed ? 'justify-center px-0' : 'gap-2 px-3', activeView === 'settings' ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg']" :title="collapsed ? t('nav.settings') : undefined" @click="emit('navigate', 'settings')"><Settings2 :size="16" :stroke-width="1.8" /><span class="sidebar-nav-label truncate">{{ t("nav.settings") }}</span></button>
       <button type="button" class="relative mt-1.5 flex h-11 w-full items-center border border-transparent text-left text-[13px] font-semibold uppercase tracking-[0.2em] transition-colors" :class="[collapsed ? 'justify-center px-0' : 'gap-2 px-3', activeView === 'sponsor' ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg']" :title="collapsed ? t('nav.sponsor') : undefined" @click="emit('navigate', 'sponsor')"><HeartHandshake :size="16" :stroke-width="1.8" /><span class="sidebar-nav-label truncate">{{ t("nav.sponsor") }}</span></button>
       <button type="button" class="relative mt-1 flex h-11 w-full items-center border border-transparent text-left text-[13px] font-semibold uppercase tracking-[0.2em] text-muted transition-colors hover:bg-fg/5 hover:text-fg" :class="collapsed ? 'justify-center px-0' : 'gap-2 px-3'" :title="t(collapsed ? 'controls.expand' : 'controls.collapse')" @click="emit('toggle')"><ChevronRight v-if="collapsed" :size="16" :stroke-width="1.8" /><ChevronLeft v-else :size="16" :stroke-width="1.8" /><span class="sidebar-nav-label truncate">{{ t(collapsed ? 'controls.expand' : 'controls.collapse') }}</span></button>

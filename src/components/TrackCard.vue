@@ -1,15 +1,20 @@
 <script setup lang="ts">
-import { Check, LoaderCircle, Play, Trash2 } from "@lucide/vue";
+import { Check, CircleCheck, LoaderCircle, Play, Trash2 } from "@lucide/vue";
+import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 import type { Track } from "../stores/player";
+import { useCacheStore } from "../stores/cache";
 import { coverPending, initial } from "../lib/format";
+import { trackKey } from "../lib/sources";
 import { requestMeta } from "../directives/requestMeta";
 
 const vRequestMeta = requestMeta;
 
-withDefaults(defineProps<{ track: Track; active?: boolean; playing?: boolean; removable?: boolean; selectable?: boolean; selected?: boolean }>(), { removable: false, selectable: false, selected: false });
+const props = withDefaults(defineProps<{ track: Track; active?: boolean; playing?: boolean; removable?: boolean; selectable?: boolean; selected?: boolean }>(), { removable: false, selectable: false, selected: false });
 const emit = defineEmits<{ play: [track: Track]; menu: [event: MouseEvent, track: Track]; remove: [track: Track]; openArtist: [artist: string]; toggle: [track: Track, event: MouseEvent] }>();
 const { t } = useI18n();
+const cache = useCacheStore();
+const cached = computed(() => cache.isCached(trackKey(props.track)));
 </script>
 
 <template>
@@ -33,7 +38,7 @@ const { t } = useI18n();
       <span v-if="selectable" class="absolute left-2 top-2 grid h-7 w-7 place-items-center border-2 transition-colors" :class="selected ? 'border-accent bg-accent text-accent-fg' : 'border-white/80 bg-black/30 text-transparent'"><Check :size="15" :stroke-width="3" /></span>
       <span v-if="active && playing && !selectable" class="absolute left-2 top-2 grid h-6 w-6 place-items-center bg-accent text-accent-fg"><span class="ak-eq"><i></i><i></i><i></i></span></span>
     </div>
-    <p class="mt-3 truncate text-sm font-semibold tracking-wide" :class="active ? 'text-accent' : ''">{{ track.title }}</p>
+    <div class="mt-3 flex min-w-0 items-center gap-1.5"><p class="truncate text-sm font-semibold tracking-wide" :class="active ? 'text-accent' : ''">{{ track.title }}</p><CircleCheck v-if="cached" :size="14" class="shrink-0 text-accent" :aria-label="t('library.cached')" /></div>
     <button v-if="track.artist" type="button" class="block w-fit max-w-full truncate text-left text-xs text-muted transition-colors hover:text-accent" :title="t('library.openArtist')" @click.stop="emit('openArtist', track.artist)">{{ track.artist }}</button>
     <p v-else class="truncate text-xs text-muted">{{ track.artist }}</p>
   </article>

@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { ArrowDown, ArrowUp, ChevronRight, Download, Eye, EyeOff, FileText, Heart, HeartOff, Info, ListPlus, ListX, Pencil } from "@lucide/vue";
+import { ArrowDown, ArrowUp, ChevronRight, CircleX, Download, Eye, EyeOff, FileText, HardDriveDownload, Heart, HeartOff, Info, ListPlus, ListX, Pencil } from "@lucide/vue";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import type { Track } from "../stores/player";
 import { usePlayerStore } from "../stores/player";
 import { useProfileStore } from "../stores/profile";
 import { useLyricsStore } from "../stores/lyrics";
+import { useCacheStore } from "../stores/cache";
 import { trackKey } from "../lib/sources";
 
 const props = withDefaults(defineProps<{ track: Track; x: number; y: number; downloading: boolean; selectedPaths?: string[]; playlistId?: string | null }>(), { selectedPaths: () => [], playlistId: null });
@@ -14,6 +15,7 @@ const { t } = useI18n();
 const profile = useProfileStore();
 const player = usePlayerStore();
 const lyrics = useLyricsStore();
+const cache = useCacheStore();
 const visible = ref(true);
 const showPlaylists = ref(false);
 const menuRef = ref<HTMLElement | null>(null);
@@ -53,6 +55,7 @@ const isSelection = computed(() => props.selectedPaths.length > 0);
 const allFavorite = computed(() => paths.value.length > 0 && paths.value.every((key) => profile.isFavorite(key)));
 const favorite = computed(() => !isSelection.value && profile.isFavorite(currentKey.value));
 const lyricsDisabled = computed(() => !isSelection.value && !!currentKey.value && profile.isLyricsDisabled(currentKey.value));
+const pinned = computed(() => cache.isPinned(currentKey.value));
 
 const playlistPos = computed(() => {
   if (!props.playlistId || !currentKey.value || isSelection.value) return null;
@@ -81,6 +84,12 @@ function toggleFavorite() {
   for (const key of paths.value) {
     if (profile.isFavorite(key) !== desired) profile.toggleFavorite(key);
   }
+  close();
+}
+function toggleCache() {
+  const key = currentKey.value;
+  if (!key) return;
+  cache.togglePin(key);
   close();
 }
 function addToPlaylist(id: string) {
@@ -128,6 +137,7 @@ onBeforeUnmount(() => {
           <button v-if="!isSelection && track.path" type="button" role="menuitem" class="track-menu__item" @click="editInfo"><Pencil :size="16" />{{ t("library.menu.edit") }}</button>
           <button v-if="!isSelection && track.path" type="button" role="menuitem" class="track-menu__item" @click="editLyrics"><FileText :size="16" />{{ t("library.menu.editLyrics") }}</button>
           <button v-if="!isSelection && track.path" type="button" role="menuitem" class="track-menu__item" @click="toggleLyrics"><EyeOff v-if="!lyricsDisabled" :size="16" /><Eye v-else :size="16" />{{ lyricsDisabled ? t("library.menu.enableLyrics") : t("library.menu.disableLyrics") }}</button>
+          <button v-if="!isSelection && track.path" type="button" role="menuitem" class="track-menu__item" @click="toggleCache"><CircleX v-if="pinned" :size="16" /><HardDriveDownload v-else :size="16" />{{ pinned ? t("library.menu.uncacheTrack") : t("library.menu.cacheTrack") }}</button>
           <div class="track-menu__divider"></div>
           <button type="button" role="menuitem" class="track-menu__item track-menu__item--last" :disabled="downloading || !track.path" @click="downloadMetadata"><Download :size="16" /><span>{{ downloading ? t("library.menu.downloadingMetadata") : t("library.menu.downloadMetadata") }}</span></button>
         </div>

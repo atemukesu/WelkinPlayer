@@ -42,6 +42,8 @@ pub const TOTAL_WAIT: Duration = Duration::from_secs(20);
 pub const CACHE_LIMIT_KEY: &str = "stream.cacheLimitMb";
 /// Default budget when the user has not chosen one.
 pub const DEFAULT_CACHE_LIMIT_MB: u64 = 1024;
+/// Fixed budget for the transient read-ahead tier (not user-facing).
+const HOT_CACHE_LIMIT_MB: u64 = 256;
 
 /// Outcome of waiting for a track's total size.
 pub enum TotalState {
@@ -73,6 +75,9 @@ struct EntryState {
     generation: u64,
     /// Last time the downloader made progress; detects hung upstream reads.
     last_advanced: Instant,
+    /// Overrides [`LEAD_SECONDS`] for this track (e.g. a short preload). Cleared
+    /// once the track is actually playing.
+    lead_override: Option<f64>,
 }
 
 /// One cached track. Cheap to share across the request handler and downloader.
@@ -104,6 +109,7 @@ impl Entry {
                 complete: false,
                 generation: 0,
                 last_advanced: Instant::now(),
+                lead_override: None,
             }),
             cv: Condvar::new(),
         }
@@ -126,11 +132,10 @@ impl StreamCache {
         let dir = resolve_cache_dir(app).join("stream");
         std::fs::create_dir_all(&dir).map_err(|error| format!("无法创建流缓存目录：{error}"))?;
         let client = Client::builder().build().map_err(|error| error.to_string())?;
-        let limit_mb = read_cache_limit_mb(app);
         Ok(Self {
             dir,
             client,
-            limit_bytes: AtomicU64::new(limit_mb.saturating_mul(1024 * 1024)),
+            limit_bytes: AtomicU64::new(HOT_CACHE_LIMIT_MB.saturating_mul(1024 * 1024)),
             entries: Mutex::new(HashMap::new()),
             order: Mutex::new(Vec::new()),
         })
@@ -168,10 +173,14 @@ impl StreamCache {
         remote_path: &str,
         entry: &Arc<Entry>,
         want_start: u64,
+        lead: Option<f64>,
     ) {
         let generation;
         {
             let mut state = entry.state.lock().unwrap();
+            // A real request clears the short preload override; a preload sets it.
+            state.lead_override = lead;
+            entry.cv.notify_all();
             if state.complete && state.total.map_or(false, |total| want_start < total) {
                 return;
             }
@@ -223,12 +232,18 @@ impl StreamCache {
     }
 
     /// Begin prefetching a track without an active request (used for the next
-    /// queue entry).
-    pub fn prefetch(self: &Arc<Self>, app: &AppHandle, source: SourceConfig, path: &str) {
+    /// queue entry). `lead` overrides [`LEAD_SECONDS`] for a short preload.
+    pub fn prefetch(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        source: SourceConfig,
+        path: &str,
+        lead: Option<f64>,
+    ) {
         let key = asset_hash(&source.id, path);
         let entry = self.ensure(&key);
         self.touch(&key);
-        self.ensure_stream(app, &source, path, &entry, 0);
+        self.ensure_stream(app, &source, path, &entry, 0, lead);
     }
 
     /// Update the reported playhead, letting the downloader advance its lead.
@@ -276,12 +291,6 @@ impl StreamCache {
             end,
             generation,
         }
-    }
-
-    /// Update the disk budget and evict down to it.
-    pub fn set_limit_bytes(&self, bytes: u64) {
-        self.limit_bytes.store(bytes, Ordering::Relaxed);
-        self.maybe_evict();
     }
 
     /// Drop every cached track.
@@ -403,7 +412,7 @@ impl Read for CacheReader {
 }
 
 /// Fetch a bounded range beginning at `start` (open-ended upstream request).
-fn open_upstream(
+pub(crate) fn open_upstream(
     app: &AppHandle,
     client: &Client,
     source: &SourceConfig,
@@ -432,7 +441,7 @@ fn open_upstream(
 }
 
 /// Total resource size from a response, honouring `Content-Range` for partials.
-fn response_total(response: &Response) -> Option<u64> {
+pub(crate) fn response_total(response: &Response) -> Option<u64> {
     if response.status() == StatusCode::PARTIAL_CONTENT {
         // A partial response's `Content-Length` is the chunk size, so the total
         // must come from `Content-Range` (`bytes start-end/total`).
@@ -452,6 +461,11 @@ fn bytes_per_second(state: &EntryState) -> f64 {
         Some(total) if state.duration > 0.0 => total as f64 / state.duration,
         _ => DEFAULT_BYTES_PER_SECOND,
     }
+}
+
+/// Effective lead window for a track (short override, else the default).
+fn lead_seconds(state: &EntryState) -> f64 {
+    state.lead_override.unwrap_or(LEAD_SECONDS)
 }
 
 fn spawn_downloader(
@@ -493,7 +507,7 @@ fn run_downloader(
                 return Ok(());
             }
             let bytes_per_second = bytes_per_second(&state);
-            let lead = (LEAD_SECONDS * bytes_per_second) as u64;
+            let lead = (lead_seconds(&state) * bytes_per_second) as u64;
             let position = (state.position * bytes_per_second) as u64;
             let desired = position.saturating_add(lead);
             let target = state.total.map(|total| desired.min(total)).unwrap_or(desired);
@@ -552,7 +566,7 @@ fn run_downloader(
                 }
                 let bytes_per_second = bytes_per_second(&state);
                 let desired = ((state.position * bytes_per_second) as u64)
-                    .saturating_add((LEAD_SECONDS * bytes_per_second) as u64);
+                    .saturating_add((lead_seconds(&state) * bytes_per_second) as u64);
                 state.total.map(|total| desired.min(total)).unwrap_or(desired)
             };
             if cursor >= target {

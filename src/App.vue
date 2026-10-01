@@ -16,6 +16,8 @@ import { useProfileStore } from "./stores/profile";
 import { usePlaybackStore } from "./stores/playback";
 import { useLyricsStore } from "./stores/lyrics";
 import { useMetadataStore } from "./stores/metadata";
+import { useNetworkStore } from "./stores/network";
+import { useCacheStore } from "./stores/cache";
 import AppNavigation from "./components/AppNavigation.vue";
 import QueuePanel from "./components/QueuePanel.vue";
 import PlayerBar from "./components/PlayerBar.vue";
@@ -46,6 +48,8 @@ const profile = useProfileStore();
 const playback = usePlaybackStore();
 const lyrics = useLyricsStore();
 const metadata = useMetadataStore();
+const network = useNetworkStore();
+const cache = useCacheStore();
 const { loadingLibrary, refreshing, friendlyError, loadCachedLibrary, loadRemoteLibrary, refreshLibrary, downloadTrackMetadata } = useLibrary();
 const view = ref<View>(getViewFromHash());
 const baseView = ref<View>(view.value === "player" || view.value === "track-info" ? "library" : view.value);
@@ -238,7 +242,7 @@ function onGlobalKeydown(event: KeyboardEvent) {
   player.togglePlayback();
 }
 
-onMounted(() => { window.addEventListener("hashchange", syncViewFromHash); window.addEventListener("keydown", onGlobalKeydown); window.addEventListener("beforeunload", savePlaybackPositionOnLeave); window.addEventListener("pagehide", savePlaybackPositionOnLeave); document.addEventListener("visibilitychange", onVisibilityChange); void initAudio(); void invoke<string>("ping").catch((error) => console.warn("[welkin] ping failed", describeError(error))); void bootstrap(); });
+onMounted(() => { window.addEventListener("hashchange", syncViewFromHash); window.addEventListener("keydown", onGlobalKeydown); window.addEventListener("beforeunload", savePlaybackPositionOnLeave); window.addEventListener("pagehide", savePlaybackPositionOnLeave); document.addEventListener("visibilitychange", onVisibilityChange); void initAudio(); void network.start(); void cache.start(); void invoke<string>("ping").catch((error) => console.warn("[welkin] ping failed", describeError(error))); void bootstrap(); });
 onUnmounted(() => { savePlaybackPosition(true); window.removeEventListener("hashchange", syncViewFromHash); window.removeEventListener("keydown", onGlobalKeydown); window.removeEventListener("beforeunload", savePlaybackPositionOnLeave); window.removeEventListener("pagehide", savePlaybackPositionOnLeave); document.removeEventListener("visibilitychange", onVisibilityChange); void profile.flush(); });
 </script>
 

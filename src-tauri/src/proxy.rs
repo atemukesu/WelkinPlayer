@@ -22,6 +22,7 @@ use crate::commands::media::asset_hash;
 use crate::commands::webdav::{enforce_url_policy, source_password};
 use crate::dav::resolve_under_base;
 use crate::sources::find_source;
+use crate::smart_cache::{SmartCache, SmartCandidate};
 use crate::stream_cache::{
     read_cache_limit_mb, write_cache_limit_mb, StreamCache, TotalState,
 };
@@ -31,6 +32,7 @@ pub struct StreamProxy {
     pub port: u16,
     pub token: String,
     pub cache: Arc<StreamCache>,
+    pub smart: Arc<SmartCache>,
 }
 
 #[derive(Serialize)]
@@ -51,9 +53,11 @@ pub fn start(app: AppHandle) -> Result<StreamProxy, String> {
         .ok_or_else(|| "could not determine proxy port".to_string())?;
     let token = generate_token();
     let cache = Arc::new(StreamCache::new(&app)?);
+    let smart = SmartCache::new(&app)?;
 
     let thread_token = token.clone();
     let thread_cache = cache.clone();
+    let thread_smart = smart.clone();
     std::thread::spawn(move || {
         let client = match Client::builder().build() {
             Ok(client) => Arc::new(client),
@@ -68,11 +72,17 @@ pub fn start(app: AppHandle) -> Result<StreamProxy, String> {
             let token = thread_token.clone();
             let client = client.clone();
             let cache = thread_cache.clone();
-            std::thread::spawn(move || handle(request, &app, &token, &client, &cache));
+            let smart = thread_smart.clone();
+            std::thread::spawn(move || handle(request, &app, &token, &client, &cache, &smart));
         }
     });
 
-    Ok(StreamProxy { port, token, cache })
+    Ok(StreamProxy {
+        port,
+        token,
+        cache,
+        smart,
+    })
 }
 
 /// Address of the streaming proxy for the frontend.
@@ -90,6 +100,7 @@ fn handle(
     token: &str,
     client: &Client,
     cache: &Arc<StreamCache>,
+    smart: &Arc<SmartCache>,
 ) {
     if request.method() == &Method::Options {
         let _ = request.respond(empty(204));
@@ -145,29 +156,40 @@ fn handle(
         app,
         client,
         cache,
+        smart,
         &source,
         &remote_path,
         range.as_deref(),
     );
 }
 
-/// Serve a WebDAV track from the aggressive read-ahead cache. The first request
-/// starts the background downloader; playback still begins on the first byte.
+/// Serve a WebDAV track: whole file from the smart cache when present, else the
+/// aggressive read-ahead cache. The first request starts the background
+/// downloader; playback still begins on the first byte.
+#[allow(clippy::too_many_arguments)]
 fn serve_stream(
     request: Request,
     app: &AppHandle,
     client: &Client,
     cache: &Arc<StreamCache>,
+    smart: &Arc<SmartCache>,
     source: &crate::sources::SourceConfig,
     remote_path: &str,
     range: Option<&str>,
 ) {
     let key = asset_hash(&source.id, remote_path);
+
+    // A fully cached track is served straight from disk, no network at all.
+    if let Some(file) = smart.complete_file(&key) {
+        serve_cached_file(request, &file, remote_path, range);
+        return;
+    }
+
     let entry = cache.ensure(&key);
     cache.touch(&key);
 
     let requested_start = range.and_then(parse_range_start).unwrap_or(0);
-    cache.ensure_stream(app, source, remote_path, &entry, requested_start);
+    cache.ensure_stream(app, source, remote_path, &entry, requested_start, None);
 
     let total = match cache.wait_total(&entry, crate::stream_cache::TOTAL_WAIT) {
         TotalState::Known(total) => total,
@@ -195,7 +217,7 @@ fn serve_stream(
     };
 
     // Ensure the downloader covers the requested offset (handles seeks).
-    cache.ensure_stream(app, source, remote_path, &entry, start);
+    cache.ensure_stream(app, source, remote_path, &entry, start, None);
 
     let content_type = content_type_for(remote_path)
         .unwrap_or_else(|| "application/octet-stream".to_string());
@@ -220,6 +242,66 @@ fn serve_stream(
         headers,
         reader,
         Some(length as usize),
+        None,
+    ));
+}
+
+/// Serve a fully cached (smart) file with `Range` support.
+fn serve_cached_file(request: Request, file_path: &Path, remote_path: &str, range: Option<&str>) {
+    let mut file = match std::fs::File::open(file_path) {
+        Ok(file) => file,
+        Err(_) => {
+            let _ = request.respond(text(404, "not found"));
+            return;
+        }
+    };
+    let total = match file.seek(SeekFrom::End(0)) {
+        Ok(total) => total,
+        Err(error) => {
+            let _ = request.respond(text(500, &error.to_string()));
+            return;
+        }
+    };
+    let content_type =
+        content_type_for(remote_path).unwrap_or_else(|| "application/octet-stream".to_string());
+    let mut headers = vec![Header::from_bytes("Accept-Ranges", "bytes").unwrap()];
+    if let Ok(header) = Header::from_bytes("Content-Type", content_type.as_bytes()) {
+        headers.push(header);
+    }
+
+    if let Some(value) = range {
+        let Some((start, end)) = parse_range(value, total) else {
+            let _ = request.respond(text(416, "range not satisfiable"));
+            return;
+        };
+        let length = end.saturating_sub(start) + 1;
+        if file.seek(SeekFrom::Start(start)).is_err() {
+            let _ = request.respond(text(500, "seek failed"));
+            return;
+        }
+        if let Ok(header) = Header::from_bytes(
+            "Content-Range",
+            format!("bytes {start}-{end}/{total}").as_bytes(),
+        ) {
+            headers.push(header);
+        }
+        let reader = file.take(length);
+        let _ = request.respond(Response::new(
+            StatusCode(206),
+            headers,
+            reader,
+            Some(length as usize),
+            None,
+        ));
+        return;
+    }
+
+    let reader = file.take(total);
+    let _ = request.respond(Response::new(
+        StatusCode(200),
+        headers,
+        reader,
+        Some(total as usize),
         None,
     ));
 }
@@ -478,10 +560,43 @@ fn text(status: u16, message: &str) -> Response<Cursor<Vec<u8>>> {
     )
 }
 
-/// Aggressively prefetch a track's bytes into the stream cache. Called for the
-/// current track and, shortly before it ends, for the next queue entry.
+/// Aggressively prefetch a track's bytes into the read-ahead cache. Called for
+/// the current track and, shortly before it ends, for the next queue entry
+/// (`lead_secs` shortens that speculative preload). Skips tracks already in the
+/// smart cache.
 #[tauri::command]
 pub fn prefetch_track(
+    proxy: tauri::State<StreamProxy>,
+    app: AppHandle,
+    source_id: String,
+    path: String,
+    lead_secs: Option<f64>,
+) -> Result<(), crate::error::AppError> {
+    let source = find_source(&app, &source_id)?;
+    if source.is_local() {
+        return Ok(());
+    }
+    if proxy.smart.is_complete(&asset_hash(&source_id, &path)) {
+        return Ok(());
+    }
+    proxy.cache.prefetch(&app, source, &path, lead_secs);
+    Ok(())
+}
+
+/// Replace the smart cache's candidate set (ranked play counts from the
+/// frontend). Downloads are gated on an unmetered connection by Rust.
+#[tauri::command]
+pub fn sync_smart_cache(
+    proxy: tauri::State<StreamProxy>,
+    candidates: Vec<SmartCandidate>,
+) -> Result<(), crate::error::AppError> {
+    proxy.smart.sync(candidates);
+    Ok(())
+}
+
+/// Pin a track: downloaded first and never evicted.
+#[tauri::command]
+pub fn pin_track(
     proxy: tauri::State<StreamProxy>,
     app: AppHandle,
     source_id: String,
@@ -489,9 +604,33 @@ pub fn prefetch_track(
 ) -> Result<(), crate::error::AppError> {
     let source = find_source(&app, &source_id)?;
     if !source.is_local() {
-        proxy.cache.prefetch(&app, source, &path);
+        proxy.smart.pin(&source_id, &path);
     }
     Ok(())
+}
+
+/// Stop protecting a pinned track.
+#[tauri::command]
+pub fn unpin_track(
+    proxy: tauri::State<StreamProxy>,
+    key: String,
+) -> Result<(), crate::error::AppError> {
+    proxy.smart.unpin(&key);
+    Ok(())
+}
+
+/// Complete/pinned keys for the track-list badges.
+#[tauri::command]
+pub fn cache_status(
+    proxy: tauri::State<StreamProxy>,
+) -> Result<crate::smart_cache::CacheStatus, crate::error::AppError> {
+    Ok(proxy.smart.status())
+}
+
+/// Active network classification (metered / Wi-Fi).
+#[tauri::command]
+pub fn network_status() -> crate::network::NetworkStatus {
+    crate::network::status()
 }
 
 /// Report the playhead so the cache can keep its lead window ahead of it.
@@ -523,13 +662,16 @@ pub fn set_stream_cache_limit(
     limit_mb: u64,
 ) -> Result<u64, crate::error::AppError> {
     write_cache_limit_mb(&app, limit_mb).map_err(crate::error::AppError::Store)?;
-    proxy.cache.set_limit_bytes(limit_mb.saturating_mul(1024 * 1024));
+    // The budget governs the persistent smart tier; the read-ahead tier keeps
+    // its own fixed, small budget.
+    proxy.smart.set_limit_bytes(limit_mb.saturating_mul(1024 * 1024));
     Ok(limit_mb)
 }
 
-/// Drop every cached stream (files on disk are removed).
+/// Drop cached streams; the read-ahead tier and all non-pinned smart tracks.
 #[tauri::command]
 pub fn clear_stream_cache(proxy: tauri::State<StreamProxy>) -> Result<(), crate::error::AppError> {
     proxy.cache.clear();
+    proxy.smart.clear();
     Ok(())
 }

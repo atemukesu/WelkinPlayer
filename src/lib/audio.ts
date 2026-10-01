@@ -3,8 +3,11 @@ import type { EffectScope } from "vue";
 import { i18n } from "../i18n";
 import { invoke, toAppError } from "../api";
 import { usePlayerStore } from "../stores/player";
+import { useNetworkStore } from "../stores/network";
+import { useCacheStore } from "../stores/cache";
 import { pushToast } from "./toast";
 import { setStreamEndpoint, trackStreamUrl } from "./remote";
+import { trackKey } from "./sources";
 import type { StreamEndpoint } from "./remote";
 
 /**
@@ -49,18 +52,21 @@ let watchdogTimer = 0;
 const PROGRESS_REPORT_INTERVAL_MS = 3000;
 /** Prefetch the next queue entry once this many seconds remain. */
 const NEXT_PREFETCH_LEAD_SECS = 60;
+/** How much of the next track to preload (seconds), when on Wi-Fi. */
+const NEXT_PREFETCH_SECONDS = 15;
 /** Source generation whose following track was already prefetched. */
 let prefetchedNextGeneration = -1;
 /** Timestamp of the last progress report sent to the Rust cache. */
 let lastProgressReportAt = 0;
 
 /**
- * Ask Rust to aggressively download a track into its read-ahead cache. Rust
- * ignores local sources, so this is safe to call for every track.
+ * Ask Rust to download a track into its read-ahead cache. `leadSecs` shortens
+ * the window for a speculative preload; omit it for the normal lead. Rust
+ * ignores local sources and tracks already in the smart cache.
  */
-function prefetchTrack(track: { sourceId?: string; path?: string } | null): void {
+function prefetchTrack(track: { sourceId?: string; path?: string } | null, leadSecs?: number): void {
   if (!track?.path || !track.sourceId) return;
-  void invoke("prefetch_track", { sourceId: track.sourceId, path: track.path }).catch(() => {});
+  void invoke("prefetch_track", { sourceId: track.sourceId, path: track.path, leadSecs }).catch(() => {});
 }
 
 /** The queue entry that will follow the current one, if any. */
@@ -95,15 +101,21 @@ function reportStreamProgress(generation: number) {
   }).catch(() => {});
 }
 
-/** Warm the next queue entry shortly before the current track ends. */
+/**
+ * Warm the next queue entry shortly before the current track ends. Speculative,
+ * so it is limited to a short 15s head start and skipped on metered networks.
+ */
 function maybePrefetchNext(generation: number) {
   if (!audio || generation !== sourceGeneration) return;
   if (prefetchedNextGeneration === generation) return;
   const duration = audio.duration;
   if (!(duration > 0)) return;
   if (duration - audio.currentTime > NEXT_PREFETCH_LEAD_SECS) return;
+  if (!useNetworkStore().isUnmetered()) return;
   prefetchedNextGeneration = generation;
-  prefetchTrack(nextQueueTrack());
+  const next = nextQueueTrack();
+  if (next && useCacheStore().isCached(trackKey(next))) return;
+  prefetchTrack(next, NEXT_PREFETCH_SECONDS);
 }
 
 /** Localization keys for the `AppError` codes a stream probe can return. */
@@ -249,7 +261,7 @@ function setSource(path: string, sourceId?: string) {
   player.setPosition(0);
   player.setDuration(0);
   player.setBufferedProgress(0);
-  prefetchTrack({ path, sourceId });
+  if (!useCacheStore().isCached(trackKey({ path, sourceId }))) prefetchTrack({ path, sourceId });
   if (player.isPlaying) play();
 }
 

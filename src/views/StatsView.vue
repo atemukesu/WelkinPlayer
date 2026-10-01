@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { Activity, LoaderCircle, Music2, Play, TrendingUp } from "@lucide/vue";
+import { Activity, CircleCheck, LoaderCircle, Music2, Play, TrendingUp } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { usePlayerStore } from "../stores/player";
 import type { Track } from "../stores/player";
 import { useProfileStore } from "../stores/profile";
+import { useCacheStore } from "../stores/cache";
 import { coverPending, initial, pad } from "../lib/format";
 import { trackKey } from "../lib/sources";
 import { requestMeta } from "../directives/requestMeta";
@@ -17,6 +18,8 @@ const emit = defineEmits<{ downloadMetadata: [track: Track]; editLyrics: [track:
 const { t } = useI18n();
 const player = usePlayerStore();
 const profile = useProfileStore();
+const cache = useCacheStore();
+function isCached(track: Track): boolean { return cache.isCached(trackKey(track)); }
 const contextTrack = ref<Track | null>(null);
 const contextPosition = ref({ x: 0, y: 0 });
 
@@ -106,7 +109,7 @@ function openContextMenu(event: MouseEvent, track: Track) { contextTrack.value =
           <span class="font-mono text-sm font-bold tabular-nums" :class="index < 3 ? 'text-accent' : 'text-dim'">{{ pad(index + 1) }}</span>
           <span class="grid h-11 w-11 place-items-center overflow-hidden text-lg font-black text-white/90" :style="{ backgroundColor: item.track.color }"><img v-if="item.track.cover" :src="item.track.cover" alt="" loading="lazy" decoding="async" class="h-full w-full object-cover" /><LoaderCircle v-else-if="coverPending(item.track)" :size="18" :stroke-width="2" class="animate-spin" /><template v-else>{{ initial(item.track) }}</template></span>
           <span class="grid min-w-0 gap-1.5">
-            <span class="flex min-w-0 items-baseline gap-2"><strong class="truncate text-sm font-semibold tracking-wide" :class="item.track.id === player.currentTrack?.id ? 'text-accent' : 'text-fg'">{{ item.track.title }}</strong><small class="truncate text-xs text-muted">{{ item.track.artist }}</small></span>
+            <span class="flex min-w-0 items-baseline gap-2"><strong class="truncate text-sm font-semibold tracking-wide" :class="item.track.id === player.currentTrack?.id ? 'text-accent' : 'text-fg'">{{ item.track.title }}</strong><CircleCheck v-if="isCached(item.track)" :size="14" class="shrink-0 text-accent" :aria-label="t('library.cached')" /><small class="truncate text-xs text-muted">{{ item.track.artist }}</small></span>
             <span class="block h-1 w-full overflow-hidden bg-fg/5"><span class="block h-full transition-[width]" :class="item.track.id === player.currentTrack?.id ? 'bg-white' : 'bg-accent'" :style="{ width: `${maxCount ? (item.count / maxCount) * 100 : 0}%` }"></span></span>
           </span>
           <span class="flex items-baseline gap-1 whitespace-nowrap"><span class="font-mono text-sm tabular-nums text-fg">{{ item.count }}</span><span class="text-[10px] uppercase tracking-[0.15em] text-dim">{{ t("stats.unit") }}</span></span>

@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { VList, Virtualizer, type VirtualizerHandle } from "virtua/vue";
-import { ArrowUp, Check, LoaderCircle, LocateFixed, Pause, Play, Trash2 } from "@lucide/vue";
+import { ArrowUp, Check, CircleCheck, LoaderCircle, LocateFixed, Pause, Play, Trash2 } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { usePlayerStore } from "../stores/player";
+import { useCacheStore } from "../stores/cache";
 import type { Track } from "../stores/player";
 import { coverPending, initial, pad } from "../lib/format";
 import { trackKey } from "../lib/sources";
@@ -17,7 +18,9 @@ const props = withDefaults(defineProps<{ tracks: Track[]; emptyKey: string; remo
 const emit = defineEmits<{ play: [track: Track]; menu: [event: MouseEvent, track: Track]; remove: [track: Track]; openArtist: [artist: string]; openAlbum: [album: string]; "update:selected": [value: Set<string>] }>();
 const { t } = useI18n();
 const player = usePlayerStore();
+const cache = useCacheStore();
 const currentId = computed(() => player.currentTrack?.id);
+function isCached(track: Track): boolean { return cache.isCached(trackKey(track)); }
 const playing = computed(() => player.isPlaying);
 
 // The trailing action column only exists when a remove button is shown; without
@@ -249,7 +252,7 @@ function scrollToTop() {
               <span v-if="selectable" class="grid h-5 w-5 place-items-center border-2" :class="isSelected(track) ? 'border-accent bg-accent text-accent-fg' : 'border-line-strong text-transparent'"><Check :size="12" :stroke-width="3" /></span>
               <span v-else class="hidden font-mono text-[13px] tabular-nums text-dim md:block">{{ pad(index + 1) }}</span>
               <span class="grid h-11 w-11 place-items-center overflow-hidden text-lg font-black text-white/90" :style="{ backgroundColor: track.color }"><img v-if="track.cover" :src="track.cover" alt="" loading="lazy" decoding="async" class="h-full w-full object-cover" /><LoaderCircle v-else-if="coverPending(track)" :size="18" :stroke-width="2" class="animate-spin" /><template v-else>{{ initial(track) }}</template></span>
-              <span class="grid min-w-0 gap-0.5"><strong class="truncate text-sm font-semibold tracking-wide" :class="track.id === currentId ? 'text-accent' : 'text-fg'">{{ track.title }}</strong><span class="flex min-w-0 items-center gap-1 md:hidden"><button v-if="track.artist" type="button" class="min-w-0 truncate text-left text-xs text-muted transition-colors hover:text-accent" :title="t('library.openArtist')" @click.stop="emit('openArtist', track.artist)">{{ track.artist }}</button><span v-if="track.artist && track.album" class="shrink-0 text-xs text-dim">·</span><button v-if="track.album" type="button" class="min-w-0 truncate text-left text-xs text-muted transition-colors hover:text-accent" :title="t('library.openAlbum')" @click.stop="emit('openAlbum', track.album)">{{ track.album }}</button></span><button v-if="track.artist" type="button" class="hidden min-w-0 truncate text-left text-xs text-muted transition-colors hover:text-accent md:block md:w-fit md:max-w-full" :title="t('library.openArtist')" @click.stop="emit('openArtist', track.artist)">{{ track.artist }}</button><small v-else class="hidden truncate text-xs text-muted md:block">{{ track.artist }}</small></span>
+              <span class="grid min-w-0 gap-0.5"><span class="flex min-w-0 items-center gap-1.5"><strong class="truncate text-sm font-semibold tracking-wide" :class="track.id === currentId ? 'text-accent' : 'text-fg'">{{ track.title }}</strong><CircleCheck v-if="isCached(track)" :size="14" class="shrink-0 text-accent" :aria-label="t('library.cached')" /></span><span class="flex min-w-0 items-center gap-1 md:hidden"><button v-if="track.artist" type="button" class="min-w-0 truncate text-left text-xs text-muted transition-colors hover:text-accent" :title="t('library.openArtist')" @click.stop="emit('openArtist', track.artist)">{{ track.artist }}</button><span v-if="track.artist && track.album" class="shrink-0 text-xs text-dim">·</span><button v-if="track.album" type="button" class="min-w-0 truncate text-left text-xs text-muted transition-colors hover:text-accent" :title="t('library.openAlbum')" @click.stop="emit('openAlbum', track.album)">{{ track.album }}</button></span><button v-if="track.artist" type="button" class="hidden min-w-0 truncate text-left text-xs text-muted transition-colors hover:text-accent md:block md:w-fit md:max-w-full" :title="t('library.openArtist')" @click.stop="emit('openArtist', track.artist)">{{ track.artist }}</button><small v-else class="hidden truncate text-xs text-muted md:block">{{ track.artist }}</small></span>
               <button v-if="track.album" type="button" class="hidden min-w-0 truncate text-left text-xs text-muted transition-colors hover:text-accent md:block md:w-fit md:max-w-full" :title="t('library.openAlbum')" @click.stop="emit('openAlbum', track.album)">{{ track.album }}</button>
               <span v-else class="hidden truncate text-xs text-muted md:block">{{ track.album }}</span>
               <span class="hidden text-right font-mono text-[13px] tabular-nums text-muted md:block">{{ track.duration }}</span>
