@@ -120,10 +120,22 @@ export function startMediaControl() {
 
   scope = effectScope();
   scope.run(() => {
+    // Re-push whenever the track identity, playback state OR the lazily loaded
+    // metadata changes. Metadata is merged into the existing track object, so
+    // the path key alone would miss the filename -> real title/cover update.
     watch(
       () => {
         const player = usePlayerStore();
-        return `${trackKey(player.currentTrack)}::${player.isPlaying}`;
+        const track = player.currentTrack;
+        return [
+          trackKey(track),
+          player.isPlaying,
+          track?.title ?? "",
+          track?.artist ?? "",
+          track?.album ?? "",
+          track?.coverHash ?? "",
+          player.duration,
+        ].join("\u001f");
       },
       pushFull,
       { immediate: true },
