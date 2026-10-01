@@ -261,6 +261,19 @@ impl StreamCache {
         entry.cv.notify_all();
     }
 
+    /// Percentage (0-100) of the track the read-ahead tier has cached, if the
+    /// total size is known. Drives the player progress bar's prefill.
+    pub fn coverage_percent(&self, key: &str) -> Option<f64> {
+        let entries = self.entries.lock().unwrap();
+        let entry = entries.get(key)?;
+        let state = entry.state.lock().unwrap();
+        let total = state.total?;
+        if total == 0 {
+            return Some(0.0);
+        }
+        Some(((state.seg_end as f64 / total as f64) * 100.0).clamp(0.0, 100.0))
+    }
+
     /// Wait until the track size is known, the downloader failed, or timeout.
     pub fn wait_total(&self, entry: &Arc<Entry>, timeout: Duration) -> TotalState {
         let deadline = Instant::now() + timeout;

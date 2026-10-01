@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 
 use crate::commands::media::{asset_hash, resolve_cache_dir};
-use crate::sources::find_source;
+use crate::sources::{find_source, load_sources};
 use crate::stream_cache::{open_upstream, read_cache_limit_mb, response_total};
 
 const READ_CHUNK: usize = 64 * 1024;
@@ -113,17 +113,24 @@ impl SmartCache {
 
     /// Replace the automatic candidate set (already filtered/ranked upstream).
     pub fn sync(&self, candidates: Vec<SmartCandidate>) {
+        let mut removed: Vec<PathBuf> = Vec::new();
         {
             let mut state = self.state.lock().unwrap();
+            let mut desired: std::collections::HashSet<String> = std::collections::HashSet::new();
+            // Only remote sources this device knows can be downloaded. Play
+            // counts are synced across devices, so keys can reference a source
+            // configured elsewhere (or local files, which are already on disk).
+            let streamable: std::collections::HashSet<String> = load_sources(&self.app)
+                .into_iter()
+                .filter(|source| !source.is_local())
+                .map(|source| source.id)
+                .collect();
             for candidate in candidates {
-                // Local files are already on disk; never spend a download on them.
-                if find_source(&self.app, &candidate.source_id)
-                    .map(|source| source.is_local())
-                    .unwrap_or(false)
-                {
+                if !streamable.contains(&candidate.source_id) {
                     continue;
                 }
                 let key = asset_hash(&candidate.source_id, &candidate.path);
+                desired.insert(key.clone());
                 let entry = state.entries.entry(key.clone()).or_insert_with(|| Entry {
                     file: self.dir.join(format!("{key}.audio")),
                     key: key.clone(),
@@ -142,6 +149,17 @@ impl SmartCache {
                     entry.written = entry.written.max(meta.len());
                 }
             }
+
+            // Drop automatic entries that are no longer candidates (stale source
+            // ids, de-ranked tracks); keep everything pinned or already cached.
+            state.entries.retain(|key, entry| {
+                if entry.complete || entry.pinned || desired.contains(key) {
+                    true
+                } else {
+                    removed.push(entry.file.clone());
+                    false
+                }
+            });
 
             // Highest rank first; pinned incomplete tracks always lead.
             let mut queue: Vec<String> = state
@@ -170,6 +188,9 @@ impl SmartCache {
             }));
             state.queue = pinned;
             self.cv.notify_all();
+        }
+        for file in removed {
+            let _ = std::fs::remove_file(file);
         }
         self.persist();
         self.maybe_evict();
@@ -228,6 +249,22 @@ impl SmartCache {
         }
     }
 
+    /// Bytes currently occupied on disk by the smart cache.
+    pub fn used_bytes(&self) -> u64 {
+        self.state
+            .lock()
+            .unwrap()
+            .entries
+            .values()
+            .map(|entry| file_len(&entry.file))
+            .sum()
+    }
+
+    /// Configured disk budget in bytes.
+    pub fn limit_bytes(&self) -> u64 {
+        self.limit_bytes.load(Ordering::Relaxed)
+    }
+
     /// Whether a key's whole file is already cached (no side effects).
     pub fn is_complete(&self, key: &str) -> bool {
         self.state
@@ -239,23 +276,22 @@ impl SmartCache {
             .unwrap_or(false)
     }
 
-    /// Snapshot for the frontend badge state.
+    /// Snapshot for the frontend badge state. Keys use the profile's
+    /// `sourceId::path` format so they line up with the frontend's `trackKey`.
     pub fn status(&self) -> CacheStatus {
         let state = self.state.lock().unwrap();
-        CacheStatus {
-            cached: state
-                .entries
-                .values()
-                .filter(|entry| entry.complete)
-                .map(|entry| entry.key.clone())
-                .collect(),
-            pinned: state
-                .entries
-                .values()
-                .filter(|entry| entry.pinned)
-                .map(|entry| entry.key.clone())
-                .collect(),
+        let mut cached = Vec::new();
+        let mut pinned = Vec::new();
+        for entry in state.entries.values() {
+            let key = format!("{}::{}", entry.source_id, entry.path);
+            if entry.complete {
+                cached.push(key.clone());
+            }
+            if entry.pinned {
+                pinned.push(key);
+            }
         }
+        CacheStatus { cached, pinned }
     }
 
     /// Evict non-pinned entries down to the disk budget.

@@ -58,6 +58,8 @@ const NEXT_PREFETCH_SECONDS = 15;
 let prefetchedNextGeneration = -1;
 /** Timestamp of the last progress report sent to the Rust cache. */
 let lastProgressReportAt = 0;
+/** Throttles cache-coverage polls that drive the progress bar's prefill. */
+let lastBufferedAt = 0;
 
 /**
  * Ask Rust to download a track into its read-ahead cache. `leadSecs` shortens
@@ -221,25 +223,28 @@ async function reportSourceUnavailable(generation: number, path: string, sourceI
   }
 }
 
-function syncBuffered() {
+/**
+ * Update the progress bar's prefill from Rust's real cache coverage, not the
+ * browser's `audio.buffered` (which only reflects the media element's own short
+ * read-ahead). Throttled unless forced.
+ */
+function syncBuffered(force = false) {
   if (!audio) return;
   const player = usePlayerStore();
-  if (player.duration <= 0 || audio.buffered.length === 0) {
+  const track = player.currentTrack;
+  if (!track?.path || !track.sourceId) {
     player.setBufferedProgress(0);
     return;
   }
-
-  let bufferedEnd = 0;
-  for (let index = 0; index < audio.buffered.length; index++) {
-    const start = audio.buffered.start(index);
-    const end = audio.buffered.end(index);
-    if (audio.currentTime >= start && audio.currentTime <= end) {
-      bufferedEnd = end;
-      break;
-    }
-    if (start <= audio.currentTime) bufferedEnd = end;
-  }
-  player.setBufferedProgress((bufferedEnd / player.duration) * 100);
+  const now = performance.now();
+  if (!force && now - lastBufferedAt < 1000) return;
+  lastBufferedAt = now;
+  const generation = sourceGeneration;
+  void invoke<number>("stream_progress", { sourceId: track.sourceId, path: track.path })
+    .then((percent) => {
+      if (generation === sourceGeneration) usePlayerStore().setBufferedProgress(percent);
+    })
+    .catch(() => {});
 }
 
 function setSource(path: string, sourceId?: string) {
@@ -256,6 +261,7 @@ function setSource(path: string, sourceId?: string) {
   stallRecoveries = 0;
   prefetchedNextGeneration = -1;
   lastProgressReportAt = 0;
+  lastBufferedAt = 0;
   audio.src = url;
   audio.load();
   player.setPosition(0);
@@ -344,7 +350,7 @@ async function bootstrapAudio(): Promise<void> {
 
   audio.addEventListener("loadedmetadata", () => {
     player.setDuration(audio?.duration ?? 0);
-    syncBuffered();
+    syncBuffered(true);
     if (pendingSeek !== null && audio) {
       const limit = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : pendingSeek;
       audio.currentTime = Math.min(pendingSeek, limit);
@@ -352,7 +358,7 @@ async function bootstrapAudio(): Promise<void> {
       pendingSeek = null;
     }
   });
-  audio.addEventListener("durationchange", () => { player.setDuration(audio?.duration ?? 0); syncBuffered(); });
+  audio.addEventListener("durationchange", () => { player.setDuration(audio?.duration ?? 0); syncBuffered(true); });
   audio.addEventListener("timeupdate", () => {
     player.setPosition(audio?.currentTime ?? 0);
     syncBuffered();
@@ -360,7 +366,7 @@ async function bootstrapAudio(): Promise<void> {
     reportStreamProgress(sourceGeneration);
     maybePrefetchNext(sourceGeneration);
   });
-  audio.addEventListener("progress", syncBuffered);
+  audio.addEventListener("progress", () => syncBuffered());
   audio.addEventListener("play", () => { lastProgressAt = performance.now(); if (!player.isPlaying) player.setPlaying(true); });
   audio.addEventListener("pause", () => { if (player.isPlaying) player.setPlaying(false); });
   audio.addEventListener("ended", () => {

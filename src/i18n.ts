@@ -436,6 +436,10 @@ const messages = {
         limitDesc: "常听歌曲的整曲缓存上限；超出后按播放次数（LFU）淘汰，手动缓存的歌曲永不清理。",
         limitSave: "保存缓存上限",
         limitSaved: "缓存上限已保存",
+        trackCached: "《{title}》已缓存完成",
+        trackCaching: "《{title}》缓存中…",
+        trackAlreadyCached: "《{title}》已在缓存中",
+        used: "已用缓存",
       },
       ipc: {
         title: "系统 / IPC",
@@ -1099,6 +1103,10 @@ const messages = {
         limitDesc: "Whole-track cache budget for frequently played songs; the least-played (LFU) are evicted, manually cached tracks are never removed.",
         limitSave: "Save cache limit",
         limitSaved: "Cache limit saved",
+        trackCached: "\"{title}\" cached",
+        trackCaching: "Caching \"{title}\"…",
+        trackAlreadyCached: "\"{title}\" is already cached",
+        used: "Used",
       },
       ipc: {
         title: "System / IPC",

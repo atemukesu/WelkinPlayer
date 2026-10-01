@@ -613,9 +613,10 @@ pub fn pin_track(
 #[tauri::command]
 pub fn unpin_track(
     proxy: tauri::State<StreamProxy>,
-    key: String,
+    source_id: String,
+    path: String,
 ) -> Result<(), crate::error::AppError> {
-    proxy.smart.unpin(&key);
+    proxy.smart.unpin(&asset_hash(&source_id, &path));
     Ok(())
 }
 
@@ -627,10 +628,49 @@ pub fn cache_status(
     Ok(proxy.smart.status())
 }
 
+/// Disk usage snapshot for the settings progress bar.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheUsage {
+    pub used_bytes: u64,
+    pub limit_bytes: u64,
+}
+
+/// Current smart-cache usage and budget, in bytes.
+#[tauri::command]
+pub fn cache_usage(proxy: tauri::State<StreamProxy>) -> Result<CacheUsage, crate::error::AppError> {
+    Ok(CacheUsage {
+        used_bytes: proxy.smart.used_bytes(),
+        limit_bytes: proxy.smart.limit_bytes(),
+    })
+}
+
 /// Active network classification (metered / Wi-Fi).
 #[tauri::command]
 pub fn network_status() -> crate::network::NetworkStatus {
     crate::network::status()
+}
+
+/// Cache coverage (0-100) for the progress bar's prefill. Local files need no
+/// buffering, so they report 100.
+#[tauri::command]
+pub fn stream_progress(
+    app: AppHandle,
+    proxy: tauri::State<StreamProxy>,
+    source_id: String,
+    path: String,
+) -> Result<f64, crate::error::AppError> {
+    let local = find_source(&app, &source_id)
+        .map(|source| source.is_local())
+        .unwrap_or(false);
+    if local {
+        return Ok(100.0);
+    }
+    let key = asset_hash(&source_id, &path);
+    if proxy.smart.is_complete(&key) {
+        return Ok(100.0);
+    }
+    Ok(proxy.cache.coverage_percent(&key).unwrap_or(0.0))
 }
 
 /// Report the playhead so the cache can keep its lead window ahead of it.
