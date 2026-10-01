@@ -40,26 +40,26 @@ const greetingKey = computed(() => {
 const greetingText = computed(() => profile.nickname ? `${t(greetingKey.value)}，${profile.nickname}` : t(greetingKey.value));
 
 const heroTrack = computed(() => player.currentTrack);
-const totalPlays = computed(() => Object.values(profile.profile.playCounts).reduce((sum, value) => sum + value, 0));
-const stats = computed<{ key: string; value: number; icon: Component; view?: View }[]>(() => [
-  { key: "home.statsTracks", value: player.tracks.length, icon: Library, view: "tracks" },
-  { key: "home.statsPlaylists", value: profile.playlists.length, icon: ListMusic },
-  { key: "home.statsFavorites", value: profile.favorites.length, icon: Heart, view: "favorites" },
-  { key: "home.statsPlays", value: totalPlays.value, icon: Activity, view: "stats" },
-]);
-
-const topTracks = computed(() => {
+const recentTracks = computed(() => tracksForPaths(profile.recent, player.tracks).slice(0, RECOMMEND_LIMIT));
+const favoriteTracks = computed(() => tracksForPaths(profile.favorites, player.tracks));
+const playedTracks = computed(() => {
   const counts = profile.profile.playCounts;
-  return [...player.tracks]
+  return player.tracks
     .filter((track) => {
       const key = trackKey(track);
       return !!key && (counts[key] ?? 0) > 0;
     })
-    .sort((a, b) => (counts[trackKey(b) ?? ""] ?? 0) - (counts[trackKey(a) ?? ""] ?? 0))
-    .slice(0, TOP_LIMIT);
+    .map((track) => ({ track, count: counts[trackKey(track) as string] ?? 0 }))
+    .sort((a, b) => b.count - a.count);
 });
-const recentTracks = computed(() => tracksForPaths(profile.recent, player.tracks).slice(0, RECOMMEND_LIMIT));
-const favoriteTracks = computed(() => tracksForPaths(profile.favorites, player.tracks));
+const totalPlays = computed(() => playedTracks.value.reduce((sum, item) => sum + item.count, 0));
+const topTracks = computed(() => playedTracks.value.slice(0, TOP_LIMIT).map((item) => item.track));
+const stats = computed<{ key: string; value: number; icon: Component; view?: View }[]>(() => [
+  { key: "home.statsTracks", value: player.tracks.length, icon: Library, view: "tracks" },
+  { key: "home.statsPlaylists", value: profile.playlists.length, icon: ListMusic },
+  { key: "home.statsFavorites", value: favoriteTracks.value.length, icon: Heart, view: "favorites" },
+  { key: "home.statsPlays", value: totalPlays.value, icon: Activity, view: "stats" },
+]);
 
 function pickRandom(list: Track[], count: number): Track[] {
   const pool = list.filter((track) => track.path);

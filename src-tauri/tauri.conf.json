@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "welkinplayer",
+  "productName": "Welkin",
   "version": "0.1.0",
   "identifier": "com.atemukesu.welkinplayer",
   "build": {
@@ -13,7 +13,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "welkinplayer",
+        "title": "Welkin",
         "width": 800,
         "height": 600,
         "dragDropEnabled": false

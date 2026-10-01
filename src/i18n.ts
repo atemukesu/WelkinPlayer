@@ -25,7 +25,7 @@ const messages = {
     sponsor: {
       eyebrow: "支持 / 赞助",
       title: "赞助开发者",
-      subtitle: "Welkin Player 是免费、无广告的桌面播放器。如果你喜欢它，欢迎通过爱发电支持我继续开发与维护。",
+      subtitle: "Welkin 是免费、无广告的桌面播放器。如果你喜欢它，欢迎通过爱发电支持我继续开发与维护。",
       cardTitle: "为什么赞助",
       cardDesc: "这是一个独立的个人项目，没有商业收入。你的支持让开发、测试与持续更新成为可能。",
       points: {
@@ -323,7 +323,7 @@ const messages = {
       eyebrow: "系统 / 配置",
       title: "设置",
       about: {
-        title: "Welkin Player",
+        title: "Welkin",
         tagline: "通过 WebDAV 读取你的音乐收藏，并把资料跨设备同步的桌面播放器。",
         author: "作者",
         authorName: "Atemukesu",
@@ -740,7 +740,7 @@ const messages = {
     sponsor: {
       eyebrow: "Support / Sponsor",
       title: "Sponsor the developer",
-      subtitle: "Welkin Player is a free, ad-free desktop player. If you enjoy it, consider supporting development on Afdian.",
+      subtitle: "Welkin is a free, ad-free desktop player. If you enjoy it, consider supporting development on Afdian.",
       cardTitle: "Why sponsor",
       cardDesc: "This is an independent project with no commercial revenue. Your support makes development, testing and ongoing updates possible.",
       points: {
@@ -1038,7 +1038,7 @@ const messages = {
       eyebrow: "System / Config",
       title: "Settings",
       about: {
-        title: "Welkin Player",
+        title: "Welkin",
         tagline: "A desktop player that reads your music collection over WebDAV and syncs your profile across devices.",
         author: "Author",
         authorName: "Atemukesu",
