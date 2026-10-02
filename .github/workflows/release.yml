@@ -1,8 +1,11 @@
 name: Release
 
-# Publishing a tag like `v1.0.0` builds and signs the desktop bundles, builds a
-# signed Android APK, and attaches everything to a single GitHub Release.
-# desktop bundles are signed for the Tauri updater (the app downloads and
+# Publishing a tag like `v1.0.0` builds and signs every platform in parallel,
+# uploads the bundles as build artifacts, and a final `release` job collects
+# them into a single GitHub Release (with the updater manifest `latest.json`).
+# Nothing is published until every build has succeeded.
+#
+# Desktop bundles are signed for the Tauri updater (the app downloads and
 # installs them itself); the APK is offered as a browser download in-app.
 #
 # Required repository secrets (Settings -> Secrets and variables -> Actions):
@@ -22,24 +25,34 @@ on:
 jobs:
   desktop:
     permissions:
-      contents: write
+      contents: read
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: macos-latest
             args: "--target aarch64-apple-darwin"
+            bundle: "src-tauri/target/aarch64-apple-darwin/release/bundle"
+            os: macos
+            key: darwin-aarch64
           - platform: macos-latest
             args: "--target x86_64-apple-darwin"
+            bundle: "src-tauri/target/x86_64-apple-darwin/release/bundle"
+            os: macos
+            key: darwin-x86_64
           - platform: ubuntu-22.04
             args: ""
+            bundle: "src-tauri/target/release/bundle"
+            os: linux
+            key: linux-x86_64
           - platform: windows-latest
             args: ""
+            bundle: "src-tauri/target/release/bundle"
+            os: windows
+            key: windows-x86_64
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -74,45 +87,24 @@ jobs:
       - name: Sync version from package.json
         run: pnpm version:sync
 
-      - name: Build changelog from commits
-        id: changelog
-        shell: bash
-        run: |
-          previous=$(git describe --tags --abbrev=0 "${{ github.ref_name }}^" 2>/dev/null || true)
-          if [ -n "$previous" ]; then
-            range="${previous}..${{ github.ref_name }}"
-          else
-            range="${{ github.ref_name }}"
-          fi
-          body=$(git log --pretty=format:'- %s' "$range" || true)
-          if [ -z "$body" ]; then
-            body="Initial release"
-          fi
-          {
-            echo "body<<__CHANGELOG__"
-            echo "$body"
-            echo "__CHANGELOG__"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Build and publish desktop bundles
-        uses: tauri-apps/tauri-action@v0
+      - name: Build desktop bundles
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: pnpm tauri build ${{ matrix.args }}
+
+      - name: Stage bundles
+        run: node scripts/stage-bundles.mjs --bundle "${{ matrix.bundle }}" --out "dist/${{ matrix.key }}" --os "${{ matrix.os }}" --key "${{ matrix.key }}"
+
+      - name: Upload desktop artifact
+        uses: actions/upload-artifact@v4
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "Welkin ${{ github.ref_name }}"
-          # Written into latest.json (desktop notes) and the release body (Android).
-          releaseBody: ${{ steps.changelog.outputs.body }}
-          # Set to true if you prefer to review and publish releases by hand.
-          releaseDraft: false
-          prerelease: false
-          args: ${{ matrix.args }}
+          name: desktop-${{ matrix.key }}
+          path: dist/${{ matrix.key }}
+          if-no-files-found: error
 
   android:
-    needs: desktop
     permissions:
-      contents: write
+      contents: read
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -158,6 +150,9 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Sync version from package.json
+        run: pnpm version:sync
+
       - name: Decode Android signing keystore
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -176,14 +171,81 @@ jobs:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: pnpm tauri android build --apk
 
-      - name: Rename APK for the release asset
+      - name: Stage APK
         run: |
+          mkdir -p dist/android
           src=$(find src-tauri/gen/android/app/build/outputs/apk -name "*.apk" | head -n1)
-          cp "$src" "Welkin-${{ github.ref_name }}.apk"
+          cp "$src" "dist/android/Welkin-${{ github.ref_name }}.apk"
 
-      - name: Upload APK to the release
-        uses: softprops/action-gh-release@v2
+      - name: Upload Android artifact
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: ${{ github.ref_name }}
-          files: Welkin-${{ github.ref_name }}.apk
-          draft: false
+          name: android
+          path: dist/android
+          if-no-files-found: error
+
+  release:
+    needs: [desktop, android]
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Build changelog from commits
+        id: changelog
+        shell: bash
+        run: |
+          previous=$(git describe --tags --abbrev=0 "${{ github.ref_name }}^" 2>/dev/null || true)
+          if [ -n "$previous" ]; then
+            range="${previous}..${{ github.ref_name }}"
+          else
+            range="${{ github.ref_name }}"
+          fi
+          body=$(git log --pretty=format:'- %s' "$range" || true)
+          if [ -z "$body" ]; then
+            body="Initial release"
+          fi
+          printf '%s\n' "$body" > changelog.md
+          {
+            echo "body<<__CHANGELOG__"
+            echo "$body"
+            echo "__CHANGELOG__"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Generate updater manifest (latest.json)
+        run: |
+          version=$(node -p "require('./package.json').version")
+          node scripts/make-latest-json.mjs \
+            --dist dist \
+            --repo "${{ github.repository }}" \
+            --tag "${{ github.ref_name }}" \
+            --version "$version" \
+            --notes-file changelog.md \
+            --out latest.json
+
+      - name: Create release and upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ github.ref_name }}"
+          mapfile -t files < <(find dist -type f)
+          files+=(latest.json)
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" --title "Welkin $tag" --notes-file changelog.md
+            gh release upload "$tag" "${files[@]}" --clobber
+          else
+            gh release create "$tag" "${files[@]}" --title "Welkin $tag" --notes-file changelog.md --verify-tag
+          fi
