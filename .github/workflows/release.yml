@@ -7,11 +7,13 @@ name: Release
 #
 # Required repository secrets (Settings -> Secrets and variables -> Actions):
 #   TAURI_SIGNING_PRIVATE_KEY           content of the Tauri signing private key
-#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  its password (leave empty when none)
 #   ANDROID_KEYSTORE_BASE64             base64 of the Android release keystore
 #   ANDROID_KEYSTORE_PASSWORD           keystore password
 #   ANDROID_KEY_ALIAS                   key alias inside the keystore
 #   ANDROID_KEY_PASSWORD                key password
+#
+# The generated Tauri key has no password, so no
+# TAURI_SIGNING_PRIVATE_KEY_PASSWORD secret is needed (GitHub rejects empty ones).
 on:
   push:
     tags: ["v*"]
@@ -75,7 +77,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "Welkin ${{ github.ref_name }}"
