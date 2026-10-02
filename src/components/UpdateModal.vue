@@ -88,34 +88,34 @@ button {
   <Teleport to="body">
     <Transition name="modal">
       <div v-if="update.open && update.info" class="fixed inset-0 z-[80] grid place-items-center bg-black/70 p-4" role="dialog" aria-modal="true" @pointerdown.self="update.hide()">
-        <div class="ak-frame max-h-[90vh] w-full max-w-md overflow-y-auto border border-line bg-surface p-5">
-          <div class="flex items-center justify-between">
+        <div class="ak-frame flex max-h-[90vh] w-full max-w-md flex-col border border-line bg-surface p-5">
+          <div class="flex shrink-0 items-center justify-between">
             <h3 class="text-sm font-bold uppercase tracking-[0.2em]">{{ t("settings.update.modalTitle") }}</h3>
             <button type="button" class="grid h-8 w-8 place-items-center text-dim hover:text-fg" @click="update.hide()"><X :size="16" /></button>
           </div>
 
-          <div class="mt-3 flex flex-wrap items-baseline gap-x-2 gap-y-1">
+          <div class="mt-3 flex shrink-0 flex-wrap items-baseline gap-x-2 gap-y-1">
             <span class="text-2xl font-black tabular-nums text-accent">v{{ update.info?.version }}</span>
             <span class="text-xs text-dim">{{ t("settings.update.fromVersion", { version: update.info?.currentVersion }) }}</span>
           </div>
-          <p v-if="releaseDate" class="mt-1 text-[11px] text-dim">{{ t("settings.update.released", { date: releaseDate }) }}</p>
+          <p v-if="releaseDate" class="mt-1 shrink-0 text-[11px] text-dim">{{ t("settings.update.released", { date: releaseDate }) }}</p>
 
-          <div v-if="update.info?.notes" class="mt-4 grid gap-1">
-            <span class="text-[11px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.update.notes") }}</span>
-            <pre class="max-h-56 overflow-y-auto whitespace-pre-wrap break-words border border-line bg-bg p-3 font-sans text-xs leading-relaxed text-muted">{{ update.info?.notes }}</pre>
+          <div v-if="update.info?.notes" class="mt-4 flex min-h-0 flex-auto flex-col gap-1">
+            <span class="shrink-0 text-[11px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.update.notes") }}</span>
+            <pre class="min-h-0 flex-auto overflow-y-auto whitespace-pre-wrap break-words border border-line bg-bg p-3 font-sans text-xs leading-relaxed text-muted">{{ update.info?.notes }}</pre>
           </div>
 
-          <div v-if="update.installing" class="mt-5 grid gap-2.5">
+          <div v-if="update.installing" class="mt-5 grid shrink-0 gap-2.5">
             <span class="block h-2 w-full overflow-hidden bg-fg/10"><span class="block h-full bg-accent transition-[width]" :style="{ width: `${percent}%` }"></span></span>
-            <div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 text-[11px] tabular-nums text-dim">
-              <span>{{ sizeText }}</span>
-              <span v-if="speedText">{{ speedText }}</span>
-              <span class="font-semibold text-fg">{{ percent }}%</span>
+            <div class="grid grid-cols-[1fr_5.5rem_2.5rem] items-baseline gap-x-3 text-[11px] tabular-nums text-dim">
+              <span class="truncate">{{ sizeText }}</span>
+              <span class="truncate text-right">{{ speedText ?? "" }}</span>
+              <span class="text-right font-semibold text-fg">{{ percent }}%</span>
             </div>
             <button type="button" class="ak-clip-tr flex h-10 items-center justify-center border border-line px-5 text-[13px] font-semibold uppercase tracking-[0.25em] text-fg hover:border-accent hover:text-accent" @click="update.hide()">{{ t("settings.update.background") }}</button>
           </div>
 
-          <div v-else class="mt-5 grid gap-2">
+          <div v-else class="mt-5 grid shrink-0 gap-2">
             <button type="button" class="ak-clip-tr flex h-11 items-center justify-center gap-2 bg-accent px-6 text-[13px] font-bold uppercase tracking-[0.25em] text-accent-fg hover:scale-[1.01] active:scale-95" @click="updateNow"><Download :size="15" :stroke-width="2.2" />{{ t("settings.update.updateNow") }}</button>
             <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
               <button type="button" class="ak-clip-tr flex h-10 items-center justify-center gap-2 border border-line px-3 text-[12px] font-semibold uppercase tracking-[0.15em] text-muted hover:border-accent hover:text-accent" @click="update.remindLater"><Clock :size="14" :stroke-width="2.2" />{{ t("settings.update.remindLater") }}</button>

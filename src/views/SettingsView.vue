@@ -249,10 +249,10 @@ button.text-dim:hover:not(:disabled) {
             <p class="text-sm font-semibold text-accent">{{ t("settings.update.available", { version: update.info?.version }) }}</p>
             <div v-if="update.installing" class="grid gap-2.5">
               <span class="block h-2 w-full overflow-hidden bg-fg/10"><span class="block h-full bg-accent transition-[width]" :style="{ width: `${Math.round((update.progress ?? 0) * 100)}%` }"></span></span>
-              <div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 text-[11px] tabular-nums text-dim">
-                <span>{{ updateSizeText }}</span>
-                <span v-if="updateSpeedText">{{ updateSpeedText }}</span>
-                <span class="font-semibold text-fg">{{ Math.round((update.progress ?? 0) * 100) }}%</span>
+              <div class="grid grid-cols-[1fr_5.5rem_2.5rem] items-baseline gap-x-3 text-[11px] tabular-nums text-dim">
+                <span class="truncate">{{ updateSizeText }}</span>
+                <span class="truncate text-right">{{ updateSpeedText ?? "" }}</span>
+                <span class="text-right font-semibold text-fg">{{ Math.round((update.progress ?? 0) * 100) }}%</span>
               </div>
             </div>
             <button type="button" class="ak-clip-tr flex h-10 items-center justify-center border border-line px-5 text-[13px] font-semibold uppercase tracking-[0.25em] text-fg hover:border-accent hover:text-accent" @click="update.show()">{{ t("settings.update.view") }}</button>

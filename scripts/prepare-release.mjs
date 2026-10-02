@@ -317,6 +317,13 @@ async function main() {
       ok(`已更新 package.json 版本：${magenta(version)}`);
     }
 
+    // Propagate the version to the Tauri config and Rust manifests and stage
+    // them with the release commit. Relying on CI's prebuild alone would only
+    // patch the build working copy, leaving the repository versions stale.
+    const synced = run(process.execPath, [join(ROOT, "scripts", "sync-version.mjs")], { allowFailure: true });
+    if (synced) console.log(synced);
+    ok(`已同步 Tauri / Rust 版本：${magenta(version)}`);
+
     if (options.noCommit) {
       warn("已生成文件（--no-commit）。请手动提交并打 tag：");
       printPushHelp(tag, branch);
@@ -324,7 +331,7 @@ async function main() {
     }
 
     // 7. Commit and tag locally.
-    run("git", ["add", "changelog.md", "package.json"]);
+    run("git", ["add", "changelog.md", "package.json", "src-tauri/tauri.conf.json", "src-tauri/Cargo.toml", "src-tauri/Cargo.lock"]);
     if (run("git", ["diff", "--cached", "--name-only"], { allowFailure: true })) {
       run("git", ["commit", "-m", `chore(release): ${tag}`]);
       ok(`已提交改动。`);
