@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
-import { HardDrive, Moon, Music2, Sun } from "@lucide/vue";
+import { Bug, Copy, ExternalLink, GitFork, HardDrive, Moon, Music2, Sun, Users } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { invoke } from "../api";
 import { formatBytes } from "../lib/format";
 import { pushToast } from "../lib/toast";
@@ -22,6 +23,10 @@ const accent = defineModel<Accent>("accent", { required: true });
 const emit = defineEmits<{ sponsor: []; sources: []; friendlyError: [error: unknown] }>();
 const { t, locale } = useI18n();
 const appVersion = pkg.version;
+/** Project links and the user group shown in the community card. */
+const repoUrl = "https://github.com/atemukesu/WelkinPlayer";
+const issuesUrl = "https://github.com/atemukesu/WelkinPlayer/issues";
+const qqGroup = "1109689488";
 const profile = useProfileStore();
 const sources = useSourcesStore();
 const license = useLicenseStore();
@@ -48,6 +53,39 @@ async function refreshUsage() {
 }
 async function saveCacheDir() { try { cacheDir.value = await invoke<string>("set_cache_dir", { dir: cacheDir.value }); pushToast("success", t("settings.cache.saved")); } catch (error) { emit("friendlyError", error); } }
 async function saveCacheLimit() { try { cacheLimit.value = await invoke<number>("set_stream_cache_limit", { limitMb: cacheLimit.value }); pushToast("success", t("settings.cache.limitSaved")); void refreshUsage(); } catch (error) { emit("friendlyError", error); } }
+/** Open an external link, falling back to a browser tab and finally a toast. */
+async function openLink(url: string) {
+  try {
+    await openUrl(url);
+  } catch {
+    try {
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch {
+      pushToast("error", t("settings.community.openFailed"));
+    }
+  }
+}
+/** Copy the QQ group number, with a legacy fallback for the clipboard API. */
+async function copyQq() {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(qqGroup);
+    } else {
+      throw new Error("clipboard unavailable");
+    }
+    pushToast("success", t("settings.community.qqCopied"));
+  } catch {
+    const field = document.createElement("textarea");
+    field.value = qqGroup;
+    field.style.position = "fixed";
+    field.style.opacity = "0";
+    document.body.appendChild(field);
+    field.select();
+    const copied = document.execCommand("copy");
+    document.body.removeChild(field);
+    pushToast(copied ? "success" : "error", t(copied ? "settings.community.qqCopied" : "settings.community.qqCopyFailed"));
+  }
+}
 onMounted(() => {
   void invoke<string>("get_cache_dir").then((dir) => (cacheDir.value = dir)).catch(() => {});
   void invoke<number>("get_stream_cache_limit").then((limit) => (cacheLimit.value = limit)).catch(() => {});
@@ -244,6 +282,24 @@ button.text-dim:hover:not(:disabled) {
           <p class="text-sm text-muted">{{ t("settings.sources.count", { count: sources.sources.length }) }}</p>
           <p class="flex items-center gap-2 text-[11px] text-dim"><span class="h-2 w-2" :class="sources.hasCloudSync ? 'bg-accent' : 'bg-dim'"></span>{{ sources.hasCloudSync ? t("settings.sources.cloudAvailable") : t("settings.sources.cloudUnavailable") }}</p>
           <div class="flex justify-end"><button type="button" class="ak-clip-tr flex h-10 items-center gap-2 bg-accent px-5 text-[13px] font-bold uppercase tracking-[0.25em] text-accent-fg" @click="emit('sources')"><HardDrive :size="15" />{{ t("settings.sources.manage") }}</button></div>
+        </div>
+      </section>
+
+      <section class="ak-frame grid gap-6 border border-line bg-surface p-6 lg:grid-cols-[1fr_1.3fr]">
+        <div><h2 class="text-sm font-bold uppercase tracking-[0.2em]">{{ t("settings.community.title") }}</h2><p class="mt-2 text-sm text-muted">{{ t("settings.community.desc") }}</p></div>
+        <div class="grid gap-3">
+          <div class="flex items-center justify-between gap-4 border border-line bg-bg px-4 py-3">
+            <span class="flex min-w-0 items-center gap-3"><GitFork class="shrink-0 text-accent" :size="18" :stroke-width="2" /><span class="min-w-0"><span class="block text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.community.repo") }}</span><span class="block truncate font-mono text-xs text-fg">{{ repoUrl }}</span></span></span>
+            <button type="button" class="ak-clip-tr flex h-9 shrink-0 items-center gap-2 bg-accent px-4 text-[12px] font-bold uppercase tracking-[0.2em] text-accent-fg" @click="openLink(repoUrl)"><ExternalLink :size="14" />{{ t("settings.community.repoAction") }}</button>
+          </div>
+          <div class="flex items-center justify-between gap-4 border border-line bg-bg px-4 py-3">
+            <span class="flex min-w-0 items-center gap-3"><Bug class="shrink-0 text-accent" :size="18" :stroke-width="2" /><span class="min-w-0"><span class="block text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.community.issues") }}</span><span class="block truncate font-mono text-xs text-fg">{{ issuesUrl }}</span></span></span>
+            <button type="button" class="ak-clip-tr flex h-9 shrink-0 items-center gap-2 border border-line px-4 text-[12px] font-bold uppercase tracking-[0.2em] text-fg" @click="openLink(issuesUrl)"><ExternalLink :size="14" />{{ t("settings.community.issuesAction") }}</button>
+          </div>
+          <div class="flex items-center justify-between gap-4 border border-line bg-bg px-4 py-3">
+            <span class="flex min-w-0 items-center gap-3"><Users class="shrink-0 text-accent" :size="18" :stroke-width="2" /><span class="min-w-0"><span class="block text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.community.qq") }}</span><span class="block truncate font-mono text-xs text-fg">{{ t("settings.community.qqNumber") }}</span></span></span>
+            <button type="button" class="ak-clip-tr flex h-9 shrink-0 items-center gap-2 border border-line px-4 text-[12px] font-bold uppercase tracking-[0.2em] text-fg" @click="copyQq"><Copy :size="14" />{{ t("settings.community.qqCopy") }}</button>
+          </div>
         </div>
       </section>
 
