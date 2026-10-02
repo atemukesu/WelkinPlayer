@@ -46,6 +46,7 @@ import QueuePanel from "./components/QueuePanel.vue";
 import PlayerBar from "./components/PlayerBar.vue";
 import SetupWizard from "./components/SetupWizard.vue";
 import ToastStack from "./components/ToastStack.vue";
+import UpdateModal from "./components/UpdateModal.vue";
 import LibraryView from "./views/LibraryView.vue";
 import PlayerView from "./views/PlayerView.vue";
 import SettingsView from "./views/SettingsView.vue";
@@ -229,8 +230,8 @@ function closeQueue() { showQueue.value = false; }
 /** Background update probe at boot; a failure is intentionally silent. */
 async function checkUpdatesOnBoot() {
   try {
-    const info = await update.check();
-    if (info.available) pushToast("info", t("settings.update.available", { version: info.version }));
+    await update.check();
+    if (update.shouldPrompt && !profile.firstRun) update.show();
   } catch {
     // A failed background check must never disturb the user.
   }
@@ -319,5 +320,6 @@ onUnmounted(() => { savePlaybackPosition(true); stopDesktopLyrics(); stopMediaCo
     <PlayerBar v-if="player.currentTrack" @open="navigate('player')" @queue="toggleQueue" @open-artist="openArtist" @open-album="openAlbum" />
     <AppNavigation placement="mobile" :active-view="baseView" :active-playlist-id="playlistFilter" :active-artist="artistFilter" :active-album="albumFilter" :active-source="sourceFilter" @navigate="navigate" @create-playlist="createPlaylist" @open-playlist="openUserPlaylist" />
     <ToastStack />
+    <UpdateModal @friendly-error="showError" />
   </div>
 </template>

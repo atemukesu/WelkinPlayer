@@ -28,3 +28,8 @@ export function formatBytes(bytes: number): string {
   const value = bytes / Math.pow(1024, exponent);
   return `${exponent === 0 || value >= 100 ? Math.round(value) : value.toFixed(1)} ${units[exponent]}`;
 }
+
+/** Human-readable transfer rate, e.g. "1.4 MB/s". */
+export function formatSpeed(bytesPerSecond: number): string {
+  return `${formatBytes(bytesPerSecond)}/s`;
+}

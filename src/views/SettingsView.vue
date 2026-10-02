@@ -4,7 +4,7 @@ import { Bug, Copy, ExternalLink, GitFork, HardDrive, Moon, Music2, Sun, Users }
 import { useI18n } from "vue-i18n";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { invoke } from "../api";
-import { formatBytes } from "../lib/format";
+import { formatBytes, formatSpeed } from "../lib/format";
 import { pushToast } from "../lib/toast";
 import { accents } from "../lib/app";
 import type { Accent, Theme } from "../lib/app";
@@ -14,7 +14,7 @@ import { useSourcesStore } from "../stores/sources";
 import { useLicenseStore } from "../stores/license";
 import { useWindowBehaviorStore } from "../stores/windowBehavior";
 import { useUpdateStore } from "../stores/update";
-import { isAndroid, isDesktop } from "../lib/desktopLyric";
+import { isDesktop } from "../lib/desktopLyric";
 import LyricsSettings from "../components/LyricsSettings.vue";
 import DesktopLyricSettings from "../components/DesktopLyricSettings.vue";
 import pkg from "../../package.json";
@@ -35,10 +35,14 @@ const windowBehavior = useWindowBehaviorStore();
 const update = useUpdateStore();
 /** The close-to-tray preference is desktop-only; Android never shows it. */
 const desktop = isDesktop();
-/** Android downloads the APK through the browser instead of installing in-app. */
-const android = isAndroid();
 /** Edition label shown in the About card's edition dial. */
 const editionLabel = computed(() => (license.isPro ? t("sponsor.compare.badgePro") : t("settings.about.edition")));
+/** Download progress readout: bytes received, with the total when known. */
+const updateSizeText = computed(() =>
+  update.total && update.total > 0 ? `${formatBytes(update.downloaded)} / ${formatBytes(update.total)}` : formatBytes(update.downloaded),
+);
+/** Current update transfer rate, or null while unknown. */
+const updateSpeedText = computed(() => (update.speed && update.speed > 0 ? formatSpeed(update.speed) : null));
 const cacheDir = ref("");
 const cacheLimit = ref(1024);
 const cacheUsed = ref(0);
@@ -90,32 +94,15 @@ async function copyQq() {
     pushToast(copied ? "success" : "error", t(copied ? "settings.community.qqCopied" : "settings.community.qqCopyFailed"));
   }
 }
-/** Manual check from the settings card; reports the outcome with a toast. */
+/** Manual check from the settings card; opens the modal or reports up to date. */
 async function checkUpdate() {
   try {
     const info = await update.check();
-    if (info.available) pushToast("info", t("settings.update.available", { version: info.version }));
+    if (info.available) update.show();
     else pushToast("success", t("settings.update.latest"));
   } catch (error) {
     emit("friendlyError", error);
   }
-}
-/** Desktop: download and install, after which the backend relaunches the app. */
-async function installUpdate() {
-  try {
-    await update.install();
-  } catch (error) {
-    emit("friendlyError", error);
-  }
-}
-/** Android: open the APK download in the system browser for manual install. */
-async function downloadUpdate() {
-  const url = update.info?.downloadUrl;
-  if (!url) {
-    pushToast("error", t("settings.update.noDownload"));
-    return;
-  }
-  await openLink(url);
 }
 onMounted(() => {
   void invoke<string>("get_cache_dir").then((dir) => (cacheDir.value = dir)).catch(() => {});
@@ -260,17 +247,15 @@ button.text-dim:hover:not(:disabled) {
           <p class="flex flex-wrap items-baseline gap-1.5 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.update.current") }}<span class="font-semibold tabular-nums text-fg">v{{ appVersion }}</span></p>
           <div v-if="update.available" class="grid gap-3 border border-line bg-bg p-4">
             <p class="text-sm font-semibold text-accent">{{ t("settings.update.available", { version: update.info?.version }) }}</p>
-            <div v-if="update.info?.notes" class="grid gap-1">
-              <span class="text-[11px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.update.notes") }}</span>
-              <pre class="max-h-48 overflow-y-auto whitespace-pre-wrap break-words font-sans text-xs leading-relaxed text-muted">{{ update.info.notes }}</pre>
-            </div>
-            <div v-if="update.installing" class="grid gap-2">
+            <div v-if="update.installing" class="grid gap-2.5">
               <span class="block h-2 w-full overflow-hidden bg-fg/10"><span class="block h-full bg-accent transition-[width]" :style="{ width: `${Math.round((update.progress ?? 0) * 100)}%` }"></span></span>
-              <p class="text-[11px] text-dim">{{ update.progress === null ? t("settings.update.downloading") : t("settings.update.progress", { percent: Math.round(update.progress * 100) }) }}</p>
+              <div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 text-[11px] tabular-nums text-dim">
+                <span>{{ updateSizeText }}</span>
+                <span v-if="updateSpeedText">{{ updateSpeedText }}</span>
+                <span class="font-semibold text-fg">{{ Math.round((update.progress ?? 0) * 100) }}%</span>
+              </div>
             </div>
-            <button v-if="desktop" type="button" class="ak-clip-tr flex h-10 items-center justify-center gap-2 bg-accent px-5 text-[13px] font-bold uppercase tracking-[0.25em] text-accent-fg disabled:opacity-60" :disabled="update.installing" @click="installUpdate">{{ t(update.installing ? "settings.update.installing" : "settings.update.install") }}</button>
-            <button v-else-if="android" type="button" class="ak-clip-tr flex h-10 items-center justify-center gap-2 bg-accent px-5 text-[13px] font-bold uppercase tracking-[0.25em] text-accent-fg" @click="downloadUpdate">{{ t("settings.update.download") }}</button>
-            <p class="text-[11px] leading-relaxed text-dim">{{ t(desktop ? "settings.update.installHint" : "settings.update.downloadHint") }}</p>
+            <button type="button" class="ak-clip-tr flex h-10 items-center justify-center border border-line px-5 text-[13px] font-semibold uppercase tracking-[0.25em] text-fg hover:border-accent hover:text-accent" @click="update.show()">{{ t("settings.update.view") }}</button>
           </div>
           <template v-else>
             <p v-if="update.error" class="text-[12px] leading-relaxed text-rose-500">{{ update.error }}</p>
