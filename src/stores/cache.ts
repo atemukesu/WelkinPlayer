@@ -2,7 +2,7 @@ import { ref, watch } from "vue";
 import { defineStore } from "pinia";
 import { invoke } from "../api";
 import { i18n } from "../i18n";
-import { splitTrackKey, trackKey } from "../lib/sources";
+import { sourceProfileId, splitTrackKey, trackKey } from "../lib/sources";
 import { pushToast } from "../lib/toast";
 import { useProfileStore } from "./profile";
 import { useSourcesStore } from "./sources";
@@ -68,13 +68,15 @@ export const useCacheStore = defineStore("cache", () => {
     const profile = useProfileStore();
     // Only sources this device knows and can stream from. Play counts are
     // synced, so keys may reference another device's source id.
-    const knownIds = new Set(useSourcesStore().sources.filter((source) => source.kind !== "local").map((source) => source.id));
+    const sourceStore = useSourcesStore();
+    const knownIds = new Set(sourceStore.sources.filter((source) => source.kind !== "local").map((source) => sourceProfileId(source)));
     const candidates = Object.entries(profile.profile.playCounts)
       .filter(([, count]) => count >= MIN_PLAYS)
       .sort((a, b) => b[1] - a[1])
       .slice(0, MAX_CANDIDATES)
       .map(([key, count]) => ({ ...splitTrackKey(key), freq: count }))
-      .filter((item) => item.path && knownIds.has(item.sourceId));
+      .filter((item) => item.path && knownIds.has(item.sourceId))
+      .map((item) => ({ ...item, sourceId: sourceStore.sources.find((source) => sourceProfileId(source) === item.sourceId)?.id ?? item.sourceId }));
     try {
       await invoke("sync_smart_cache", { candidates });
     } catch {
@@ -84,8 +86,10 @@ export const useCacheStore = defineStore("cache", () => {
 
   // Pinned tracks are explicit user choices: downloaded first, never evicted.
   async function pin(key: string) {
-    const { sourceId, path } = splitTrackKey(key);
-    const local = useSourcesStore().sources.some((source) => source.id === sourceId && source.kind === "local");
+    const { sourceId: profileId, path } = splitTrackKey(key);
+    const source = useSourcesStore().sources.find((item) => sourceProfileId(item) === profileId || item.id === profileId);
+    const sourceId = source?.id ?? profileId;
+    const local = source?.kind === "local";
     if (local) return;
     pinned.value = new Set(pinned.value).add(key);
     const alreadyCached = cached.value.has(key);
@@ -99,7 +103,8 @@ export const useCacheStore = defineStore("cache", () => {
 
   async function unpin(key: string) {
     pinned.value = new Set([...pinned.value].filter((item) => item !== key));
-    const { sourceId, path } = splitTrackKey(key);
+    const { sourceId: profileId, path } = splitTrackKey(key);
+    const sourceId = useSourcesStore().sources.find((item) => sourceProfileId(item) === profileId || item.id === profileId)?.id ?? profileId;
     try {
       await invoke("unpin_track", { sourceId, path });
     } catch {

@@ -85,10 +85,11 @@ function reset() {
         <DesktopLyricField v-model="settings.strokeColor" type="color" :label="t('settings.desktopLyrics.strokeColor')" />
       </div>
 
-      <!-- Desktop window behaviour -->
-      <div v-if="!isAndroid" class="grid gap-4 border border-line bg-bg/40 p-4">
+      <!-- Floating window behaviour -->
+      <div class="grid gap-4 border border-line bg-bg/40 p-4">
         <DesktopLyricField v-model="settings.locked" type="toggle" :label="t('settings.desktopLyrics.locked')" :hint="t('settings.desktopLyrics.lockedHint')" />
-        <DesktopLyricField v-model="settings.skipTaskbar" type="toggle" :label="t('settings.desktopLyrics.skipTaskbar')" />
+        <DesktopLyricField v-if="!isAndroid" v-model="settings.skipTaskbar" type="toggle" :label="t('settings.desktopLyrics.skipTaskbar')" />
+        <p v-else class="text-[11px] text-muted">{{ t("settings.desktopLyrics.androidLockHint") }}</p>
       </div>
 
       <div class="flex justify-end">

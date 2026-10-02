@@ -40,13 +40,30 @@
     extraItems: {},
     baseHeight: null,
     extraHeight: 0,
+    lastBlockCount: 0,
     androidVisibleSignaled: false,
     raf: 0,
+    // Synchronously-readable window geometry, so a touch drag never has to wait
+    // on an IPC round-trip before it can start moving.
+    winPos: { x: 0, y: 0, width: 0, height: 0, scale: 1, Position: null, Size: null, valid: false },
   };
 
   var stage = document.getElementById("stage");
   var current = document.getElementById("current");
   var body = document.body;
+
+  // Hybrid devices fire both mouse and touch. Track which one is in use so the
+  // CSS hover surface only applies to a real mouse, never to a sticky touch
+  // `:hover`. The touch surface is driven separately by `revealTouchControls`.
+  document.addEventListener("pointerdown", function (event) {
+    if (event.pointerType === "mouse") {
+      body.classList.add("mouse");
+      body.classList.remove("touching");
+    } else {
+      body.classList.add("touching");
+      body.classList.remove("mouse");
+    }
+  }, true);
 
   function syncAppTheme() {
     var root = document.documentElement.style;
@@ -187,9 +204,11 @@
     return { fragment: fragment, elements: elements, data: words };
   }
 
-  // The second voice of a duet hugs the right edge; everything else is left.
+  // The second voice of a duet hugs the right edge. A background line follows
+  // the voice it belongs to, so the duet's backing vocals also sit on the right
+  // instead of being forced to the left like every other background line.
   function isCounterLine(line) {
-    return !!(line.isDuet && !line.isBG);
+    return !!line.isDuet;
   }
 
   // Display order: left voice on top, right voice below, background last.
@@ -235,7 +254,9 @@
       var bg = makeLine(entry.line, "bg");
       wrapper.appendChild(bg.el);
       wordSets.push({ elements: bg.words, data: bg.wordData });
-      if (state.settings && state.settings.translation && entry.line.translation) wrapper.appendChild(makeSubline(entry.line.translation, "translation bg-translation", false));
+      var bgCounter = isCounterLine(entry.line);
+      if (state.settings && state.settings.translation && entry.line.translation) wrapper.appendChild(makeSubline(entry.line.translation, "translation bg-translation", bgCounter));
+      if (entry.line.roman) wrapper.appendChild(makeSubline(entry.line.roman, "roman", bgCounter));
     } else {
       var duet = makeLine(entry.line, "primary");
       wrapper.appendChild(duet.el);
@@ -263,6 +284,13 @@
     block.sort(function (a, b) { return lineRank(a.line) - lineRank(b.line); });
     var primaryEntry = block[0] || null;
 
+    // The blur transition is reserved for a whole-screen swap: exactly one line
+    // is active before and after. Whenever several lines are on screen together
+    // (or the block size is changing), use the smooth opacity transition instead.
+    var multi = block.length > 1 || state.lastBlockCount > 1;
+    var enterClass = multi ? "is-entering-soft" : "is-entering";
+    var leaveClass = multi ? "is-leaving-soft" : "is-leaving";
+
     if (!primaryEntry) {
       var leaving = state.currentNode;
       if (leaving && animate) {
@@ -278,6 +306,7 @@
       state.primaryWordSet = null;
       state.extraItems = {};
       state.currentWordSets = [];
+      state.lastBlockCount = 0;
       return;
     }
 
@@ -298,13 +327,13 @@
       var newPrimary = buildPrimaryGroup(primaryEntry);
       var oldPrimary = state.currentBaseElement;
       if (oldPrimary && animate) {
-        oldPrimary.classList.add("is-leaving");
+        oldPrimary.classList.add(leaveClass);
         (function (el) { window.setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 580); })(oldPrimary);
       } else if (oldPrimary && oldPrimary.parentNode) {
         oldPrimary.parentNode.removeChild(oldPrimary);
       }
-      newPrimary.el.classList.toggle("is-entering", !!animate);
-      if (animate) (function (el) { window.setTimeout(function () { el.classList.remove("is-entering"); }, 660); })(newPrimary.el);
+      newPrimary.el.classList.toggle(enterClass, !!animate);
+      if (animate) (function (el) { window.setTimeout(function () { el.classList.remove(enterClass); }, 660); })(newPrimary.el);
       state.currentNode.insertBefore(newPrimary.el, state.currentExtraElement);
       state.currentBaseElement = newPrimary.el;
       state.currentPrimaryIndex = primaryEntry.index;
@@ -366,6 +395,7 @@
       for (var k = 0; k < sets.length; k++) state.currentWordSets.push(sets[k]);
     }
 
+    state.lastBlockCount = block.length;
     updateProgress(state.positionMs);
     remeasure();
     signalAndroidVisible();
@@ -516,9 +546,37 @@
         try { var LogicalSize = tauri.window.LogicalSize; win.setSize(LogicalSize ? new LogicalSize(geometry.width, geometry.height) : { width: geometry.width, height: geometry.height }).catch(function () {}); } catch (error) {}
       }
     }
-    // Persist the user's baseline height (without the temporary extra line), so
-    // the auto-grow never leaks into the remembered geometry.
-    var saveGeometry = function () {
+    // Cache the physical window position and scale so a touch drag can read it
+    // synchronously. `outerPosition` / `scaleFactor` are async IPC; waiting on
+    // them during `pointerdown` drops the first frames of every gesture.
+    var refreshWinPos = function () {
+      if ((drag && drag.active) || (touchResize && touchResize.active)) return;
+      Promise.all([
+        typeof win.outerPosition === "function" ? win.outerPosition() : Promise.resolve(null),
+        typeof win.outerSize === "function" ? win.outerSize() : Promise.resolve(null),
+        typeof win.scaleFactor === "function" ? win.scaleFactor() : Promise.resolve(1),
+      ]).then(function (values) {
+        var pos = values[0], size = values[1];
+        state.winPos.scale = values[2] || 1;
+        if (pos) {
+          state.winPos.x = pos.x;
+          state.winPos.y = pos.y;
+          state.winPos.Position = pos.constructor || state.winPos.Position;
+          state.winPos.valid = true;
+        }
+        if (size) {
+          state.winPos.width = size.width;
+          state.winPos.height = size.height;
+          state.winPos.Size = size.constructor || state.winPos.Size;
+        }
+      }).catch(function () {});
+    };
+
+    // Persist the baseline height (without the temporary extra line), so the
+    // auto-grow never leaks into the remembered geometry. Debounced: during a
+    // drag `onMoved` fires per frame and a synchronous `localStorage` write each
+    // time stalls the main thread and visibly worsens the drag.
+    var doSaveGeometry = function () {
       Promise.all([
         typeof win.outerPosition === "function" ? win.outerPosition() : null,
         typeof win.outerSize === "function" ? win.outerSize() : null,
@@ -530,13 +588,20 @@
         try { localStorage.setItem("welkin-desktop-lyric-geometry", JSON.stringify({ x: pos.x / scale, y: pos.y / scale, width: size.width / scale, height: height })); } catch (error) {}
       });
     };
-    if (typeof win.onMoved === "function") win.onMoved(saveGeometry);
+    var saveTimer = 0;
+    var saveGeometry = function () {
+      window.clearTimeout(saveTimer);
+      saveTimer = window.setTimeout(doSaveGeometry, 300);
+    };
+    refreshWinPos();
+    if (typeof win.onMoved === "function") win.onMoved(function () { refreshWinPos(); saveGeometry(); });
     if (typeof win.onResized === "function") win.onResized(function () {
       requestAnimationFrame(function () {
         var logical = window.innerHeight;
         state.baseHeight = state.extraHeight ? logical - state.extraHeight : logical;
         applyStageOffset();
         saveGeometry();
+        refreshWinPos();
       });
       if (userResizing) markResizing();
     });
@@ -586,12 +651,68 @@
   }
 
   stage.addEventListener("pointermove", function (event) {
+    if (drag.active) return;
     var direction = resizeDirectionAt(event);
     stage.style.cursor = direction ? RESIZE_CURSORS[direction] : "";
   });
   stage.addEventListener("pointerleave", function () { stage.style.cursor = ""; });
 
-  document.getElementById("resize").addEventListener("pointerdown", function (event) {
+  // Touch resizing: the OS `startResizeDragging` only follows a mouse, so the
+  // handle is driven through `setSize`, mirroring the touch-drag model.
+  var touchResize = {
+    active: false,
+    downPointerX: 0, downPointerY: 0,
+    startW: 0, startH: 0, scale: 1, Size: null,
+  };
+
+  function beginTouchResize(event) {
+    if (lockedNow() || !win) return;
+    if (!state.winPos.valid || !state.winPos.width || !state.winPos.height) { refreshWinPos(); event.preventDefault(); return; }
+    touchResize.active = true;
+    touchResize.startW = state.winPos.width;
+    touchResize.startH = state.winPos.height;
+    touchResize.scale = state.winPos.scale;
+    touchResize.Size = state.winPos.Size;
+    touchResize.downPointerX = window.screenX + event.clientX;
+    touchResize.downPointerY = window.screenY + event.clientY;
+    userResizing = true;
+    // Keep the handle and surface up for the whole gesture; the shared 1.5s
+    // timer resumes only after release.
+    window.clearTimeout(controlsTimer);
+    body.classList.add("controls-visible", "touching", "resizing");
+    try { resizeHandle.setPointerCapture(event.pointerId); } catch (error) {}
+    event.preventDefault();
+  }
+
+  function moveTouchResize(event) {
+    if (!touchResize.active) return;
+    var pointerX = window.screenX + event.clientX;
+    var pointerY = window.screenY + event.clientY;
+    var minWidth = Math.round(240 * touchResize.scale);
+    var minHeight = Math.round(72 * touchResize.scale);
+    var width = Math.max(minWidth, Math.round(touchResize.startW + (pointerX - touchResize.downPointerX) * touchResize.scale));
+    var height = Math.max(minHeight, Math.round(touchResize.startH + (pointerY - touchResize.downPointerY) * touchResize.scale));
+    scheduleSize(width, height);
+  }
+
+  function endTouchResize(event) {
+    if (!touchResize.active) return;
+    touchResize.active = false;
+    userResizing = false;
+    body.classList.remove("resizing");
+    try { resizeHandle.releasePointerCapture(event.pointerId); } catch (error) {}
+    refreshWinPos();
+    saveGeometry();
+    // Restart the shared auto-hide so the handle stays reachable for 1.5s.
+    revealTouchControls();
+  }
+
+  var resizeHandle = document.getElementById("resize");
+  resizeHandle.addEventListener("pointerdown", function (event) {
+    if (event.pointerType !== "mouse") {
+      beginTouchResize(event);
+      return;
+    }
     if (!win || typeof win.startResizeDragging !== "function" || event.button !== 0) return;
     event.preventDefault();
     userResizing = true;
@@ -601,47 +722,124 @@
       userResizing = false;
     });
   });
+  resizeHandle.addEventListener("pointermove", moveTouchResize);
+  resizeHandle.addEventListener("pointerup", endTouchResize);
+  resizeHandle.addEventListener("pointercancel", endTouchResize);
+  // Desktop mouse: use the OS-native window drag / edge resize, which only
+  // follows a real mouse pointer.
   stage.addEventListener("pointerdown", function (event) {
-    if (isAndroid) return;
-    if (!state.settings || state.settings.locked || event.target.closest("button")) return;
-    if (event.button === 0) {
-      var direction = resizeDirectionAt(event);
-      if (direction && typeof win.startResizeDragging === "function") {
-        event.preventDefault();
-        userResizing = true;
-        markResizing();
-        win.startResizeDragging(direction).catch(function () {
-          body.classList.remove("resizing");
-          userResizing = false;
-        });
-        return;
-      }
+    if (event.pointerType !== "mouse") return;
+    if (!win || !state.settings || state.settings.locked || event.target.closest("button")) return;
+    if (event.button !== 0) return;
+    var direction = resizeDirectionAt(event);
+    if (direction && typeof win.startResizeDragging === "function") {
+      event.preventDefault();
+      userResizing = true;
+      markResizing();
+      win.startResizeDragging(direction).catch(function () {
+        body.classList.remove("resizing");
+        userResizing = false;
+      });
+      return;
     }
     startDragging(event);
   });
 
-  // Android has no hover, and its overlay window is moved through a native JNI
-  // call rather than `startDragging`. A tap reveals the controls, a drag moves
-  // the window.
-  var androidDragging = false;
-  var androidMoved = false;
-  var androidLastX = 0;
-  var androidLastY = 0;
-  var androidDownX = 0;
-  var androidDownY = 0;
-  var androidDownAt = 0;
+  // Touch / pen handling is shared by every platform: phones, tablets and
+  // touch-screen desktops. A tap reveals the controls for a while; a drag moves
+  // the layer. The Android overlay is moved through a native JNI call, while a
+  // desktop window is moved through Tauri (`startDragging` only follows a
+  // mouse, and the browser cannot move the transparent window by itself).
   var controlsTimer = 0;
+  var drag = {
+    active: false, moved: false,
+    // Android: `clientX/Y` is relative to the window, which itself moves, so the
+    // last applied shift is stored to recover the true finger delta.
+    downX: 0, downY: 0, lastX: 0, lastY: 0, appliedX: 0, appliedY: 0,
+    // Desktop: `window.screenX + clientX` is the only truly stable screen
+    // coordinate. Webview pointer events report a window-relative `screenX` in
+    // practice, which oscillates as the window follows the finger.
+    downPointerX: 0, downPointerY: 0, lastPointerX: 0, lastPointerY: 0,
+    curX: 0, curY: 0, scale: 1, Position: null,
+    downAt: 0,
+  };
+  var pendingPos = null;
+  var posRaf = 0;
 
+  // Coalesce `setPosition` to one IPC per frame. Touch samples at up to 120 Hz;
+  // issuing one async IPC per sample queues them faster than they drain, so the
+  // window falls behind the finger.
+  function schedulePosition(x, y) {
+    pendingPos = { x: x, y: y };
+    if (posRaf) return;
+    posRaf = requestAnimationFrame(function () {
+      posRaf = 0;
+      var next = pendingPos;
+      pendingPos = null;
+      if (!next || !win) return;
+      var position = drag.Position ? new drag.Position(next.x, next.y) : { x: next.x, y: next.y };
+      try { win.setPosition(position).catch(function () {}); } catch (error) {}
+    });
+  }
+
+  // Same coalescing for touch resizing: one `setSize` per frame.
+  var pendingSize = null;
+  var sizeRaf = 0;
+  function scheduleSize(width, height) {
+    pendingSize = { width: width, height: height };
+    if (sizeRaf) return;
+    sizeRaf = requestAnimationFrame(function () {
+      sizeRaf = 0;
+      var next = pendingSize;
+      pendingSize = null;
+      if (!next || !win) return;
+      var size = touchResize.Size ? new touchResize.Size(next.width, next.height) : { width: next.width, height: next.height };
+      try { win.setSize(size).catch(function () {}); } catch (error) {}
+    });
+  }
+
+  function lockedNow() { return !!(state.settings && state.settings.locked); }
+
+  /** Mouse hover: show while the pointer stays inside the interactive area. */
   function showControls() {
-    if (state.settings && state.settings.locked) return;
+    if (lockedNow()) return;
     body.classList.add("controls-visible");
+  }
+
+  /**
+   * Touch reveal: keep the buttons *and* the background surface around for a
+   * moment after the finger lifts, so the controls are actually reachable.
+   */
+  function revealTouchControls() {
+    if (lockedNow()) return;
+    body.classList.add("controls-visible", "touching");
     window.clearTimeout(controlsTimer);
-    controlsTimer = window.setTimeout(function () { body.classList.remove("controls-visible"); }, 6000);
+    controlsTimer = window.setTimeout(hideControls, 1500);
   }
 
   function hideControls() {
     window.clearTimeout(controlsTimer);
     body.classList.remove("controls-visible");
+    body.classList.remove("touching");
+  }
+
+  function blurActive() {
+    var active = document.activeElement;
+    if (active && typeof active.blur === "function") active.blur();
+    window.setTimeout(function () {
+      var focused = document.activeElement;
+      if (focused && typeof focused.blur === "function") focused.blur();
+    }, 0);
+  }
+
+  function controlClick(action) {
+    sendControl(action);
+    // Keep the layer reachable after a press: touch users get the timeout,
+    // mouse users keep it while the pointer is still over the controls.
+    if (body.classList.contains("mouse")) showControls();
+    else revealTouchControls();
+    if (lockedNow()) hideControls();
+    blurActive();
   }
 
   function androidMoveBy(dx, dy) {
@@ -649,58 +847,109 @@
     try { window.AndroidDesktopLyric.moveBy(Math.round(dx), Math.round(dy)); } catch (error) {}
   }
 
-  var androidActive = false;
+  function beginTouchDrag(event) {
+    drag.active = true;
+    drag.moved = false;
+    drag.downX = event.clientX;
+    drag.downY = event.clientY;
+    drag.lastX = event.clientX;
+    drag.lastY = event.clientY;
+    drag.appliedX = 0;
+    drag.appliedY = 0;
+    drag.downPointerX = window.screenX + event.clientX;
+    drag.downPointerY = window.screenY + event.clientY;
+    drag.lastPointerX = drag.downPointerX;
+    drag.lastPointerY = drag.downPointerY;
+    drag.downAt = performance.now();
+    // Cancel any pending auto-hide so it cannot fire mid-gesture.
+    window.clearTimeout(controlsTimer);
+    if (!lockedNow()) {
+      if (win && !state.winPos.valid) {
+        // Geometry cache not ready yet (cold start): abandon this gesture rather
+        // than teleporting the window from an assumed origin.
+        drag.active = false;
+        body.classList.remove("dragging");
+        refreshWinPos();
+        event.preventDefault();
+        return;
+      }
+      body.classList.add("dragging");
+      try { stage.setPointerCapture(event.pointerId); } catch (error) {}
+      if (win) {
+        // Synchronous read of the cached geometry: no IPC on the drag path.
+        drag.curX = state.winPos.x;
+        drag.curY = state.winPos.y;
+        drag.scale = state.winPos.scale;
+        drag.Position = state.winPos.Position;
+        refreshWinPos();
+      }
+    }
+    event.preventDefault();
+  }
 
-  function endAndroidDrag(event) {
-    if (!androidActive) return;
-    androidActive = false;
-    androidDragging = false;
+  function moveTouchDrag(event) {
+    if (!drag.active) return;
+
+    if (isAndroid) {
+      // Undo the feedback loop: `clientX` shrinks by the amount the window just
+      // moved, so add the last applied shift back to recover the real movement.
+      var rawDx = event.clientX - drag.lastX + drag.appliedX;
+      var rawDy = event.clientY - drag.lastY + drag.appliedY;
+      drag.lastX = event.clientX;
+      drag.lastY = event.clientY;
+      drag.appliedX = rawDx;
+      drag.appliedY = rawDy;
+      if (Math.abs(event.clientX - drag.downX) > 6 || Math.abs(event.clientY - drag.downY) > 6) drag.moved = true;
+      if (rawDx || rawDy) androidMoveBy(rawDx, rawDy);
+      return;
+    }
+
+    if (!win) return;
+    // `window.screenX + clientX` cancels the window's own movement, giving the
+    // true finger position on screen regardless of platform `screenX` semantics.
+    var pointerX = window.screenX + event.clientX;
+    var pointerY = window.screenY + event.clientY;
+    if (Math.abs(pointerX - drag.downPointerX) > 6 || Math.abs(pointerY - drag.downPointerY) > 6) drag.moved = true;
+    drag.curX += (pointerX - drag.lastPointerX) * drag.scale;
+    drag.curY += (pointerY - drag.lastPointerY) * drag.scale;
+    drag.lastPointerX = pointerX;
+    drag.lastPointerY = pointerY;
+    schedulePosition(Math.round(drag.curX), Math.round(drag.curY));
+  }
+
+  function endTouchDrag(event) {
+    if (!drag.active) return;
+    drag.active = false;
     body.classList.remove("dragging");
     try { stage.releasePointerCapture(event.pointerId); } catch (error) {}
-    if (!androidMoved && performance.now() - androidDownAt < 400) {
-      if (body.classList.contains("controls-visible")) hideControls(); else showControls();
-    }
+    // The cached position moved with the window; resync it for the next gesture.
+    if (win) refreshWinPos();
+    // Whether it was a tap or a drag, keep the touch surface and controls up for
+    // a moment after release, then let them hide on the shared timer.
+    revealTouchControls();
   }
 
-  if (isAndroid) {
-    stage.addEventListener("pointerdown", function (event) {
-      if (event.target.closest("button")) return;
-      if (event.pointerType === "mouse" && event.button !== 0) return;
-      androidActive = true;
-      androidMoved = false;
-      androidDragging = false;
-      androidLastX = event.clientX;
-      androidLastY = event.clientY;
-      androidDownX = event.clientX;
-      androidDownY = event.clientY;
-      androidDownAt = performance.now();
-      if (!(state.settings && state.settings.locked)) {
-        androidDragging = true;
-        body.classList.add("dragging");
-        try { stage.setPointerCapture(event.pointerId); } catch (error) {}
-      }
-      event.preventDefault();
-    });
+  stage.addEventListener("pointerdown", function (event) {
+    if (event.pointerType === "mouse") return;
+    if (event.target.closest("button")) return;
+    beginTouchDrag(event);
+  });
+  stage.addEventListener("pointermove", moveTouchDrag);
+  stage.addEventListener("pointerup", endTouchDrag);
+  stage.addEventListener("pointercancel", function (event) {
+    if (!drag.active) return;
+    drag.active = false;
+    body.classList.remove("dragging");
+    hideControls();
+    try { stage.releasePointerCapture(event.pointerId); } catch (error) {}
+  });
 
-    stage.addEventListener("pointermove", function (event) {
-      if (!androidDragging) return;
-      var dx = event.clientX - androidLastX;
-      var dy = event.clientY - androidLastY;
-      androidLastX = event.clientX;
-      androidLastY = event.clientY;
-      if (Math.abs(event.clientX - androidDownX) > 6 || Math.abs(event.clientY - androidDownY) > 6) androidMoved = true;
-      if (dx || dy) androidMoveBy(dx, dy);
-    });
-
-    stage.addEventListener("pointerup", endAndroidDrag);
-    stage.addEventListener("pointercancel", function (event) {
-      if (!androidActive) return;
-      androidActive = false;
-      androidDragging = false;
-      body.classList.remove("dragging");
-      try { stage.releasePointerCapture(event.pointerId); } catch (error) {}
-    });
-  }
+  // Desktop mouse hover reveals the controls while the pointer is inside. The
+  // listeners ignore touch so a finger never pins the layer open.
+  stage.addEventListener("pointerenter", function (event) { if (event.pointerType === "mouse") showControls(); });
+  stage.addEventListener("pointerleave", function (event) { if (event.pointerType === "mouse") hideControls(); });
+  document.getElementById("tools").addEventListener("pointerenter", function (event) { if (event.pointerType === "mouse") showControls(); });
+  document.getElementById("tools").addEventListener("pointerleave", function (event) { if (event.pointerType === "mouse") hideControls(); });
 
   document.getElementById("close").addEventListener("click", function () {
     // Tell the main window so its toggle reflects the real state...
@@ -715,10 +964,23 @@
     if (!state.settings) return;
     state.settings.locked = !state.settings.locked;
     applyLocked(state.settings.locked);
-    sendControl(state.settings.locked ? "lock" : "unlock");
+    controlClick(state.settings.locked ? "lock" : "unlock");
   });
-  document.getElementById("prev").addEventListener("click", function () { sendControl("previous"); });
-  document.getElementById("play").addEventListener("click", function () { sendControl("toggle"); });
-  document.getElementById("next").addEventListener("click", function () { sendControl("next"); });
+  document.getElementById("prev").addEventListener("click", function () { controlClick("previous"); });
+  document.getElementById("play").addEventListener("click", function () { controlClick("toggle"); });
+  document.getElementById("next").addEventListener("click", function () { controlClick("next"); });
+
+  // Chromium pauses rAF for hidden documents. The main window is hidden when
+  // minimised to tray, but this overlay is its own always-on-top window, so its
+  // rAF keeps running; still, resync it on visibility changes so a temporarily
+  // occluded/hidden layer resumes the karaoke sweep immediately instead of
+  // waiting for the next tick.
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden) {
+      stopRaf();
+    } else if (state.playing && state.settings && state.settings.karaoke && state.visible) {
+      ensureRaf();
+    }
+  });
 
 })();

@@ -14,6 +14,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
@@ -21,6 +22,7 @@ import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.core.app.NotificationCompat
+import kotlin.math.roundToInt
 
 /**
  * Foreground service hosting the floating lyrics overlay.
@@ -43,6 +45,7 @@ class DesktopLyricService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        Log.i(TAG, "onCreate")
         createChannel()
         startForegroundCompat(buildNotification())
         createOverlay()
@@ -52,6 +55,7 @@ class DesktopLyricService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Log.i(TAG, "onStartCommand action=${intent?.action}")
         when (intent?.action) {
             ACTION_TOGGLE_LOCK -> {
                 val next = !locked
@@ -78,6 +82,7 @@ class DesktopLyricService : Service() {
     }
 
     override fun onDestroy() {
+        Log.i(TAG, "onDestroy")
         webView?.let { view ->
             try {
                 windowManager?.removeView(view)
@@ -127,6 +132,7 @@ class DesktopLyricService : Service() {
     }
 
     private fun setVisible(value: Boolean) {
+        Log.i(TAG, "setVisible $value")
         main.post {
             webView?.visibility = if (value) View.VISIBLE else View.GONE
         }
@@ -144,8 +150,16 @@ class DesktopLyricService : Service() {
             val metrics = resources.displayMetrics
             val maxX = (metrics.widthPixels - view.width).coerceAtLeast(0)
             val maxY = (metrics.heightPixels - view.height).coerceAtLeast(0)
-            layout.x = (layout.x + dx).coerceIn(0, maxX)
-            layout.y = (layout.y + dy).coerceIn(0, maxY)
+            // WebView pointer coordinates are CSS pixels while WindowManager
+            // positions are physical pixels. Convert the drag delta or the
+            // overlay visibly lags behind the user's finger on dense screens.
+            val density = metrics.density
+            layout.x = (layout.x + (dx * density).roundToInt()).coerceIn(0, maxX)
+            layout.y = (layout.y + (dy * density).roundToInt()).coerceIn(0, maxY)
+            getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                .putInt(POSITION_X, layout.x)
+                .putInt(POSITION_Y, layout.y)
+                .apply()
             try {
                 windowManager?.updateViewLayout(view, layout)
             } catch (_: Throwable) {
@@ -177,7 +191,12 @@ class DesktopLyricService : Service() {
                 // renderer script is injected here instead of via `<script src>`.
                 val renderer = DesktopLyricBridge.js
                 val combined = if (queued.isEmpty()) renderer else renderer + "\n" + queued.joinToString("\n")
+                Log.i(TAG, "onPageFinished renderer=${renderer.length} queued=${queued.size}")
                 if (combined.isNotBlank()) view?.evaluateJavascript(combined, null)
+                // Native fallback: reveal the layer as soon as the page is up so
+                // the overlay never stays invisible even if the JS handshake is
+                // missed.
+                setVisible(true)
             }
         }
         view.addJavascriptInterface(BridgeInterface(), "AndroidDesktopLyric")
@@ -198,16 +217,18 @@ class DesktopLyricService : Service() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = 0
-            y = (resources.displayMetrics.heightPixels * 0.55f).toInt()
+            x = getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(POSITION_X, 0)
+            y = getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(POSITION_Y, (resources.displayMetrics.heightPixels * 0.55f).toInt())
         }
 
         view.visibility = View.GONE
         try {
             manager.addView(view, layout)
+            Log.i(TAG, "overlay added")
         } catch (error: Throwable) {
             // Permission revoked between the check and now, or an incompatible
             // OEM overlay policy: bail out instead of crashing the process.
+            Log.e(TAG, "addView failed", error)
             view.destroy()
             stopSelf()
             return
@@ -217,8 +238,9 @@ class DesktopLyricService : Service() {
     }
 
     private fun loadRenderer() {
-        val view = webView ?: return
+        val view = webView ?: run { Log.w(TAG, "loadRenderer: no webView"); return }
         val html = DesktopLyricBridge.html
+        Log.i(TAG, "loadRenderer html=${html.length}")
         if (html.isBlank()) return
         pageReady = false
         view.loadDataWithBaseURL("https://desktop-lyric.local/", html, "text/html", "utf-8", null)
@@ -302,8 +324,12 @@ class DesktopLyricService : Service() {
     }
 
     companion object {
+        private const val TAG = "WelkinLyric"
         private const val CHANNEL_ID = "desktop-lyric"
         private const val NOTIFICATION_ID = 0x4C59
+        private const val PREFS = "desktop-lyrics"
+        private const val POSITION_X = "position-x"
+        private const val POSITION_Y = "position-y"
         const val ACTION_TOGGLE_LOCK = "com.atemukesu.welkinplayer.DESKTOP_LYRIC_TOGGLE_LOCK"
         const val ACTION_CLOSE = "com.atemukesu.welkinplayer.DESKTOP_LYRIC_CLOSE"
     }

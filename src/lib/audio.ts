@@ -167,16 +167,24 @@ function isBenignPlayRejection(error: DOMException | null | undefined): boolean 
  * React to a real playback failure. Failures from a superseded source are
  * ignored entirely so they cannot clobber the current track; the media `error`
  * event and the rejected `play()` promise describe the same failure, so the
- * toast is only shown once per source.
+ * toast is only shown once per source. When `skip` is set (the track is no
+ * longer in its source) playback advances to the next queue entry instead of
+ * stopping, so a missing file cannot stall a synced queue.
  */
-function fail(message: string, generation: number) {
+function fail(message: string, generation: number, skip = false) {
   if (generation !== sourceGeneration) return;
   const player = usePlayerStore();
+  const failedKey = trackKey(player.currentTrack);
   audio?.pause();
   player.setPlaying(false);
   if (generation === reportedGeneration) return;
   reportedGeneration = generation;
   pushToast("error", message);
+  if (skip && failedKey && player.queue.length > 1) {
+    window.setTimeout(() => {
+      if (generation === sourceGeneration && trackKey(player.currentTrack) === failedKey) player.next();
+    }, 600);
+  }
 }
 
 function play() {
@@ -216,8 +224,9 @@ async function reportSourceUnavailable(generation: number, path: string, sourceI
     await invoke("probe_track", { sourceId, path });
     fail(t("playback.unsupported"), generation);
   } catch (error) {
-    const key = PROBE_ERROR_KEYS[toAppError(error).code];
-    fail(key ? t(key) : t("playback.failed"), generation);
+    const appError = toAppError(error);
+    const key = PROBE_ERROR_KEYS[appError.code];
+    fail(key ? t(key) : t("playback.failed"), generation, appError.code === "NOT_FOUND");
   } finally {
     if (probingGeneration === generation) probingGeneration = -1;
   }

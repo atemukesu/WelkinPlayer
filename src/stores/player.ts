@@ -40,6 +40,14 @@ export interface Track {
   metaFailed?: boolean;
   /** Whether the on-disk cache has already been consulted for this track. */
   assetsHydrated?: boolean;
+  /**
+   * True for a synced profile entry this device cannot resolve to a real file
+   * (e.g. a playlist created on another device). Such rows are display-only:
+   * they carry no `path`/`sourceId`, so they are never queued or streamed.
+   */
+  unavailable?: boolean;
+  /** Original profile key (`sourceProfileId::path`) of a placeholder track. */
+  profileKey?: string;
 }
 
 function formatClock(seconds: number): string {
@@ -121,6 +129,7 @@ export const usePlayerStore = defineStore("player", () => {
   }
 
   function selectTrack(track: Track) {
+    if (track.unavailable) return;
     // Re-selecting the same track must still restart playback (repeat-one,
     // clicking the current row again, wrap-around with a one-track queue). The
     // path is the audio identity, so compare on it (ids can be reassigned on
@@ -150,6 +159,7 @@ export const usePlayerStore = defineStore("player", () => {
 
   /** Start a track while preserving the exact context it was chosen from. */
   function playInQueue(items: Track[], track: Track) {
+    if (track.unavailable) return;
     const valid = items.filter((item) => item.path);
     if (valid.length === 0) return;
     const selected = valid.find((item) => item.id === track.id);

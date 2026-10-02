@@ -11,6 +11,8 @@ import { localeOptions } from "../i18n";
 import { useProfileStore } from "../stores/profile";
 import { useSourcesStore } from "../stores/sources";
 import { useLicenseStore } from "../stores/license";
+import { useWindowBehaviorStore } from "../stores/windowBehavior";
+import { isDesktop } from "../lib/desktopLyric";
 import LyricsSettings from "../components/LyricsSettings.vue";
 import DesktopLyricSettings from "../components/DesktopLyricSettings.vue";
 import pkg from "../../package.json";
@@ -23,6 +25,9 @@ const appVersion = pkg.version;
 const profile = useProfileStore();
 const sources = useSourcesStore();
 const license = useLicenseStore();
+const windowBehavior = useWindowBehaviorStore();
+/** The close-to-tray preference is desktop-only; Android never shows it. */
+const desktop = isDesktop();
 /** Edition label shown in the About card's edition dial. */
 const editionLabel = computed(() => (license.isPro ? t("sponsor.compare.badgePro") : t("settings.about.edition")));
 const cacheDir = ref("");
@@ -204,6 +209,17 @@ button.text-dim:hover:not(:disabled) {
             <span class="text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("language.label") }}</span>
             <div class="inline-flex border border-line"><button v-for="(item, index) in localeOptions" :key="item.id" type="button" class="h-9 px-4 text-[13px] font-semibold uppercase tracking-[0.2em]" :class="[index ? 'border-l border-line' : '', locale === item.id ? 'bg-accent text-accent-fg' : 'text-muted hover:text-fg']" @click="locale = item.id">{{ t(item.labelKey) }}</button></div>
           </div>
+        </div>
+      </section>
+
+      <section v-if="desktop" class="ak-frame grid gap-6 border border-line bg-surface p-6 lg:grid-cols-[1fr_1.3fr]">
+        <div><h2 class="text-sm font-bold uppercase tracking-[0.2em]">{{ t("settings.window.title") }}</h2><p class="mt-2 text-sm text-muted">{{ t("settings.window.desc") }}</p></div>
+        <div class="grid gap-4">
+          <div class="flex items-center justify-between gap-4">
+            <span class="text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.window.action") }}</span>
+            <div class="inline-flex border border-line"><button type="button" class="h-9 px-4 text-[13px] font-semibold uppercase tracking-[0.2em]" :class="!windowBehavior.closeToTray ? 'bg-accent text-accent-fg' : 'text-muted hover:text-fg'" @click="windowBehavior.closeToTray = false">{{ t("settings.window.close") }}</button><button type="button" class="h-9 border-l border-line px-4 text-[13px] font-semibold uppercase tracking-[0.2em]" :class="windowBehavior.closeToTray ? 'bg-accent text-accent-fg' : 'text-muted hover:text-fg'" @click="windowBehavior.closeToTray = true">{{ t("settings.window.tray") }}</button></div>
+          </div>
+          <p class="text-[11px] leading-relaxed text-dim">{{ t("settings.window.hint") }}</p>
         </div>
       </section>
 

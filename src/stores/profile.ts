@@ -8,7 +8,8 @@ import {
 } from "../lib/profile";
 import type { Playlist, Profile } from "../lib/profile";
 import { coverUrl } from "../lib/remote";
-import { trackKey } from "../lib/sources";
+import { profileTrackKey, sourceProfileId, splitTrackKey, trackKey } from "../lib/sources";
+import { useSourcesStore } from "./sources";
 import type { Track } from "./player";
 
 /** Where the loaded profile came from. */
@@ -64,6 +65,37 @@ export const useProfileStore = defineStore("profile", () => {
   let pending = false;
   let hadLocalCopy = false;
 
+  function profileKey(key: string): string {
+    const { sourceId, path } = splitTrackKey(key);
+    const sourceStore = useSourcesStore();
+    const source = sourceStore.sources.find((item) => item.id === sourceId);
+    if (source) return `${sourceProfileId(source)}::${path}`;
+    // Older profiles stored a random source id. When there is only one cloud
+    // source configured, it is safe to associate those legacy keys with it.
+    const cloudSources = sourceStore.sources.filter((item) => item.kind === "webdav");
+    return cloudSources.length === 1 ? `${sourceProfileId(cloudSources[0])}::${path}` : key;
+  }
+
+  function migrateKeys(value: Profile): { value: Profile; changed: boolean } {
+    let changed = false;
+    const migrate = (key: string) => {
+      const next = profileKey(key);
+      changed ||= next !== key;
+      return next;
+    };
+    value.favorites = value.favorites.map(migrate);
+    value.disabledLyrics = value.disabledLyrics.map(migrate);
+    value.recent = value.recent.map(migrate);
+    const playCounts: Record<string, number> = {};
+    for (const [key, count] of Object.entries(value.playCounts)) {
+      const next = migrate(key);
+      playCounts[next] = (playCounts[next] ?? 0) + count;
+    }
+    value.playCounts = playCounts;
+    value.playlists = value.playlists.map((playlist) => ({ ...playlist, tracks: playlist.tracks.map(migrate), coverTrack: playlist.coverTrack ? migrate(playlist.coverTrack) : playlist.coverTrack }));
+    return { value, changed };
+  }
+
   const nickname = computed(() => profile.value.nickname.trim());
   const playlists = computed(() => profile.value.playlists);
   const favorites = computed(() => profile.value.favorites);
@@ -88,7 +120,9 @@ export const useProfileStore = defineStore("profile", () => {
       const local = await invoke<LoadedProfile>("load_local_profile");
       hadLocalCopy = local.content !== null;
       source.value = local.source;
-      profile.value = parseProfile(local.content, fallback);
+      const migrated = migrateKeys(parseProfile(local.content, fallback));
+      profile.value = migrated.value;
+      if (migrated.changed) scheduleSave();
       firstRun.value = local.content === null || !profile.value.initialized;
       revision.value += 1;
     } catch (error) {
@@ -108,7 +142,9 @@ export const useProfileStore = defineStore("profile", () => {
       const remote = await invoke<LoadedProfile>("load_remote_profile");
       remoteError.value = remote.remoteError;
       if (remote.source === "remote" && remote.content !== null) {
-        profile.value = parseProfile(remote.content, profile.value);
+        const migrated = migrateKeys(parseProfile(remote.content, profile.value));
+        profile.value = migrated.value;
+        if (migrated.changed) scheduleSave();
         source.value = "remote";
         firstRun.value = !profile.value.initialized;
         revision.value += 1;
@@ -141,7 +177,9 @@ export const useProfileStore = defineStore("profile", () => {
       const remote = await invoke<LoadedProfile>("load_remote_profile");
       remoteError.value = remote.remoteError;
       if (remote.source === "remote" && remote.content !== null) {
-        profile.value = parseProfile(remote.content, profile.value);
+        const migrated = migrateKeys(parseProfile(remote.content, profile.value));
+        profile.value = migrated.value;
+        if (migrated.changed) scheduleSave();
         source.value = "remote";
         revision.value += 1;
         void resolveCovers();
@@ -207,6 +245,7 @@ export const useProfileStore = defineStore("profile", () => {
 
   function recordPlay(path: string | undefined) {
     if (!path) return;
+    path = profileKey(path);
     profile.value.playCounts[path] = (profile.value.playCounts[path] ?? 0) + 1;
     profile.value.recent = [path, ...profile.value.recent.filter((item) => item !== path)].slice(0, RECENT_LIMIT);
     scheduleSave();
@@ -225,11 +264,12 @@ export const useProfileStore = defineStore("profile", () => {
   }
 
   function isFavorite(path: string | undefined): boolean {
-    return !!path && profile.value.favorites.includes(path);
+    return !!path && profile.value.favorites.includes(profileKey(path));
   }
 
   function toggleFavorite(path: string | undefined) {
     if (!path) return;
+    path = profileKey(path);
     const index = profile.value.favorites.indexOf(path);
     if (index >= 0) profile.value.favorites.splice(index, 1);
     else profile.value.favorites.push(path);
@@ -238,12 +278,13 @@ export const useProfileStore = defineStore("profile", () => {
 
   /** Whether the track's lyrics are suppressed (per-track opt-out). */
   function isLyricsDisabled(path: string | undefined): boolean {
-    return !!path && profile.value.disabledLyrics.includes(path);
+    return !!path && profile.value.disabledLyrics.includes(profileKey(path));
   }
 
   /** Suppress or restore lyrics for one track. */
   function setLyricsDisabled(path: string | undefined, disabled: boolean) {
     if (!path) return;
+    path = profileKey(path);
     const has = profile.value.disabledLyrics.includes(path);
     if (disabled === has) return;
     if (disabled) profile.value.disabledLyrics.push(path);
@@ -386,6 +427,7 @@ export const useProfileStore = defineStore("profile", () => {
 
   function addToPlaylist(id: string, path: string | undefined) {
     if (!path) return;
+    path = profileKey(path);
     const playlist = profile.value.playlists.find((item) => item.id === id);
     if (!playlist || playlist.tracks.includes(path)) return;
     playlist.tracks.push(path);
@@ -393,6 +435,7 @@ export const useProfileStore = defineStore("profile", () => {
   }
 
   function removeFromPlaylist(id: string, path: string) {
+    path = profileKey(path);
     const playlist = profile.value.playlists.find((item) => item.id === id);
     if (!playlist) return;
     playlist.tracks = playlist.tracks.filter((item) => item !== path);
@@ -400,6 +443,7 @@ export const useProfileStore = defineStore("profile", () => {
   }
 
   function moveTrackInPlaylist(id: string, path: string, direction: "up" | "down") {
+    path = profileKey(path);
     const playlist = profile.value.playlists.find((item) => item.id === id);
     if (!playlist) return;
     const index = playlist.tracks.indexOf(path);
@@ -468,15 +512,57 @@ export const useProfileStore = defineStore("profile", () => {
   };
 });
 
-/** Keep a track lookup helper close to the playlist consumers. */
+/**
+ * Resolve profile keys to library tracks, keeping the keys' order. Keys with no
+ * local match become greyed-out placeholder tracks (see {@link placeholderTrack})
+ * instead of being dropped, so a playlist synced from another device shows the
+ * tracks this device is missing.
+ */
 export function tracksForPaths(keys: string[], tracks: Track[]): Track[] {
-  const byKey = new Map(
-    tracks
-      .filter((track) => track.path)
-      .map((track) => [trackKey(track) as string, track]),
-  );
-  return keys.flatMap((key) => {
-    const track = byKey.get(key);
-    return track ? [track] : [];
-  });
+  const byKey = new Map<string, Track>();
+  for (const track of tracks) {
+    if (!track.path) continue;
+    byKey.set(trackKey(track) as string, track);
+    const profileKey = profileTrackKeyForTrack(track);
+    if (profileKey) byKey.set(profileKey, track);
+  }
+  return keys.map((key) => byKey.get(key) ?? placeholderTrack(key));
+}
+
+/** Stable non-positive id derived from a profile key, so placeholders never collide with real (positive) track ids. */
+function placeholderId(key: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < key.length; index += 1) {
+    hash ^= key.charCodeAt(index);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return -(hash % 2147483647) - 1;
+}
+
+/**
+ * Build a display-only track for a profile key this device cannot resolve. It
+ * has no `path`/`sourceId`, so it is never queued, streamed or selection-matched;
+ * the UI renders it greyed out and clicking it only shows a hint.
+ */
+export function placeholderTrack(key: string): Track {
+  const { sourceId, path } = splitTrackKey(key);
+  const name = path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+  const title = name.replace(/\.[^.]+$/, "") || name || key;
+  const source = useSourcesStore().sources.find((item) => item.id === sourceId || sourceProfileId(item) === sourceId);
+  return {
+    id: placeholderId(key),
+    title,
+    artist: source?.name ?? "",
+    album: path,
+    duration: "--:--",
+    color: "#6b7280",
+    profileKey: key,
+    unavailable: true,
+  };
+}
+
+function profileTrackKeyForTrack(track: Track): string | undefined {
+  if (!track.path) return undefined;
+  const source = useSourcesStore().sources.find((item) => item.id === track.sourceId);
+  return profileTrackKey({ sourceId: track.sourceId, path: track.path, profileSourceId: source ? sourceProfileId(source) : undefined });
 }

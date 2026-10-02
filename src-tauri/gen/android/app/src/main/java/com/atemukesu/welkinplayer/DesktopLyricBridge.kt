@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.util.Log
 import android.provider.Settings
 
 /**
@@ -90,6 +91,7 @@ object DesktopLyricBridge {
     fun start(context: Context, rendererHtml: String, rendererJs: String) {
         html = rendererHtml
         js = rendererJs
+        Log.i("WelkinLyric", "bridge.start html=${rendererHtml.length} js=${rendererJs.length}")
         try {
             val intent = Intent(context, DesktopLyricService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

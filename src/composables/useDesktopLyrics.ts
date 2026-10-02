@@ -28,6 +28,7 @@ let unlistenReady: UnlistenFn | null = null;
 let unlistenControl: UnlistenFn | null = null;
 let unlistenClosed: UnlistenFn | null = null;
 let controlTimer = 0;
+let onVisibility: (() => void) | null = null;
 
 /** Run a command requested from the floating layer, keeping state in sync. */
 function handleControl(action: string) {
@@ -193,6 +194,15 @@ export function startDesktopLyrics() {
   }
 
   timer = window.setInterval(tick, TICK_INTERVAL_MS);
+
+  // Chromium throttles timers in hidden windows. The background flags keep them
+  // running (so the overlay's rAF never starves), but push an immediate tick on
+  // every visibility change too: after the window is hidden or restored the
+  // playhead/active line resync without waiting for the next interval.
+  onVisibility = () => {
+    if (useDesktopLyricsStore().settings.enabled) tick();
+  };
+  document.addEventListener("visibilitychange", onVisibility);
 }
 
 /** Stop forwarding and tear the floating layer down. */
@@ -211,6 +221,10 @@ export function stopDesktopLyrics() {
   unlistenClosed = null;
   window.clearInterval(controlTimer);
   controlTimer = 0;
+  if (onVisibility) {
+    document.removeEventListener("visibilitychange", onVisibility);
+    onVisibility = null;
+  }
   lastKey = "";
 }
 

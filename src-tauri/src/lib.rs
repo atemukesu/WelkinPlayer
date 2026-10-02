@@ -12,17 +12,21 @@ mod proxy;
 mod smart_cache;
 mod sources;
 mod stream_cache;
+mod tray;
 
 use tauri::Manager;
 
 /// Extra WebView2 browser arguments applied to every window.
 ///
 /// Disables Chromium's own system media controls so only the `souvlaki` session
-/// remains. WebView2 requires every window sharing a data directory to use
+/// remains. The background flags keep timers, rendering and audio alive when the
+/// main window is hidden to the tray, so playback and the desktop-lyrics overlay
+/// (which is driven by ticks from the main window and animates on its own rAF)
+/// do not freeze. WebView2 requires every window sharing a data directory to use
 /// identical options, so the main window's `additionalBrowserArgs` in
 /// `tauri.conf.json` MUST stay byte-for-byte identical to this value.
 #[cfg(desktop)]
-pub(crate) const WEBVIEW_BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,HardwareMediaKeyHandling --autoplay-policy=no-user-gesture-required";
+pub(crate) const WEBVIEW_BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,HardwareMediaKeyHandling --autoplay-policy=no-user-gesture-required --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -41,6 +45,7 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .manage(commands::desktop_lyric::DesktopLyricCache::default())
         .manage(media_control::MediaControlState::default())
+        .manage(tray::CloseToTray::default())
         .setup(|app| {
             // Mint the per-install identifier on first launch so it is stable
             // from the very first run; later launches just read it back.
@@ -65,15 +70,33 @@ pub fn run() {
                 }
                 Err(error) => log::error!("failed to start streaming proxy: {error}"),
             }
-            // Closing the main window must take the floating lyrics (and the
-            // whole app) down with it; otherwise the overlay window keeps the
-            // process alive and the lyrics linger on screen.
+            // Desktop window lifecycle: a close either quits (taking the
+            // floating lyrics down with it) or, when "minimise to tray" is on,
+            // just hides the main window so playback continues in the tray.
             #[cfg(desktop)]
             {
+                // System tray: left click restores the window; no context menu.
+                if let Err(error) = tray::init(app) {
+                    log::warn!("failed to create tray icon: {error}");
+                }
+
                 if let Some(main) = app.get_webview_window("main") {
                     let handle = app.handle().clone();
+                    let window = main.clone();
                     main.on_window_event(move |event| {
-                        if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                            // "Minimise to tray": hide the main window and keep
+                            // the process alive so audio and the floating lyrics
+                            // keep running in the background.
+                            let close_to_tray = handle
+                                .try_state::<tray::CloseToTray>()
+                                .map(|state| state.get())
+                                .unwrap_or(false);
+                            if close_to_tray {
+                                api.prevent_close();
+                                let _ = window.hide();
+                                return;
+                            }
                             if let Some(overlay) = handle.get_webview_window("desktop-lyrics") {
                                 let _ = overlay.close();
                             }
@@ -157,7 +180,8 @@ pub fn run() {
             media_control::media_control_update,
             media_control::media_control_position,
             media_control::media_control_clear,
-            media_control::media_control_take_control
+            media_control::media_control_take_control,
+            tray::set_close_to_tray
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

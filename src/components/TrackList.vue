@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { VList, Virtualizer, type VirtualizerHandle } from "virtua/vue";
-import { ArrowUp, Check, CircleCheck, LoaderCircle, LocateFixed, Pause, Play, Trash2 } from "@lucide/vue";
+import { ArrowUp, Check, CircleCheck, CloudOff, LoaderCircle, LocateFixed, Pause, Play, Trash2 } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { usePlayerStore } from "../stores/player";
 import { useCacheStore } from "../stores/cache";
 import type { Track } from "../stores/player";
 import { coverPending, initial, pad } from "../lib/format";
 import { trackKey } from "../lib/sources";
+import { pushToast } from "../lib/toast";
 import { trackViewMode } from "../lib/ui";
 import { requestMeta } from "../directives/requestMeta";
 import TrackCard from "./TrackCard.vue";
@@ -150,6 +151,7 @@ function toggleOne(track: Track) {
   commit(next);
 }
 function activate(track: Track, event?: MouseEvent) {
+  if (track.unavailable) { pushToast("warning", t("library.unavailableHint")); return; }
   if (!props.selectable) { emit("play", track); return; }
   const key = trackKey(track);
   if (!key) return;
@@ -157,6 +159,10 @@ function activate(track: Track, event?: MouseEvent) {
   anchorKey = key;
   if (event?.ctrlKey || event?.metaKey) selectOnly(track);
   else toggleOne(track);
+}
+function openMenu(event: MouseEvent, track: Track) {
+  if (track.unavailable) return;
+  emit("menu", event, track);
 }
 
 // Small floating controls for page-level scrollers: jump to the playing row and
@@ -242,21 +248,23 @@ function scrollToTop() {
               role="button"
               tabindex="0"
               :key="track.id"
-              class="grid w-full cursor-pointer items-center gap-4 border-t border-line px-3 py-2 text-left"
-              :class="[listGrid, selectable ? (isSelected(track) ? 'bg-accent/10' : 'ak-hover') : (track.id === currentId ? 'ak-select relative z-10 border-transparent' : 'ak-hover')]"
+              class="grid w-full items-center gap-4 border-t border-line px-3 py-2 text-left"
+              :title="track.unavailable ? t('library.unavailableHint') : undefined"
+              :class="[listGrid, track.unavailable ? 'cursor-not-allowed opacity-50' : (selectable ? (isSelected(track) ? 'cursor-pointer bg-accent/10' : 'cursor-pointer ak-hover') : (track.id === currentId ? 'cursor-pointer ak-select relative z-10 border-transparent' : 'cursor-pointer ak-hover'))]"
               @click="activate(track, $event)"
               @keydown.enter="activate(track)"
               @keydown.space.prevent="activate(track)"
-              @contextmenu.prevent="emit('menu', $event, track)"
+              @contextmenu.prevent="openMenu($event, track)"
             >
               <span v-if="selectable" class="grid h-5 w-5 place-items-center border-2" :class="isSelected(track) ? 'border-accent bg-accent text-accent-fg' : 'border-line-strong text-transparent'"><Check :size="12" :stroke-width="3" /></span>
               <span v-else class="hidden font-mono text-[13px] tabular-nums text-dim md:block">{{ pad(index + 1) }}</span>
-              <span class="grid h-11 w-11 place-items-center overflow-hidden text-lg font-black text-white/90" :style="{ backgroundColor: track.color }"><img v-if="track.cover" :src="track.cover" alt="" loading="lazy" decoding="async" class="h-full w-full object-cover" /><LoaderCircle v-else-if="coverPending(track)" :size="18" :stroke-width="2" class="animate-spin" /><template v-else>{{ initial(track) }}</template></span>
-              <span class="grid min-w-0 gap-0.5"><span class="flex min-w-0 items-center gap-1.5"><strong class="truncate text-sm font-semibold tracking-wide" :class="track.id === currentId ? 'text-accent' : 'text-fg'">{{ track.title }}</strong><CircleCheck v-if="isCached(track)" :size="14" class="shrink-0 text-accent" :aria-label="t('library.cached')" /></span><span class="flex min-w-0 items-center gap-1 md:hidden"><button v-if="track.artist" type="button" class="min-w-0 truncate text-left text-xs text-muted transition-colors hover:text-accent" :title="t('library.openArtist')" @click.stop="emit('openArtist', track.artist)">{{ track.artist }}</button><span v-if="track.artist && track.album" class="shrink-0 text-xs text-dim">·</span><button v-if="track.album" type="button" class="min-w-0 truncate text-left text-xs text-muted transition-colors hover:text-accent" :title="t('library.openAlbum')" @click.stop="emit('openAlbum', track.album)">{{ track.album }}</button></span><button v-if="track.artist" type="button" class="hidden min-w-0 truncate text-left text-xs text-muted transition-colors hover:text-accent md:block md:w-fit md:max-w-full" :title="t('library.openArtist')" @click.stop="emit('openArtist', track.artist)">{{ track.artist }}</button><small v-else class="hidden truncate text-xs text-muted md:block">{{ track.artist }}</small></span>
-              <button v-if="track.album" type="button" class="hidden min-w-0 truncate text-left text-xs text-muted transition-colors hover:text-accent md:block md:w-fit md:max-w-full" :title="t('library.openAlbum')" @click.stop="emit('openAlbum', track.album)">{{ track.album }}</button>
-              <span v-else class="hidden truncate text-xs text-muted md:block">{{ track.album }}</span>
+              <span class="grid h-11 w-11 place-items-center overflow-hidden text-lg font-black text-white/90" :style="{ backgroundColor: track.color }"><CloudOff v-if="track.unavailable" :size="18" :stroke-width="2" /><img v-else-if="track.cover" :src="track.cover" alt="" loading="lazy" decoding="async" class="h-full w-full object-cover" /><LoaderCircle v-else-if="coverPending(track)" :size="18" :stroke-width="2" class="animate-spin" /><template v-else>{{ initial(track) }}</template></span>
+              <span class="grid min-w-0 gap-0.5"><span class="flex min-w-0 items-center gap-1.5"><strong class="truncate text-sm font-semibold tracking-wide" :class="track.id === currentId ? 'text-accent' : 'text-fg'">{{ track.title }}</strong><CloudOff v-if="track.unavailable" :size="14" class="shrink-0 text-dim" :aria-label="t('library.unavailable')" /><CircleCheck v-else-if="isCached(track)" :size="14" class="shrink-0 text-accent" :aria-label="t('library.cached')" /></span><span class="flex min-w-0 items-center gap-1 md:hidden"><button v-if="track.artist && !track.unavailable" type="button" class="min-w-0 truncate text-left text-xs text-muted transition-colors hover:text-accent" :title="t('library.openArtist')" @click.stop="emit('openArtist', track.artist)">{{ track.artist }}</button><small v-else-if="track.artist" class="min-w-0 truncate text-xs text-muted">{{ track.artist }}</small><span v-if="track.artist && track.album && !track.unavailable" class="shrink-0 text-xs text-dim">·</span><button v-if="track.album && !track.unavailable" type="button" class="min-w-0 truncate text-left text-xs text-muted transition-colors hover:text-accent" :title="t('library.openAlbum')" @click.stop="emit('openAlbum', track.album)">{{ track.album }}</button><small v-else-if="track.album" class="min-w-0 truncate text-xs text-dim">{{ track.album }}</small></span><button v-if="track.artist && !track.unavailable" type="button" class="hidden min-w-0 truncate text-left text-xs text-muted transition-colors hover:text-accent md:block md:w-fit md:max-w-full" :title="t('library.openArtist')" @click.stop="emit('openArtist', track.artist)">{{ track.artist }}</button><small v-else-if="track.artist" class="hidden truncate text-xs text-muted md:block">{{ track.artist }}</small></span>
+              <button v-if="track.album && !track.unavailable" type="button" class="hidden min-w-0 truncate text-left text-xs text-muted transition-colors hover:text-accent md:block md:w-fit md:max-w-full" :title="t('library.openAlbum')" @click.stop="emit('openAlbum', track.album)">{{ track.album }}</button>
+              <span v-else-if="track.album" class="hidden truncate text-xs text-dim md:block">{{ track.album }}</span>
+              <span v-else class="hidden truncate text-xs text-muted md:block"></span>
               <span class="hidden text-right font-mono text-[13px] tabular-nums text-muted md:block">{{ track.duration }}</span>
-              <span class="grid place-items-center gap-0.5 text-dim"><span><span v-if="track.id === currentId && playing" class="text-accent"><span class="ak-eq"><i></i><i></i><i></i></span></span><Pause v-else-if="track.id === currentId" :size="16" class="text-accent" /><Play v-else :size="16" /></span><span class="font-mono text-[11px] tabular-nums text-muted md:hidden">{{ track.duration }}</span></span>
+              <span class="grid place-items-center gap-0.5 text-dim"><span><CloudOff v-if="track.unavailable" :size="16" /><span v-else-if="track.id === currentId && playing" class="text-accent"><span class="ak-eq"><i></i><i></i><i></i></span></span><Pause v-else-if="track.id === currentId" :size="16" class="text-accent" /><Play v-else :size="16" /></span><span class="font-mono text-[11px] tabular-nums text-muted md:hidden">{{ track.duration }}</span></span>
               <button v-if="showRemove" type="button" class="grid h-8 w-8 place-items-center text-dim transition-colors hover:text-red-500" :title="t('library.playlists.removeTrack')" @click.stop="emit('remove', track)"><Trash2 :size="15" /></button>
             </div>
           </template>

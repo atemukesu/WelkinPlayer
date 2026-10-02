@@ -26,6 +26,40 @@ export interface SongSource {
 }
 
 /**
+ * Stable identity for data that travels between devices. `id` is intentionally
+ * machine-local because it also namespaces the OS keychain and native cache.
+ */
+export function sourceProfileId(source: Pick<SongSource, "kind" | "url" | "username" | "rootPath" | "id">): string {
+  if (source.kind !== "webdav") return source.id;
+  let endpoint = (source.url ?? "").trim();
+  try {
+    const parsed = new URL(endpoint);
+    parsed.hostname = parsed.hostname.toLowerCase();
+    if ((parsed.protocol === "https:" && parsed.port === "443") || (parsed.protocol === "http:" && parsed.port === "80")) {
+      parsed.port = "";
+    }
+    parsed.pathname = parsed.pathname.replace(/\/+$/, "") || "/";
+    parsed.hash = "";
+    endpoint = parsed.toString().replace(/\/$/, "");
+  } catch {
+    endpoint = endpoint.replace(/\/+$/, "");
+  }
+  const value = `${endpoint}\u0000${(source.username ?? "").trim()}`;
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return `dav-${hash.toString(36)}`;
+}
+
+/** Key used by the synchronized profile, independent of a device's source id. */
+export function profileTrackKey(track: { sourceId?: string; path?: string; profileSourceId?: string } | null | undefined): string | undefined {
+  if (!track?.path) return undefined;
+  return `${track.profileSourceId ?? track.sourceId ?? ""}${KEY_SEPARATOR}${track.path}`;
+}
+
+/**
  * Selectable source kinds, in the order shown when adding a source. Adding a
  * new kind later means appending here plus a form branch in the editor.
  */
