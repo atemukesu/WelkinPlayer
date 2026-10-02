@@ -12,7 +12,10 @@
 
 ## 截图
 
-
+![](/docs/assets/screenshot1.png)
+![](/docs/assets/screenshot2.png)
+![](/docs/assets/screenshot3.png)
+![](/docs/assets/screenshot4.png)
 
 ## 功能特性
 

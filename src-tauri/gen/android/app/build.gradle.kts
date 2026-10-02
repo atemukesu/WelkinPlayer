@@ -15,7 +15,7 @@ val tauriProperties = Properties().apply {
 
 // Release signing is read from the environment so CI can inject the keystore
 // without committing it. When no keystore is configured (e.g. local builds) the
-// release variant falls back to the default debug signing.
+// release variant is left unsigned, ready to be signed manually.
 val releaseKeystorePath = System.getenv("ANDROID_KEYSTORE_PATH")
 
 android {

@@ -12,7 +12,10 @@ A cross-platform music player built with [Tauri 2](https://v2.tauri.app/). It re
 
 ## Screenshots
 
-
+![](/docs/assets/screenshot1.png)
+![](/docs/assets/screenshot2.png)
+![](/docs/assets/screenshot3.png)
+![](/docs/assets/screenshot4.png)
 
 ## Features
 

@@ -109,7 +109,7 @@ onBeforeUnmount(() => {
 .layered-select__trigger:hover { border-color: var(--accent); }
 .layered-select__label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .layered-select__chevron { flex: none; transition: transform 240ms cubic-bezier(0.2, 0.8, 0.2, 1); }
-.layered-select__menu { position: fixed; z-index: 60; isolation: isolate; }
+.layered-select__menu { position: fixed; z-index: 90; isolation: isolate; }
 .layered-select__backdrop { position: absolute; inset: 0; pointer-events: none; clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 10px 100%, 0 calc(100% - 10px)); -webkit-mask-image: linear-gradient(#000, #000); mask-image: linear-gradient(#000, #000); -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; animation: ak-mask-h 320ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
 .layered-select__backdrop--gray { z-index: 0; background: #9ca3af; transform: translate(6px, 6px); animation-delay: 90ms; }
 .layered-select__backdrop--white { z-index: 1; background: #fff; }
