@@ -1,3 +1,6 @@
+// Copyright 2026 Atemukesu
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! Lyric transport and persistence.
 //!
 //! All provider logic (search, platform-ID resolution, response shaping) lives

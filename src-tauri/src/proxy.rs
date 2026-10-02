@@ -1,3 +1,6 @@
+// Copyright 2026 Atemukesu
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! Loopback streaming proxy.
 //!
 //! A tiny HTTP server bound to `127.0.0.1:<random port>` streams audio from a

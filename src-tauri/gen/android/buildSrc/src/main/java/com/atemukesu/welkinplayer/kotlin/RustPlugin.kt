@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026 Atemukesu
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
 import com.android.build.api.dsl.ApplicationExtension
 import org.gradle.api.DefaultTask
 import org.gradle.api.Plugin

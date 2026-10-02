@@ -1,4 +1,9 @@
 /**
+ * Copyright 2026 Atemukesu
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
+/**
  * Client-local preferences.
  *
  * These settings are deliberately kept *out* of the synced profile: theme,

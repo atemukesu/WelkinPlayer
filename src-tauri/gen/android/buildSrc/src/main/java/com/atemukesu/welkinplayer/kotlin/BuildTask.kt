@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026 Atemukesu
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
 import java.io.File
 import org.apache.tools.ant.taskdefs.condition.Os
 import org.gradle.api.DefaultTask

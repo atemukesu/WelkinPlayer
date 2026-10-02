@@ -1,3 +1,8 @@
+/**
+ * Copyright 2026 Atemukesu
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 
 /** Shape of the `{ code, message }` payload produced by the Rust `AppError`. */

@@ -1,3 +1,6 @@
+// Copyright 2026 Atemukesu
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! Standalone playlist cover files.
 //!
 //! User-uploaded playlist covers are *not* embedded in the profile JSON as data

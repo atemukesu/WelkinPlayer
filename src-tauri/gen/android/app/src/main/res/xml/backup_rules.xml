@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
+ Copyright 2026 Atemukesu
+ SPDX-License-Identifier: GPL-3.0-only
+-->
+
+<!--
   API level 30 and lower backup rules (android:fullBackupContent).
 
   The WebDAV password is stored in SharedPreferences, encrypted with a key that

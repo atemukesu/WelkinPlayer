@@ -1,3 +1,6 @@
+// Copyright 2026 Atemukesu
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! System media controls.
 //!
 //! The frontend is the single source of truth for playback; this module mirrors

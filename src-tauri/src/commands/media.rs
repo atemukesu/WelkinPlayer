@@ -1,3 +1,6 @@
+// Copyright 2026 Atemukesu
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! Audio metadata and cover-art cache commands.
 //!
 //! Metadata is parsed from a ranged read of the file head, retrying with larger

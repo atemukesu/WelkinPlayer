@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
+ Copyright 2026 Atemukesu
+ SPDX-License-Identifier: GPL-3.0-only
+-->
+
+<!--
   Debug builds keep Tauri's previous behaviour of allowing all cleartext HTTP
   (the manifest's android:usesCleartextTraffic="true" for the debug build type),
   so LAN WebDAV over plain HTTP keeps working while developing.

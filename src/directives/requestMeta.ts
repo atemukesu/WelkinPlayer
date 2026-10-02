@@ -1,3 +1,8 @@
+/**
+ * Copyright 2026 Atemukesu
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
 import type { Directive } from "vue";
 import type { Track } from "../stores/player";
 import { useMetadataStore } from "../stores/metadata";

@@ -1,3 +1,6 @@
+// Copyright 2026 Atemukesu
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! Pro activation.
 //!
 //! The Pro activation code is a JWT (`header.payload.signature`) signed by the

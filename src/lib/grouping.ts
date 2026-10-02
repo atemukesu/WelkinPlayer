@@ -1,3 +1,8 @@
+/**
+ * Copyright 2026 Atemukesu
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
 import type { Track } from "../stores/player";
 
 /** The two library classifications available from the navigation. */

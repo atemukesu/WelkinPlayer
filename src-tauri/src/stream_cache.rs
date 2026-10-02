@@ -1,3 +1,6 @@
+// Copyright 2026 Atemukesu
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! Aggressive read-ahead cache for the loopback streaming proxy.
 //!
 //! The browser's media element only buffers as far ahead as its internal

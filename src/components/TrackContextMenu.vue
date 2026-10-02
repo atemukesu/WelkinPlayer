@@ -1,3 +1,8 @@
+<!--
+ Copyright 2026 Atemukesu
+ SPDX-License-Identifier: GPL-3.0-only
+-->
+
 <script setup lang="ts">
 import { ArrowDown, ArrowUp, ChevronRight, CircleX, Download, Eye, EyeOff, FileText, HardDriveDownload, Heart, HeartOff, Info, ListPlus, ListX, Pencil } from "@lucide/vue";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";

@@ -1,3 +1,8 @@
+/**
+ * Copyright 2026 Atemukesu
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
 //! Width normalisation for whole lyric payloads.
 
 const FULLWIDTH_DIGITS = /[０-９]/g;

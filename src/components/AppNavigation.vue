@@ -1,3 +1,8 @@
+<!--
+ Copyright 2026 Atemukesu
+ SPDX-License-Identifier: GPL-3.0-only
+-->
+
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { Activity, ChevronLeft, ChevronRight, Ellipsis, Heart, HeartHandshake, Library, ListMusic, ListPlus, Music2, Plus, Settings2, Signal, Wifi, WifiOff, X } from "@lucide/vue";

@@ -1,3 +1,6 @@
+// Copyright 2026 Atemukesu
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! System font enumeration for the lyrics font picker.
 //!
 //! The frontend renders lyrics with whatever fonts the user picks, so it needs

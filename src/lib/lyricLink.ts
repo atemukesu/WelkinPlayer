@@ -1,3 +1,8 @@
+/**
+ * Copyright 2026 Atemukesu
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
 //! Derive the WebDAV sidecar location and the platform page for a lyric.
 //!
 //! The lyric sidecar lives next to the audio file as a same-named `.lrc`

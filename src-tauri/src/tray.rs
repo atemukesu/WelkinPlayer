@@ -1,3 +1,6 @@
+// Copyright 2026 Atemukesu
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! System tray icon and window-close behaviour (desktop only).
 //!
 //! A left click restores the main window; a right click opens a small menu with

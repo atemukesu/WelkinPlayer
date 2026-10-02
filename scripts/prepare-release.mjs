@@ -1,4 +1,9 @@
 #!/usr/bin/env node
+/**
+ * Copyright 2026 Atemukesu
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
 // Local release preparation for Welkin.
 //
 // Reads the commits since the previous GitHub release, asks DeepSeek to turn

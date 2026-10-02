@@ -1,4 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+ Copyright 2026 Atemukesu
+ SPDX-License-Identifier: GPL-3.0-only
+-->
+
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
   <foreground android:drawable="@mipmap/ic_launcher_foreground"/>
   <background android:drawable="@color/ic_launcher_background"/>

@@ -1,4 +1,9 @@
 /**
+ * Copyright 2026 Atemukesu
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
+/**
  * Cross-device profile document.
  *
  * The profile holds only data that should travel between devices: nickname,

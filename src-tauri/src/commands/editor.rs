@@ -1,3 +1,6 @@
+// Copyright 2026 Atemukesu
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! Track metadata editing.
 //!
 //! Editing rewrites the tags inside the audio container itself: the track is

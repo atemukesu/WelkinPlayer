@@ -1,3 +1,6 @@
+// Copyright 2026 Atemukesu
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! WebDAV credential storage and URL safety policy.
 //!
 //! Source URLs and usernames are persisted by the frontend through

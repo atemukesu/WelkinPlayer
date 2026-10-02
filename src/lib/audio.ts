@@ -1,3 +1,8 @@
+/**
+ * Copyright 2026 Atemukesu
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
 import { effectScope, watch } from "vue";
 import type { EffectScope } from "vue";
 import { i18n } from "../i18n";

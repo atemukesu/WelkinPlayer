@@ -1,3 +1,6 @@
+// Copyright 2026 Atemukesu
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! Floating desktop-lyrics layer.
 //!
 //! The main window is the single source of truth; it ships a lyric snapshot,

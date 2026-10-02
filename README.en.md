@@ -84,3 +84,7 @@ pnpm tauri android build --apk # Android APK
 ├─ scripts/             # Build helper scripts
 └─ .github/workflows/   # CI (release pipeline)
 ```
+
+## License
+
+Licensed under the [GNU General Public License v3.0 only](https://www.gnu.org/licenses/gpl-3.0.html) (`GPL-3.0-only`). See [LICENSE](LICENSE).

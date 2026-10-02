@@ -1,3 +1,8 @@
+/**
+ * Copyright 2026 Atemukesu
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
 //! Turn QQ's word-by-word QRC track into TTML, optionally merging in the
 //! plaintext translation track that ships alongside it.
 //!

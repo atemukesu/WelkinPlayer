@@ -1,3 +1,6 @@
+// Copyright 2026 Atemukesu
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! Active-network classification.
 //!
 //! The smart cache and speculative prefetch must not spend a metered (cellular)

@@ -1,3 +1,8 @@
+/**
+ * Copyright 2026 Atemukesu
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
 //! Read and write the lyric timing offset.
 //!
 //! The offset is kept as format-native metadata — an `[offset:<ms>]` header line

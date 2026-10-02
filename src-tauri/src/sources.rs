@@ -1,3 +1,6 @@
+// Copyright 2026 Atemukesu
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! Song source configuration.
 //!
 //! A *source* is a place audio files are read from. Two kinds are supported:

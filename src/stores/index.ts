@@ -1,3 +1,8 @@
+/**
+ * Copyright 2026 Atemukesu
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
 export { usePlayerStore } from "./player";
 export type { Track, RepeatMode } from "./player";
 export { useSourcesStore } from "./sources";

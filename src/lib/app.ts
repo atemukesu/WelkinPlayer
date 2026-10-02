@@ -1,3 +1,8 @@
+/**
+ * Copyright 2026 Atemukesu
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
 import type { Component } from "vue";
 import { Disc3, HardDrive, Heart, Library, ListMusic, Mic2, Settings2 } from "@lucide/vue";
 

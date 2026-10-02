@@ -1,3 +1,6 @@
+// Copyright 2026 Atemukesu
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! In-app updates.
 //!
 //! Desktop uses Tauri's official updater: the release workflow signs every

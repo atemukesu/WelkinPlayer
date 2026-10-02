@@ -1,3 +1,6 @@
+// Copyright 2026 Atemukesu
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! Persistent "smart" cache: whole tracks kept for reuse, chosen by play rank.
 //!
 //! Unlike the transient read-ahead cache ([`crate::stream_cache`]), this keeps

@@ -1,4 +1,9 @@
 /**
+ * Copyright 2026 Atemukesu
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
+/**
  * Shared contract for the floating desktop-lyrics layer.
  *
  * The main window is the single source of truth: it slices the parsed lyrics

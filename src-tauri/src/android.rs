@@ -1,3 +1,6 @@
+// Copyright 2026 Atemukesu
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! Publishes the Android JNI context that `ndk-context` consumers depend on.
 //!
 //! tao 0.35 no longer initializes the `ndk-context` crate, but `android-keyring`

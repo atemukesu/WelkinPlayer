@@ -1,4 +1,9 @@
 /**
+ * Copyright 2026 Atemukesu
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
+/**
  * Song sources.
  *
  * A source is somewhere audio is read from: a WebDAV collection or a local

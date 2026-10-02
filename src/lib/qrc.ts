@@ -1,3 +1,8 @@
+/**
+ * Copyright 2026 Atemukesu
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
 //! QQ Music QRC decryption (word-by-word lyrics).
 //!
 //! `lyric_download.fcg?lrctype=4` returns a hex payload that QQ encrypts with a

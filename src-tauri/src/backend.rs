@@ -1,3 +1,6 @@
+// Copyright 2026 Atemukesu
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! Unified storage backend for a song source.
 //!
 //! Every source resolves to a [`Backend`] — either a WebDAV client or a local

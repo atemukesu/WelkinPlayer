@@ -1,3 +1,6 @@
+// Copyright 2026 Atemukesu
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! Sponsorship support: the per-install identifier.
 //!
 //! The sponsorship backend recognizes a specific installation across restarts

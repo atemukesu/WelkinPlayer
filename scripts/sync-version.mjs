@@ -1,4 +1,9 @@
 #!/usr/bin/env node
+/**
+ * Copyright 2026 Atemukesu
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
 // Propagate package.json's version to the Tauri config and the Rust manifest so
 // the published update manifest always matches the version the UI reports.
 // package.json is the single source of truth; this runs before every release

@@ -1,3 +1,6 @@
+// Copyright 2026 Atemukesu
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! Song source management commands.
 //!
 //! CRUD of the source list itself lives in the frontend (it writes

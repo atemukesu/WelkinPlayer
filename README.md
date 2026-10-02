@@ -84,3 +84,7 @@ pnpm tauri android build --apk # 构建 Android APK
 ├─ scripts/             # 构建辅助脚本
 └─ .github/workflows/   # CI（发布流程）
 ```
+
+## 许可证
+
+本项目基于 [GNU General Public License v3.0 only](https://www.gnu.org/licenses/gpl-3.0.html)（`GPL-3.0-only`）发布，详见 [LICENSE](LICENSE)。

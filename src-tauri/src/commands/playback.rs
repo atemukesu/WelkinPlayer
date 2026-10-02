@@ -1,3 +1,6 @@
+// Copyright 2026 Atemukesu
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! Playback progress storage.
 //!
 //! Only the last played track and its position need to survive restarts, so it

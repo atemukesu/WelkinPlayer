@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
+ Copyright 2026 Atemukesu
+ SPDX-License-Identifier: GPL-3.0-only
+-->
+
+<!--
   API level 31+ backup rules (android:dataExtractionRules).
 
   Same rationale as backup_rules.xml: the WebDAV ciphertext in SharedPreferences

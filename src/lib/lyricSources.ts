@@ -1,3 +1,8 @@
+/**
+ * Copyright 2026 Atemukesu
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
 //! Lyric fetching: NetEase, QQ Music and the AMLL TTML database.
 //!
 //! Provider logic lives here; the actual HTTP request is tunnelled through

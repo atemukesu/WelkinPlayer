@@ -1,3 +1,8 @@
+/**
+ * Copyright 2026 Atemukesu
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
 //! Stamp fetched lyrics with their origin.
 //!
 //! The tag is written using each format's native metadata syntax, so it is

@@ -1,3 +1,6 @@
+// Copyright 2026 Atemukesu
+// SPDX-License-Identifier: GPL-3.0-only
+
 #[cfg(target_os = "android")]
 mod android;
 mod backend;

@@ -1,4 +1,9 @@
 #!/usr/bin/env node
+/**
+ * Copyright 2026 Atemukesu
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
 // Build the Tauri updater manifest (`latest.json`) from the staged artifacts.
 //
 // The manifest is normally produced by `tauri-action`; when the release is done

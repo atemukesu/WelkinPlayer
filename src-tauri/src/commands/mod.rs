@@ -1,3 +1,6 @@
+// Copyright 2026 Atemukesu
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! Tauri command handlers exposed to the frontend.
 //!
 //! Every command returns `Result<T, AppError>` so failures reach the frontend

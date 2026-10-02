@@ -1,3 +1,8 @@
+<!--
+ Copyright 2026 Atemukesu
+ SPDX-License-Identifier: GPL-3.0-only
+-->
+
 <script setup lang="ts" generic="T extends string | number | boolean">
 import { computed } from "vue";
 

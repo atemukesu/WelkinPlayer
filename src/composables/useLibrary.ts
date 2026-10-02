@@ -1,3 +1,8 @@
+/**
+ * Copyright 2026 Atemukesu
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
 import { ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { invoke, toAppError } from "../api";

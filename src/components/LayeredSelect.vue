@@ -1,3 +1,8 @@
+<!--
+ Copyright 2026 Atemukesu
+ SPDX-License-Identifier: GPL-3.0-only
+-->
+
 <script setup lang="ts" generic="T extends string">
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ChevronDown } from "@lucide/vue";

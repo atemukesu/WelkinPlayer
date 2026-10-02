@@ -1,3 +1,8 @@
+<!--
+ Copyright 2026 Atemukesu
+ SPDX-License-Identifier: GPL-3.0-only
+-->
+
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { ArrowLeft, BadgeCheck, Check, Coffee, Copy, ExternalLink, HeartHandshake, KeyRound, LoaderCircle, X } from "@lucide/vue";

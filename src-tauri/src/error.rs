@@ -1,3 +1,6 @@
+// Copyright 2026 Atemukesu
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! Unified error type shared by every Tauri command.
 //!
 //! Commands return `Result<T, AppError>`; Tauri serializes the error as

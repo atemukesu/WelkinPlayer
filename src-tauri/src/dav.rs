@@ -1,3 +1,6 @@
+// Copyright 2026 Atemukesu
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! Minimal WebDAV client built on `reqwest`.
 //!
 //! Wraps the handful of methods Welkin needs (PROPFIND, GET, HEAD, PUT, MOVE)

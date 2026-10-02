@@ -1,3 +1,8 @@
+/**
+ * Copyright 2026 Atemukesu
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
 import { reactive } from "vue";
 
 export type ToastType = "success" | "error" | "warning" | "info";

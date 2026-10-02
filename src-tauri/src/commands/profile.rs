@@ -1,3 +1,6 @@
+// Copyright 2026 Atemukesu
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! Cross-device profile storage.
 //!
 //! The whole user profile (nickname, play counts, favorites and playlists)
