@@ -5,6 +5,10 @@ name: Release
 # them into a single GitHub Release (with the updater manifest `latest.json`).
 # Nothing is published until every build has succeeded.
 #
+# The release notes come from `changelog.md`, which is authored locally by
+# `scripts/prepare-release.mjs` (DeepSeek-assisted, maintainer-reviewed) and
+# committed with the tag. No AI key is stored in this repository.
+#
 # Desktop bundles are signed for the Tauri updater (the app downloads and
 # installs them itself); the APK is offered as a browser download in-app.
 #
@@ -201,8 +205,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -214,26 +216,14 @@ jobs:
         with:
           path: dist
 
-      - name: Build changelog from commits
-        id: changelog
+      - name: Resolve release notes
         shell: bash
         run: |
-          previous=$(git describe --tags --abbrev=0 "${{ github.ref_name }}^" 2>/dev/null || true)
-          if [ -n "$previous" ]; then
-            range="${previous}..${{ github.ref_name }}"
-          else
-            range="${{ github.ref_name }}"
+          # changelog.md is authored locally (see scripts/prepare-release.mjs) and
+          # committed with the tag. Fall back to a minimal note if it is absent.
+          if [ ! -s changelog.md ]; then
+            printf 'Welkin ${{ github.ref_name }}\n' > changelog.md
           fi
-          body=$(git log --pretty=format:'- %s' "$range" || true)
-          if [ -z "$body" ]; then
-            body="Initial release"
-          fi
-          printf '%s\n' "$body" > changelog.md
-          {
-            echo "body<<__CHANGELOG__"
-            echo "$body"
-            echo "__CHANGELOG__"
-          } >> "$GITHUB_OUTPUT"
 
       - name: Generate updater manifest (latest.json)
         run: |
