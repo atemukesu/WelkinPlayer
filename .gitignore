@@ -26,3 +26,8 @@ dist-ssr
 # Opencode config files
 .opencode
 .opencode/*
+
+# Local secrets (DeepSeek API key used by scripts/prepare-release.mjs)
+.env
+.env.*
+!.env.example
