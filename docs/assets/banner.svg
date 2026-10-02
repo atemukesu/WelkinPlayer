@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="320" viewBox="0 0 1280 320" role="img" aria-label="Welkin">
+  <title>Welkin</title>
+  <style>
+    /* Motion language mirrors the app splash: fade + rise, cubic-bezier(0.2, 0.8, 0.2, 1). */
+    #bg { animation: wk-fade .5s cubic-bezier(.2,.8,.2,1) both; }
+    #word { animation: wk-rise .68s cubic-bezier(.2,.8,.2,1) .12s both; }
+    #bar { transform-box: fill-box; transform-origin: left center; animation: wk-grow .55s cubic-bezier(.2,.8,.2,1) .36s both; }
+    #mark { transform-box: fill-box; transform-origin: center; animation: wk-pop .7s cubic-bezier(.2,.8,.2,1) .22s both; }
+    .note { stroke-dasharray: 40; animation: wk-draw .7s cubic-bezier(.2,.8,.2,1) .62s both; }
+    #base-black { animation: wk-fade .5s cubic-bezier(.2,.8,.2,1) .5s both; }
+    #base-accent { transform-box: fill-box; transform-origin: left center; animation: wk-grow .6s cubic-bezier(.2,.8,.2,1) .56s both; }
+
+    @keyframes wk-fade { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes wk-rise { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes wk-pop { from { opacity: 0; transform: translateY(10px) scale(.94); } to { opacity: 1; transform: translateY(0) scale(1); } }
+    @keyframes wk-grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+    @keyframes wk-draw { from { stroke-dashoffset: 40; } to { stroke-dashoffset: 0; } }
+
+    @media (prefers-reduced-motion: reduce) {
+      #bg, #word, #bar, #mark, .note, #base-black, #base-accent { animation: none; }
+    }
+  </style>
+
+  <!-- Paper background (matches the default light theme) -->
+  <rect id="bg" width="1280" height="320" fill="#e6e6e2"/>
+
+  <!-- Wordmark -->
+  <text id="word" x="96" y="192" font-family="'Noto Sans SC Variable', 'Inter', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif" font-size="104" font-weight="900" letter-spacing="14" fill="#101216">WELKIN</text>
+  <rect id="bar" x="100" y="212" width="88" height="8" fill="#f0a500"/>
+
+  <!-- Brand mark: the app icon's amber square (top-right corner clipped, matching ak-clip-tr) -->
+  <path id="mark" d="M1016 44 H1180 L1232 96 V264 H1016 Z" fill="#f0a500"/>
+  <g transform="translate(1066.5 92) scale(5)" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <circle class="note" cx="8" cy="18" r="4"/>
+    <path class="note" d="M12 18V2l7 4"/>
+  </g>
+
+  <!-- Baseline accent -->
+  <rect id="base-black" x="0" y="316" width="1280" height="4" fill="#101216"/>
+  <rect id="base-accent" x="0" y="316" width="240" height="4" fill="#f0a500"/>
+</svg>
