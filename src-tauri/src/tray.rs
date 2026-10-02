@@ -1,9 +1,8 @@
 //! System tray icon and window-close behaviour (desktop only).
 //!
-//! The tray has no context menu: a left click restores the main window, which
-//! matches the "minimise to tray" workflow without a right-click menu to
-//! maintain. Whether closing the main window quits the app or hides it to the
-//! tray is chosen by the user in settings (see [`set_close_to_tray`]) and
+//! A left click restores the main window; a right click opens a small menu with
+//! "打开" / "退出". Whether closing the main window quits the app or hides it to
+//! the tray is chosen by the user in settings (see [`set_close_to_tray`]) and
 //! persisted on the frontend; this module only keeps the latest value.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -30,15 +29,45 @@ pub fn set_close_to_tray(app: AppHandle, close_to_tray: bool) {
     }
 }
 
-/// Create the tray icon. Left click restores and focuses the main window; no
-/// menu is set, so right-click does nothing.
+/// Restore, un-minimise and focus the main window.
+#[cfg(desktop)]
+fn show_main(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+/// Tear the floating lyrics down and exit the process.
+#[cfg(desktop)]
+fn quit_app(app: &AppHandle) {
+    if let Some(overlay) = app.get_webview_window("desktop-lyrics") {
+        let _ = overlay.close();
+    }
+    app.exit(0);
+}
+
+/// Create the tray icon and its context menu.
 #[cfg(desktop)]
 pub fn init(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem};
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+    let open = MenuItem::with_id(app, "tray-open", "打开", true, false, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "tray-quit", "退出", true, false, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&open, &quit])?;
 
     let mut builder = TrayIconBuilder::new()
         .tooltip("Welkin")
+        // Left click restores the window; the menu only opens on right click.
         .show_menu_on_left_click(false)
+        .menu(&menu)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "tray-open" => show_main(app),
+            "tray-quit" => quit_app(app),
+            _ => {}
+        })
         .on_tray_icon_event(|tray, event| {
             if let TrayIconEvent::Click {
                 button: MouseButton::Left,
@@ -46,12 +75,7 @@ pub fn init(app: &tauri::App) -> tauri::Result<()> {
                 ..
             } = event
             {
-                let app = tray.app_handle();
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.unminimize();
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
+                show_main(tray.app_handle());
             }
         });
 
