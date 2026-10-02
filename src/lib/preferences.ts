@@ -71,8 +71,8 @@ export const DEFAULT_DESKTOP_LYRIC: DesktopLyricSettings = {
   // Kept in the type and storage normalizer for backwards compatibility;
   // the single-line overlay no longer renders surrounding context.
   contextLines: 0,
-  fontSize: 38,
-  translationSize: 17,
+  fontSize: 28,
+  translationSize: 20,
   fontWeight: 700,
   fontFamilies: [],
   textColor: "#f5f5f5",
@@ -90,8 +90,8 @@ export type LyricProvider = "qq" | "local" | "netease" | "amll";
 export const LYRIC_PROVIDERS: LyricProvider[] = ["local", "amll", "qq", "netease"];
 
 export const DEFAULT_CLASSIC_DISPLAY: LyricDisplaySettings = {
-  lineSize: 24,
-  translationSize: 18,
+  lineSize: 38,
+  translationSize: 26,
   lineSpacing: 24,
   translate: true,
   ruby: true,
@@ -100,8 +100,8 @@ export const DEFAULT_CLASSIC_DISPLAY: LyricDisplaySettings = {
 };
 
 export const DEFAULT_AMLL_DISPLAY: LyricDisplaySettings = {
-  lineSize: 24,
-  translationSize: 18,
+  lineSize: 38,
+  translationSize: 26,
   lineSpacing: 24,
   translate: true,
   ruby: true,

@@ -4,14 +4,18 @@ import { trackKey } from "../lib/sources";
 
 const VOLUME_STORAGE_KEY = "welkin-volume";
 const MUTED_STORAGE_KEY = "welkin-muted";
-const DEFAULT_VOLUME = 72;
+const DEFAULT_VOLUME = 100;
 const SHUFFLE_STORAGE_KEY = "welkin-shuffle";
 const REPEAT_STORAGE_KEY = "welkin-repeat";
 export type RepeatMode = "off" | "all" | "one";
 
 /** Restore the locally saved output volume, falling back to the default. */
 function readStoredVolume(): number {
-  const stored = Number(localStorage.getItem(VOLUME_STORAGE_KEY));
+  const raw = localStorage.getItem(VOLUME_STORAGE_KEY);
+  // A missing key reads back as `null`; Number(null) is 0, which would wrongly
+  // present the first launch as muted, so check for absence explicitly.
+  if (raw === null) return DEFAULT_VOLUME;
+  const stored = Number(raw);
   return Number.isFinite(stored) && stored >= 0 && stored <= 100 ? stored : DEFAULT_VOLUME;
 }
 
