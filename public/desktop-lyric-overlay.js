@@ -55,7 +55,7 @@
   // Hybrid devices fire both mouse and touch. Track which one is in use so the
   // CSS hover surface only applies to a real mouse, never to a sticky touch
   // `:hover`. The touch surface is driven separately by `revealTouchControls`.
-  document.addEventListener("pointerdown", function (event) {
+  function trackPointerType(event) {
     if (event.pointerType === "mouse") {
       body.classList.add("mouse");
       body.classList.remove("touching");
@@ -63,7 +63,12 @@
       body.classList.add("touching");
       body.classList.remove("mouse");
     }
-  }, true);
+  }
+  // Detect the input type on move as well as down: the hover surface keys off
+  // `body.mouse`, so without this the very first hover (before any click) found
+  // no `.mouse` class and painted no background.
+  document.addEventListener("pointerdown", trackPointerType, true);
+  document.addEventListener("pointermove", trackPointerType, true);
 
   function syncAppTheme() {
     var root = document.documentElement.style;
