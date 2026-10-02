@@ -137,8 +137,18 @@ jobs:
           distribution: zulu
           java-version: 17
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Use the preinstalled Android SDK
+        run: |
+          # android-actions/setup-android@v3 tries to install the removed legacy
+          # `tools` package and fails on current SDKs. The GitHub runner already
+          # ships an SDK, so just accept its licenses and export the paths.
+          sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          sdkmanager=$(find "$sdk/cmdline-tools" -maxdepth 3 -type f -name sdkmanager 2>/dev/null | sort | tail -n1)
+          if [ -n "$sdkmanager" ]; then
+            yes | "$sdkmanager" --licenses >/dev/null 2>&1 || true
+          fi
+          echo "ANDROID_HOME=$sdk" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$sdk" >> "$GITHUB_ENV"
 
       - name: Setup Android NDK
         id: setup-ndk
