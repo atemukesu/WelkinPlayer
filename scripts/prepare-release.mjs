@@ -77,6 +77,8 @@ function parseArgs(argv) {
     else if (arg === "--yes" || arg === "-y") options.yes = true;
     else if (arg === "--push") options.push = true;
     else if (arg === "--no-push") options.push = false;
+    else if (arg === "--force") options.force = true;
+    else if (arg === "--no-force") options.force = false;
     else if (arg === "--prev") options.prev = argv[++i];
     else if (arg === "--api-key") options.apiKey = argv[++i];
     else if (arg === "--api-key-file") options.apiKeyFile = argv[++i];
@@ -96,6 +98,7 @@ function usage() {
   ${cyan("--no-commit")}            写 changelog.md 并升版本，但不提交、不打 tag
   ${cyan("--yes")}                  跳过审查，直接采用 AI 结果
   ${cyan("--push")} / ${cyan("--no-push")}    提交/打 tag 后直接推送 / 不推送（默认交互询问）
+  ${cyan("--force")} / ${cyan("--no-force")}  远端 tag 已存在时是否强制覆盖（默认交互询问）
   ${cyan("--prev")} <tag>           手动指定上一个 release tag
   ${cyan("--api-key")} <key>        DeepSeek API Key
   ${cyan("--api-key-file")} <path>  从文件读取 DeepSeek API Key
@@ -322,9 +325,14 @@ async function main() {
 
     // 7. Commit and tag locally.
     run("git", ["add", "changelog.md", "package.json"]);
-    run("git", ["commit", "-m", `chore(release): ${tag}`]);
+    if (run("git", ["diff", "--cached", "--name-only"], { allowFailure: true })) {
+      run("git", ["commit", "-m", `chore(release): ${tag}`]);
+      ok(`已提交改动。`);
+    } else {
+      info("没有需要提交的改动，tag 将指向当前 HEAD。");
+    }
     run("git", ["tag", "-a", tag, "-m", `Welkin ${tag}`]);
-    ok(`已提交并创建本地 tag ${bold(magenta(tag))}。`);
+    ok(`已创建本地 tag ${bold(magenta(tag))}。`);
     await maybePush(tag, branch, rl, options);
   } finally {
     rl.close();
@@ -340,16 +348,37 @@ function printPushHelp(tag, branch) {
 /** Ask before pushing; `--push`/`--no-push` skip the prompt. */
 async function maybePush(tag, branch, rl, options) {
   if (options.push === undefined) {
-    const answer = (await rl.question(`\n${yellow("是否推送到远端并触发发布？")} [y/N] `)).trim().toLowerCase();
-    options.push = answer === "y" || answer === "yes";
+    const answer = (await rl.question(`\n${yellow("是否推送到远端并触发发布？")} [Y/n] `)).trim().toLowerCase();
+    options.push = answer === "" || answer === "y" || answer === "yes";
   }
   if (!options.push) {
     printPushHelp(tag, branch);
     return;
   }
-  warn("正在推送…");
+
+  warn(`正在推送分支 ${branch}…`);
   run("git", ["push", "origin", branch]);
-  run("git", ["push", "origin", tag]);
+
+  // An existing remote tag would reject a plain push; offer to overwrite it.
+  const remoteTag = run("git", ["ls-remote", "--tags", "origin", `refs/tags/${tag}`], { allowFailure: true });
+  let force = options.force;
+  if (remoteTag) {
+    warn(`远端已存在 tag ${bold(magenta(tag))}。`);
+    if (force === undefined) {
+      const answer = (await rl.question(`${yellow("是否强制覆盖远端 tag？")} [y/N] `)).trim().toLowerCase();
+      force = answer === "y" || answer === "yes";
+    }
+    if (!force) {
+      warn(`已跳过 tag 推送。如需覆盖：git push --force origin ${tag}`);
+      return;
+    }
+  }
+
+  warn(`正在推送 tag ${tag}…`);
+  const args = ["push"];
+  if (remoteTag && force) args.push("--force");
+  args.push("origin", tag);
+  run("git", args);
   ok(`已推送。CI 将开始构建并发布 ${magenta(tag)}。`);
 }
 
