@@ -18,6 +18,9 @@ const BRIDGE_CLASS_NAME: &str = "com.atemukesu.welkinplayer.DesktopLyricBridge";
 /// Kotlin bridge that owns the system media-notification service (binary name).
 const MEDIA_BRIDGE_CLASS_NAME: &str = "com.atemukesu.welkinplayer.MediaControlBridge";
 
+/// Kotlin bridge that owns the Storage Access Framework folder picker.
+const FOLDER_PICKER_CLASS_NAME: &str = "com.atemukesu.welkinplayer.FolderPickerBridge";
+
 /// Cached global reference to the bridge class. A plain `FindClass` only reaches
 /// the system class loader from an attached worker thread, so the app class is
 /// resolved once through the Application's class loader instead.
@@ -25,6 +28,9 @@ static BRIDGE_CLASS: OnceLock<GlobalRef> = OnceLock::new();
 
 /// Cached global reference to the media-control bridge class.
 static MEDIA_BRIDGE_CLASS: OnceLock<GlobalRef> = OnceLock::new();
+
+/// Cached global reference to the folder-picker bridge class.
+static FOLDER_PICKER_CLASS: OnceLock<GlobalRef> = OnceLock::new();
 
 /// Whether the floating overlay service is currently running.
 static DESKTOP_LYRIC_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -166,6 +172,10 @@ fn bridge_class<'local>(env: &mut jni::JNIEnv<'local>) -> Result<&'static Global
 
 fn media_bridge_class<'local>(env: &mut jni::JNIEnv<'local>) -> Result<&'static GlobalRef, String> {
     class_through_loader(env, MEDIA_BRIDGE_CLASS_NAME, &MEDIA_BRIDGE_CLASS)
+}
+
+fn folder_picker_class<'local>(env: &mut jni::JNIEnv<'local>) -> Result<&'static GlobalRef, String> {
+    class_through_loader(env, FOLDER_PICKER_CLASS_NAME, &FOLDER_PICKER_CLASS)
 }
 
 fn overlay_permission() -> Result<bool, String> {
@@ -465,6 +475,98 @@ pub fn media_control_take_control() -> Result<Option<String>, String> {
         .map_err(|error| error.to_string())?
         .into();
     Ok(Some(text))
+}
+
+/// Open the system folder picker (Storage Access Framework).
+///
+/// Returns the `FolderPickerBridge.PICK_*` status: `0` = picker launched (the
+/// result is drained with [`take_folder_pick`]), `1` = the "all files access"
+/// settings screen was opened and the user must retry, `-1` = unavailable.
+pub fn pick_folder() -> Result<i32, String> {
+    let java_vm = JAVA_VM
+        .get()
+        .ok_or_else(|| "JNI_OnLoad has not run yet".to_string())?;
+    let mut env = java_vm
+        .attach_current_thread()
+        .map_err(|error| error.to_string())?;
+    let _ = env.exception_clear();
+    let class = folder_picker_class(&mut env)?;
+    env.call_static_method(class, "pick", "()I", &[])
+        .map_err(|error| error.to_string())?
+        .i()
+        .map_err(|error| error.to_string())
+}
+
+/// Drain a finished folder pick.
+///
+/// `None` = still waiting; `Some(None)` = cancelled; `Some(Some(path))` = the
+/// chosen directory. The empty-string sentinel distinguishes "cancelled" from
+/// "not ready" because the JNI call returns a null `String` while pending.
+pub fn take_folder_pick() -> Result<Option<Option<String>>, String> {
+    let java_vm = JAVA_VM
+        .get()
+        .ok_or_else(|| "JNI_OnLoad has not run yet".to_string())?;
+    let mut env = java_vm
+        .attach_current_thread()
+        .map_err(|error| error.to_string())?;
+    let _ = env.exception_clear();
+    let class = folder_picker_class(&mut env)?;
+    let value = env
+        .call_static_method(class, "takeResult", "()Ljava/lang/String;", &[])
+        .map_err(|error| error.to_string())?
+        .l()
+        .map_err(|error| error.to_string())?;
+    if value.is_null() {
+        return Ok(None);
+    }
+    let text: String = env
+        .get_string(&jni::objects::JString::from(value))
+        .map_err(|error| error.to_string())?
+        .into();
+    if text.is_empty() {
+        Ok(Some(None))
+    } else {
+        Ok(Some(Some(text)))
+    }
+}
+
+/// Whether local-folder access is currently granted.
+///
+/// A failure reports `true` so a broken JNI context cannot permanently hide the
+/// hint; the real error surfaces when the source is read.
+pub fn folder_access_granted() -> bool {
+    let Some(java_vm) = JAVA_VM.get() else {
+        return true;
+    };
+    let Ok(mut env) = java_vm.attach_current_thread() else {
+        return true;
+    };
+    let _ = env.exception_clear();
+    let Ok(class) = folder_picker_class(&mut env) else {
+        return true;
+    };
+    match env
+        .call_static_method(class, "hasAccess", "()Z", &[])
+        .and_then(|value| value.z())
+    {
+        Ok(granted) => granted,
+        Err(_) => true,
+    }
+}
+
+/// Open the system screen where local file access is granted.
+pub fn request_folder_access() -> Result<(), String> {
+    let java_vm = JAVA_VM
+        .get()
+        .ok_or_else(|| "JNI_OnLoad has not run yet".to_string())?;
+    let mut env = java_vm
+        .attach_current_thread()
+        .map_err(|error| error.to_string())?;
+    let _ = env.exception_clear();
+    let class = folder_picker_class(&mut env)?;
+    env.call_static_method(class, "requestAccess", "()V", &[])
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 /// Classify the active Android network via `ConnectivityManager`.

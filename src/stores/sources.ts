@@ -41,6 +41,8 @@ export const useSourcesStore = defineStore("sources", () => {
   /** Whether a WebDAV password is stored for each source id. */
   const passwords = ref<Record<string, boolean>>({});
   const keychainAvailable = ref(true);
+  /** Whether the platform can read local folders (Android needs explicit access). */
+  const fileAccessGranted = ref(true);
   /** Bumped when the sources that affect the library change, so it can reload. */
   const revision = ref(0);
 
@@ -225,6 +227,20 @@ export const useSourcesStore = defineStore("sources", () => {
     return invoke<string | null>("pick_local_folder");
   }
 
+  /** Refresh whether local folders can be read on this platform. */
+  async function checkFileAccess() {
+    try {
+      fileAccessGranted.value = await invoke<boolean>("local_file_access_granted");
+    } catch {
+      fileAccessGranted.value = true;
+    }
+  }
+
+  /** Open the system screen where local folder access is granted. */
+  async function requestFileAccess() {
+    await invoke("request_local_file_access").catch(() => {});
+  }
+
   return {
     sources,
     syncId,
@@ -233,6 +249,7 @@ export const useSourcesStore = defineStore("sources", () => {
     error,
     passwords,
     keychainAvailable,
+    fileAccessGranted,
     revision,
     hasSources,
     cloudSources,
@@ -254,6 +271,8 @@ export const useSourcesStore = defineStore("sources", () => {
     testConnection,
     testWrite,
     pickFolder,
+    checkFileAccess,
+    requestFileAccess,
     label,
   };
 });

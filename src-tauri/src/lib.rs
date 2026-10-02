@@ -134,6 +134,8 @@ pub fn run() {
             commands::webdav::delete_source_password,
             commands::webdav::webdav_url_risk,
             commands::sources::pick_local_folder,
+            commands::sources::local_file_access_granted,
+            commands::sources::request_local_file_access,
             commands::sources::list_source_audio,
             commands::sources::test_source_connection,
             commands::sources::test_source_write,

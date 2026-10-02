@@ -233,7 +233,15 @@ fn list_local_audio(root: &Path) -> Result<Vec<RemoteEntry>, AppError> {
     while let Some(directory) = stack.pop() {
         let read = match std::fs::read_dir(&directory) {
             Ok(read) => read,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            // A missing directory or one the app cannot read (common in shared
+            // storage under Android scoped storage) must not abort the whole
+            // scan, so both are skipped.
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    || error.kind() == std::io::ErrorKind::PermissionDenied =>
+            {
+                continue
+            }
             Err(error) => return Err(AppError::Io(error)),
         };
         for entry in read.flatten() {

@@ -272,6 +272,19 @@ pub mod android {
         browser_download_url: String,
     }
 
+    /// ABI token used in release asset names for the architecture this build
+    /// runs on. The installed APK was built for the device, so its compile-time
+    /// arch identifies the matching split APK.
+    fn abi_token() -> &'static str {
+        match std::env::consts::ARCH {
+            "aarch64" => "arm64-v8a",
+            "arm" => "armeabi-v7a",
+            "x86" => "x86",
+            "x86_64" => "x86_64",
+            other => other,
+        }
+    }
+
     /// Ask GitHub for the newest release and compare it with the running build.
     pub async fn check(app: &AppHandle) -> Result<UpdateInfo, AppError> {
         let current = app.package_info().version.to_string();
@@ -293,11 +306,15 @@ pub mod android {
             return Ok(UpdateInfo::up_to_date(current));
         }
 
-        // Prefer the universal APK when the release carries more than one.
+        // The release ships one split APK per ABI (`Welkin-<tag>-<abi>.apk`), so
+        // pick the one for this device; fall back to any APK (e.g. a universal
+        // build) when there is no exact ABI match.
+        let abi_suffix = format!("-{}.apk", abi_token());
         let download_url = release
             .assets
             .iter()
-            .find(|asset| asset.name.to_ascii_lowercase().ends_with(".apk"))
+            .filter(|asset| asset.name.to_ascii_lowercase().ends_with(".apk"))
+            .min_by_key(|asset| u8::from(!asset.name.to_ascii_lowercase().ends_with(&abi_suffix)))
             .map(|asset| asset.browser_download_url.clone());
 
         // Merge every skipped version's notes, not just the newest one.

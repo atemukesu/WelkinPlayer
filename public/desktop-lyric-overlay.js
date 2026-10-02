@@ -752,15 +752,17 @@
 
   // Touch / pen handling is shared by every platform: phones, tablets and
   // touch-screen desktops. A tap reveals the controls for a while; a drag moves
-  // the layer. The Android overlay is moved through a native JNI call, while a
-  // desktop window is moved through Tauri (`startDragging` only follows a
-  // mouse, and the browser cannot move the transparent window by itself).
+  // the layer. The Android overlay is moved natively from raw screen coordinates
+  // (the WebView's own `clientX/Y` feed back into themselves once the window
+  // follows the finger), while a desktop window is moved through Tauri
+  // (`startDragging` only follows a mouse, and the browser cannot move the
+  // transparent window by itself).
   var controlsTimer = 0;
   var drag = {
     active: false, moved: false,
-    // Android: `clientX/Y` is relative to the window, which itself moves, so the
-    // last applied shift is stored to recover the true finger delta.
-    downX: 0, downY: 0, lastX: 0, lastY: 0, appliedX: 0, appliedY: 0,
+    // Android: the native container owns the movement, so only the initial
+    // pointer is kept to tell a drag from a tap.
+    downX: 0, downY: 0,
     // Desktop: `window.screenX + clientX` is the only truly stable screen
     // coordinate. Webview pointer events report a window-relative `screenX` in
     // practice, which oscillates as the window follows the finger.
@@ -847,20 +849,11 @@
     blurActive();
   }
 
-  function androidMoveBy(dx, dy) {
-    if (!window.AndroidDesktopLyric || typeof window.AndroidDesktopLyric.moveBy !== "function") return;
-    try { window.AndroidDesktopLyric.moveBy(Math.round(dx), Math.round(dy)); } catch (error) {}
-  }
-
   function beginTouchDrag(event) {
     drag.active = true;
     drag.moved = false;
     drag.downX = event.clientX;
     drag.downY = event.clientY;
-    drag.lastX = event.clientX;
-    drag.lastY = event.clientY;
-    drag.appliedX = 0;
-    drag.appliedY = 0;
     drag.downPointerX = window.screenX + event.clientX;
     drag.downPointerY = window.screenY + event.clientY;
     drag.lastPointerX = drag.downPointerX;
@@ -896,16 +889,11 @@
     if (!drag.active) return;
 
     if (isAndroid) {
-      // Undo the feedback loop: `clientX` shrinks by the amount the window just
-      // moved, so add the last applied shift back to recover the real movement.
-      var rawDx = event.clientX - drag.lastX + drag.appliedX;
-      var rawDy = event.clientY - drag.lastY + drag.appliedY;
-      drag.lastX = event.clientX;
-      drag.lastY = event.clientY;
-      drag.appliedX = rawDx;
-      drag.appliedY = rawDy;
+      // The native container moves the window from raw screen coordinates,
+      // which do not change as the window follows the finger, so there is no
+      // delta to apply here and no feedback to cancel. Only record whether the
+      // gesture became a drag so the controls can stay up after release.
       if (Math.abs(event.clientX - drag.downX) > 6 || Math.abs(event.clientY - drag.downY) > 6) drag.moved = true;
-      if (rawDx || rawDy) androidMoveBy(rawDx, rawDy);
       return;
     }
 

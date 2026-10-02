@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { Check, FolderOpen, HardDrive, LoaderCircle, Plus, Server, Trash2 } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { describeError } from "../api";
 import { pushToast } from "../lib/toast";
+import { isAndroid } from "../lib/desktopLyric";
 import { SOURCE_KINDS } from "../lib/sources";
 import { useSourcesStore } from "../stores/sources";
 import type { SongSource, SourceKind } from "../lib/sources";
@@ -11,6 +12,23 @@ import LayeredSelect from "./LayeredSelect.vue";
 
 const { t } = useI18n();
 const sources = useSourcesStore();
+const android = isAndroid();
+/** Android needs "all files access" before local folders can be listed. */
+const needsFileAccess = computed(() => android && !sources.fileAccessGranted);
+
+function refreshFileAccess() {
+  if (document.visibilityState === "visible") void sources.checkFileAccess();
+}
+
+onMounted(() => {
+  if (!android) return;
+  void sources.checkFileAccess();
+  document.addEventListener("visibilitychange", refreshFileAccess);
+});
+
+onBeforeUnmount(() => {
+  document.removeEventListener("visibilitychange", refreshFileAccess);
+});
 
 const sourceKindOptions = computed(() => SOURCE_KINDS.map((item) => ({ value: item.kind, label: t(item.labelKey) })));
 const newKind = ref<SourceKind>("webdav");
@@ -30,6 +48,14 @@ async function add() {
 
 async function chooseFolder(source: SongSource) {
   try {
+    if (android) {
+      await sources.checkFileAccess();
+      if (!sources.fileAccessGranted) {
+        pushToast("warning", t("settings.sources.localPermission"));
+        await sources.requestFileAccess();
+        return;
+      }
+    }
     const folder = await sources.pickFolder();
     if (!folder) return;
     await sources.updateSource(source.id, { rootPath: folder });
@@ -127,6 +153,10 @@ async function remove(source: SongSource) {
 
         <template v-else>
           <label class="grid gap-1 text-[13px] font-semibold text-dim">{{ t("settings.sources.localFolder") }}<span class="flex items-stretch gap-2"><input v-model="source.rootPath" class="h-10 min-w-0 flex-1 border border-line bg-surface px-3 text-sm font-normal text-fg outline-none focus:border-accent" :placeholder="t('settings.sources.localFolderPlaceholder')" @change="sources.updateSource(source.id, { rootPath: source.rootPath })" /><button type="button" class="ak-clip-tr flex h-10 shrink-0 items-center gap-2 border border-line px-4 text-[12px] font-semibold uppercase tracking-[0.2em] text-fg whitespace-nowrap" @click="chooseFolder(source)"><FolderOpen :size="14" />{{ t("settings.sources.chooseFolder") }}</button></span></label>
+          <p v-if="needsFileAccess" class="flex flex-wrap items-center gap-2 border-l-2 border-accent/60 pl-3 text-xs text-muted">
+            {{ t("settings.sources.localPermission") }}
+            <button type="button" class="ak-clip-tr inline-flex h-8 items-center border border-line px-3 text-[11px] font-semibold uppercase tracking-[0.2em] whitespace-nowrap" @click="sources.requestFileAccess()">{{ t("settings.sources.grantPermission") }}</button>
+          </p>
           <div class="flex flex-wrap items-center gap-3">
             <button type="button" class="ak-clip-tr inline-flex h-10 items-center gap-2 border border-line px-5 text-[12px] font-semibold uppercase tracking-[0.2em] whitespace-nowrap" :disabled="stateFor(source.id).testing" @click="test(source)"><LoaderCircle v-if="stateFor(source.id).testing" :size="14" class="animate-spin" />{{ t("settings.sources.test") }}</button>
             <span v-if="stateFor(source.id).readOk" class="flex items-center gap-1.5 text-[12px] font-semibold text-accent"><Check :size="14" />{{ t("settings.sources.readOk") }}</span>

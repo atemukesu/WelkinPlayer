@@ -179,17 +179,25 @@ jobs:
             echo "ANDROID_KEY_PASSWORD=${{ secrets.ANDROID_KEY_PASSWORD }}"
           } >> "$GITHUB_ENV"
 
-      - name: Build signed APK
+      - name: Build signed APKs (per ABI)
         env:
           NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
-        run: pnpm tauri android build --apk
+        run: pnpm tauri android build --apk --split-per-abi
 
-      - name: Stage APK
+      - name: Stage APKs
         run: |
           mkdir -p dist/android
-          src=$(find src-tauri/gen/android/app/build/outputs/apk -name "*.apk" | head -n1)
-          cp "$src" "dist/android/Welkin-${{ github.ref_name }}.apk"
+          find src-tauri/gen/android/app/build/outputs/apk -name "*.apk" | while read -r apk; do
+            abi=$(basename "$apk" | sed -nE 's/^app-(.+)-release\.apk$/\1/p')
+            if [ -z "$abi" ] || [ "$abi" = "universal" ]; then
+              abi=$(printf '%s' "$apk" | grep -oE 'arm64-v8a|armeabi-v7a|x86_64|x86' | head -n1)
+            fi
+            [ -z "$abi" ] && abi="universal"
+            cp "$apk" "dist/android/Welkin-${{ github.ref_name }}-${abi}.apk"
+            echo "staged Welkin-${{ github.ref_name }}-${abi}.apk"
+          done
+          ls -l dist/android
 
       - name: Upload Android artifact
         uses: actions/upload-artifact@v4

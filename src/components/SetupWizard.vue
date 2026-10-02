@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { ArrowRight, Check, FolderOpen, HardDrive, LoaderCircle, Palette, Plus, Server, Sparkles, User } from "@lucide/vue";
 import { describeError } from "../api";
 import { accents } from "../lib/app";
 import type { Accent, Theme } from "../lib/app";
 import { pushToast } from "../lib/toast";
+import { isAndroid } from "../lib/desktopLyric";
 import { useProfileStore } from "../stores/profile";
 import { useSourcesStore } from "../stores/sources";
 import { SOURCE_KINDS } from "../lib/sources";
@@ -19,6 +20,13 @@ const emit = defineEmits<{ finish: [] }>();
 const { t } = useI18n();
 const profile = useProfileStore();
 const sources = useSourcesStore();
+const android = isAndroid();
+/** Android needs "all files access" before local folders can be listed. */
+const needsFileAccess = computed(() => android && !sources.fileAccessGranted);
+
+function refreshFileAccess() {
+  if (document.visibilityState === "visible") void sources.checkFileAccess();
+}
 
 const step = ref(0);
 const nickname = ref(profile.profile.nickname);
@@ -51,6 +59,14 @@ function add() {
 
 async function chooseFolder(source: SongSource) {
   try {
+    if (android) {
+      await sources.checkFileAccess();
+      if (!sources.fileAccessGranted) {
+        pushToast("warning", t("settings.sources.localPermission"));
+        await sources.requestFileAccess();
+        return;
+      }
+    }
     const folder = await sources.pickFolder();
     if (folder) await sources.updateSource(source.id, { rootPath: folder });
   } catch (error) {
@@ -121,6 +137,14 @@ async function finish() {
 
 onMounted(() => {
   sources.hydrate().catch(() => {});
+  if (android) {
+    void sources.checkFileAccess();
+    document.addEventListener("visibilitychange", refreshFileAccess);
+  }
+});
+
+onBeforeUnmount(() => {
+  document.removeEventListener("visibilitychange", refreshFileAccess);
 });
 </script>
 
@@ -182,6 +206,10 @@ onMounted(() => {
                 <input v-model="source.rootPath" class="h-10 min-w-0 flex-1 border border-line bg-surface px-3 text-sm outline-none focus:border-accent" :placeholder="t('settings.sources.localFolderPlaceholder')" @change="sources.updateSource(source.id, { rootPath: source.rootPath })" />
                 <button type="button" class="ak-clip-tr flex h-10 shrink-0 items-center gap-2 border border-line px-4 text-[12px] font-semibold uppercase tracking-[0.2em] whitespace-nowrap" @click="chooseFolder(source)"><FolderOpen :size="14" />{{ t("settings.sources.chooseFolder") }}</button>
               </span>
+              <p v-if="needsFileAccess" class="flex flex-wrap items-center gap-2 border-l-2 border-accent/60 pl-3 text-xs text-muted">
+                {{ t("settings.sources.localPermission") }}
+                <button type="button" class="ak-clip-tr inline-flex h-8 items-center border border-line px-3 text-[11px] font-semibold uppercase tracking-[0.2em] whitespace-nowrap" @click="sources.requestFileAccess()">{{ t("settings.sources.grantPermission") }}</button>
+              </p>
             </template>
 
             <div class="flex justify-end">

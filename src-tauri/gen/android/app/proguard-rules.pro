@@ -30,3 +30,7 @@
 # in a minified release build.
 -keep class com.atemukesu.welkinplayer.MediaControlBridge { *; }
 -keep class com.atemukesu.welkinplayer.MediaPlaybackService { *; }
+
+# Folder picker bridge: `pick` / `takeResult` are called only from Rust over
+# JNI, so R8 would strip or rename them in a minified release build.
+-keep class com.atemukesu.welkinplayer.FolderPickerBridge { *; }

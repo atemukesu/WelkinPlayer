@@ -336,6 +336,7 @@
         pointer-events: none;
         transform: translateY(-5px);
         transition: opacity 140ms ease, transform 140ms ease;
+        -webkit-tap-highlight-color: transparent;
         z-index: 10;
       }
 
@@ -400,15 +401,11 @@
         transform: none;
       }
 
-      body.touching #tools button:focus-visible {
+      body.touching #tools button:focus-visible,
+      body.touching #tools button:focus {
         color: var(--text-color);
         background: transparent;
         transform: none;
-      }
-
-      body.touching #tools:focus-within {
-        opacity: 0;
-        pointer-events: none;
       }
 
       #tools svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }

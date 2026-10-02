@@ -16,12 +16,15 @@ import android.os.IBinder
 import android.os.Looper
 import android.util.Log
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.core.app.NotificationCompat
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
@@ -138,33 +141,11 @@ class DesktopLyricService : Service() {
         }
     }
 
-    /**
-     * Move the overlay by a touch delta coming from the renderer. The position
-     * is clamped to the display so the layer (and the right-aligned duet text)
-     * can never be dragged off-screen.
-     */
-    private fun moveBy(dx: Int, dy: Int) {
-        main.post {
-            val view = webView ?: return@post
-            val layout = params ?: return@post
-            val metrics = resources.displayMetrics
-            val maxX = (metrics.widthPixels - view.width).coerceAtLeast(0)
-            val maxY = (metrics.heightPixels - view.height).coerceAtLeast(0)
-            // WebView pointer coordinates are CSS pixels while WindowManager
-            // positions are physical pixels. Convert the drag delta or the
-            // overlay visibly lags behind the user's finger on dense screens.
-            val density = metrics.density
-            layout.x = (layout.x + (dx * density).roundToInt()).coerceIn(0, maxX)
-            layout.y = (layout.y + (dy * density).roundToInt()).coerceIn(0, maxY)
-            getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-                .putInt(POSITION_X, layout.x)
-                .putInt(POSITION_Y, layout.y)
-                .apply()
-            try {
-                windowManager?.updateViewLayout(view, layout)
-            } catch (_: Throwable) {
-            }
-        }
+    private fun persistPosition(x: Int, y: Int) {
+        getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putInt(POSITION_X, x)
+            .putInt(POSITION_Y, y)
+            .apply()
     }
 
     private fun closeOverlay() {
@@ -200,6 +181,7 @@ class DesktopLyricService : Service() {
             }
         }
         view.addJavascriptInterface(BridgeInterface(), "AndroidDesktopLyric")
+        view.setOnTouchListener(DragTouchListener())
 
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -246,6 +228,61 @@ class DesktopLyricService : Service() {
         view.loadDataWithBaseURL("https://desktop-lyric.local/", html, "text/html", "utf-8", null)
     }
 
+    /**
+     * Drags the overlay with `MotionEvent.rawX/rawY`, which are true screen
+     * coordinates. The WebView's own `clientX/Y` are window-relative, so they
+     * shrink by exactly as much as the window moves; feeding that back into a
+     * `setPosition` loop made the layer accelerate away and fly across the
+     * screen. Raw coordinates do not move when the window does, so dragging
+     * stays 1:1 with the finger no matter how the position is clamped.
+     *
+     * The listener never consumes the event: the WebView still needs it for the
+     * buttons and the renderer's own gesture bookkeeping.
+     */
+    private inner class DragTouchListener : View.OnTouchListener {
+        private val touchSlop = ViewConfiguration.get(this@DesktopLyricService).scaledTouchSlop
+        private var startRawX = 0f
+        private var startRawY = 0f
+        private var startLayoutX = 0
+        private var startLayoutY = 0
+        private var dragging = false
+
+        override fun onTouch(view: View, event: MotionEvent): Boolean {
+            val layout = params ?: return false
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    startRawX = event.rawX
+                    startRawY = event.rawY
+                    startLayoutX = layout.x
+                    startLayoutY = layout.y
+                    dragging = false
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (!dragging) {
+                        dragging = abs(event.rawX - startRawX) > touchSlop ||
+                            abs(event.rawY - startRawY) > touchSlop
+                    }
+                    if (dragging) {
+                        val metrics = resources.displayMetrics
+                        val maxX = (metrics.widthPixels - view.width).coerceAtLeast(0)
+                        val maxY = (metrics.heightPixels - view.height).coerceAtLeast(0)
+                        layout.x = (startLayoutX + (event.rawX - startRawX)).roundToInt().coerceIn(0, maxX)
+                        layout.y = (startLayoutY + (event.rawY - startRawY)).roundToInt().coerceIn(0, maxY)
+                        try {
+                            windowManager?.updateViewLayout(view, layout)
+                        } catch (_: Throwable) {
+                        }
+                    }
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (dragging) persistPosition(layout.x, layout.y)
+                    dragging = false
+                }
+            }
+            return false
+        }
+    }
+
     /** JS surface the renderer uses to drive the native window. */
     private inner class BridgeInterface {
         @JavascriptInterface
@@ -253,9 +290,6 @@ class DesktopLyricService : Service() {
 
         @JavascriptInterface
         fun setVisible(value: Boolean) = this@DesktopLyricService.setVisible(value)
-
-        @JavascriptInterface
-        fun moveBy(dx: Int, dy: Int) = this@DesktopLyricService.moveBy(dx, dy)
 
         @JavascriptInterface
         fun close() = this@DesktopLyricService.closeOverlay()
@@ -291,7 +325,7 @@ class DesktopLyricService : Service() {
 
     private fun buildNotification(): Notification {
         val launch = packageManager.getLaunchIntentForPackage(packageName)
-        val contentIntent = PendingIntent.getActivity(
+        val appIntent = PendingIntent.getActivity(
             this,
             0,
             launch,
@@ -311,9 +345,13 @@ class DesktopLyricService : Service() {
         )
 
         val lockLabel = if (locked) "解锁" else "锁定"
+        // A locked overlay is click-through, so tapping the notification body is
+        // the most discoverable way to unlock; otherwise it just opens the app.
+        val contentIntent = if (locked) lockIntent else appIntent
+        val contentText = if (locked) "已锁定，点击解锁" else "正在显示悬浮歌词"
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("桌面歌词")
-            .setContentText("正在显示悬浮歌词")
+            .setContentText(contentText)
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setOngoing(true)
             .setContentIntent(contentIntent)
