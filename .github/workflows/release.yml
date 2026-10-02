@@ -38,6 +38,8 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -72,6 +74,26 @@ jobs:
       - name: Sync version from package.json
         run: pnpm version:sync
 
+      - name: Build changelog from commits
+        id: changelog
+        shell: bash
+        run: |
+          previous=$(git describe --tags --abbrev=0 "${{ github.ref_name }}^" 2>/dev/null || true)
+          if [ -n "$previous" ]; then
+            range="${previous}..${{ github.ref_name }}"
+          else
+            range="${{ github.ref_name }}"
+          fi
+          body=$(git log --pretty=format:'- %s' "$range" || true)
+          if [ -z "$body" ]; then
+            body="Initial release"
+          fi
+          {
+            echo "body<<__CHANGELOG__"
+            echo "$body"
+            echo "__CHANGELOG__"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build and publish desktop bundles
         uses: tauri-apps/tauri-action@v0
         env:
@@ -80,7 +102,8 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "Welkin ${{ github.ref_name }}"
-          releaseBody: "Download the installer for your platform below. Desktop builds update themselves; the Android APK installs manually."
+          # Written into latest.json (desktop notes) and the release body (Android).
+          releaseBody: ${{ steps.changelog.outputs.body }}
           # Set to true if you prefer to review and publish releases by hand.
           releaseDraft: false
           prerelease: false

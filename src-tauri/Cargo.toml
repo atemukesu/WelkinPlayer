@@ -1,6 +1,6 @@
 [package]
 name = "welkinplayer"
-version = "1.0.0"
+version = "0.1.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -27,7 +27,7 @@ serde_json = "1"
 thiserror = "2"
 log = "0.4"
 # WebDAV client. rustls avoids a system TLS/OpenSSL dependency on every OS.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking", "json"] }
 quick-xml = "0.37"
 percent-encoding = "2"
 # Bounded concurrency for the recursive PROPFIND library walk.
@@ -51,6 +51,8 @@ getrandom = "0.2"
 # Enumerate installed font families for the lyrics font picker (loads the
 # platform font directories and parses each font's name table).
 fontdb = "0.24.0"
+# SemVer comparison for update checks and the cumulative changelog range.
+semver = "1"
 
 # Password storage uses the platform-native keychain. Each backend is enabled
 # only for its own target so we never compile another OS's dependencies.
@@ -81,8 +83,6 @@ keyring = "3"
 android-keyring = "0.2"
 jni = "0.21"
 ndk-context = "0.1"
-# SemVer comparison when checking GitHub Releases for a newer APK.
-semver = "1"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

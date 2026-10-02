@@ -12,13 +12,12 @@
 //! themselves. Both paths return the same [`UpdateInfo`] so the settings screen
 //! can render the release notes identically.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 
 use crate::error::AppError;
 
-/// GitHub repository whose releases carry the update artifacts (Android path).
-#[cfg(target_os = "android")]
+/// GitHub repository whose releases carry the update artifacts.
 pub const REPO: &str = "atemukesu/WelkinPlayer";
 
 /// A discovered update, normalized across the desktop and Android paths.
@@ -53,6 +52,88 @@ impl UpdateInfo {
     }
 }
 
+/// The subset of a GitHub release the changelog aggregation needs.
+#[derive(Debug, Deserialize)]
+struct ReleaseSummary {
+    tag_name: String,
+    body: Option<String>,
+}
+
+/// Build the changelog for a user jumping from `current` to `latest`.
+///
+/// A static `latest.json` only carries the newest release's notes, so a user who
+/// skipped several versions would miss the intervening changelogs. The GitHub
+/// Releases list is therefore queried and every release in `(current, latest]`
+/// is merged, oldest first. Falls back to the single `fallback` body when GitHub
+/// cannot be reached or the versions are not strict SemVer.
+fn cumulative_notes(current: &str, latest: &str, fallback: Option<String>) -> Option<String> {
+    match fetch_release_notes(current, latest) {
+        Ok(Some(notes)) => Some(notes),
+        Ok(None) => fallback,
+        Err(error) => {
+            log::warn!("failed to fetch cumulative release notes: {error}");
+            fallback
+        }
+    }
+}
+
+/// Query GitHub and merge the release bodies in `(current, latest]`.
+///
+/// Returns `Ok(None)` when no versioned release in the range carries a body.
+fn fetch_release_notes(current: &str, latest: &str) -> Result<Option<String>, AppError> {
+    let current = semver::Version::parse(current.trim_start_matches('v'))
+        .map_err(|error| AppError::Other(format!("无效的当前版本号：{error}")))?;
+    let latest = semver::Version::parse(latest.trim_start_matches('v'))
+        .map_err(|error| AppError::Other(format!("无效的发布版本号：{error}")))?;
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(AppError::from)?;
+
+    let releases = client
+        .get(format!(
+            "https://api.github.com/repos/{REPO}/releases?per_page=100"
+        ))
+        .header("User-Agent", "WelkinPlayer")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .map_err(AppError::from)?
+        .error_for_status()
+        .map_err(AppError::from)?
+        .json::<Vec<ReleaseSummary>>()
+        .map_err(AppError::from)?;
+
+    let mut selected: Vec<(semver::Version, String)> = releases
+        .into_iter()
+        .filter_map(|release| {
+            let version = semver::Version::parse(release.tag_name.trim_start_matches('v')).ok()?;
+            if version <= current || version > latest {
+                return None;
+            }
+            let body = release.body.unwrap_or_default();
+            let body = body.trim();
+            if body.is_empty() {
+                None
+            } else {
+                Some((version, body.to_string()))
+            }
+        })
+        .collect();
+    selected.sort_by(|a, b| a.0.cmp(&b.0));
+
+    if selected.is_empty() {
+        return Ok(None);
+    }
+
+    let combined = selected
+        .iter()
+        .map(|(version, body)| format!("v{version}\n{body}"))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    Ok(Some(combined))
+}
+
 /// Progress streamed to the webview while a desktop update downloads.
 ///
 /// The shape mirrors the official updater example so the frontend can key off
@@ -76,7 +157,7 @@ pub mod desktop {
     use tauri::{ipc::Channel, AppHandle};
     use tauri_plugin_updater::{Update, UpdaterExt};
 
-    use super::{DownloadEvent, UpdateInfo};
+    use super::{cumulative_notes, DownloadEvent, UpdateInfo};
     use crate::error::AppError;
 
     /// The update found by [`check`], held between the check and install calls.
@@ -98,14 +179,27 @@ pub mod desktop {
 
         match update {
             Some(update) => {
+                // The manifest only carries the newest release's notes; merge the
+                // skipped versions' notes so a user upgrading across releases
+                // sees everything they missed. Runs off the async runtime.
+                let current_version = update.current_version.clone();
+                let latest_version = update.version.clone();
+                let fallback = update
+                    .body
+                    .clone()
+                    .filter(|text| !text.trim().is_empty());
+                let notes = tauri::async_runtime::spawn_blocking(move || {
+                    cumulative_notes(&current_version, &latest_version, fallback)
+                })
+                .await
+                .ok()
+                .flatten();
+
                 let info = UpdateInfo {
                     available: true,
                     current_version: update.current_version.clone(),
                     version: Some(update.version.clone()),
-                    notes: update
-                        .body
-                        .clone()
-                        .filter(|text| !text.trim().is_empty()),
+                    notes,
                     date: update.date.map(|date| date.to_string()),
                     download_url: Some(update.download_url.to_string()),
                 };
@@ -158,7 +252,7 @@ pub mod android {
     use serde::Deserialize;
     use tauri::AppHandle;
 
-    use super::{UpdateInfo, REPO};
+    use super::{cumulative_notes, UpdateInfo, REPO};
     use crate::error::AppError;
 
     /// The subset of a GitHub release the updater cares about.
@@ -206,11 +300,22 @@ pub mod android {
             .find(|asset| asset.name.to_ascii_lowercase().ends_with(".apk"))
             .map(|asset| asset.browser_download_url.clone());
 
+        // Merge every skipped version's notes, not just the newest one.
+        let fallback = release.body.filter(|text| !text.trim().is_empty());
+        let current_for_notes = current.clone();
+        let latest_for_notes = latest.clone();
+        let notes = tauri::async_runtime::spawn_blocking(move || {
+            cumulative_notes(&current_for_notes, &latest_for_notes, fallback)
+        })
+        .await
+        .ok()
+        .flatten();
+
         Ok(UpdateInfo {
             available: true,
             current_version: current,
             version: Some(latest),
-            notes: release.body.filter(|text| !text.trim().is_empty()),
+            notes,
             date: release.published_at,
             download_url,
         })
