@@ -54,8 +54,8 @@ pub fn init(app: &tauri::App) -> tauri::Result<()> {
     use tauri::menu::{Menu, MenuItem};
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
-    let open = MenuItem::with_id(app, "tray-open", "打开", true, false, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "tray-quit", "退出", true, false, None::<&str>)?;
+    let open = MenuItem::with_id(app, "tray-open", "打开", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "tray-quit", "退出", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &quit])?;
 
     let mut builder = TrayIconBuilder::new()

@@ -75,7 +75,8 @@ pub fn run() {
             // just hides the main window so playback continues in the tray.
             #[cfg(desktop)]
             {
-                // System tray: left click restores the window; no context menu.
+                // System tray: left click restores the window; right click
+                // opens the 打开 / 退出 menu.
                 if let Err(error) = tray::init(app) {
                     log::warn!("failed to create tray icon: {error}");
                 }
