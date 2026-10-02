@@ -1,6 +1,6 @@
 [package]
 name = "welkinplayer"
-version = "0.1.0"
+version = "1.0.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -68,6 +68,9 @@ keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
 # crate is only pulled in for the three desktop targets.
 [target.'cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))'.dependencies]
 souvlaki = "0.8"
+# Signed, per-platform updates published as GitHub release assets. Desktop only:
+# Android queries the GitHub Releases API and downloads the APK manually instead.
+tauri-plugin-updater = "2"
 
 # Android has no keyring backend of its own. `android-keyring` installs a
 # Keystore-backed credential builder over the plain `keyring` crate.
@@ -78,6 +81,8 @@ keyring = "3"
 android-keyring = "0.2"
 jni = "0.21"
 ndk-context = "0.1"
+# SemVer comparison when checking GitHub Releases for a newer APK.
+semver = "1"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

@@ -13,7 +13,8 @@ import { useProfileStore } from "../stores/profile";
 import { useSourcesStore } from "../stores/sources";
 import { useLicenseStore } from "../stores/license";
 import { useWindowBehaviorStore } from "../stores/windowBehavior";
-import { isDesktop } from "../lib/desktopLyric";
+import { useUpdateStore } from "../stores/update";
+import { isAndroid, isDesktop } from "../lib/desktopLyric";
 import LyricsSettings from "../components/LyricsSettings.vue";
 import DesktopLyricSettings from "../components/DesktopLyricSettings.vue";
 import pkg from "../../package.json";
@@ -31,8 +32,11 @@ const profile = useProfileStore();
 const sources = useSourcesStore();
 const license = useLicenseStore();
 const windowBehavior = useWindowBehaviorStore();
+const update = useUpdateStore();
 /** The close-to-tray preference is desktop-only; Android never shows it. */
 const desktop = isDesktop();
+/** Android downloads the APK through the browser instead of installing in-app. */
+const android = isAndroid();
 /** Edition label shown in the About card's edition dial. */
 const editionLabel = computed(() => (license.isPro ? t("sponsor.compare.badgePro") : t("settings.about.edition")));
 const cacheDir = ref("");
@@ -85,6 +89,33 @@ async function copyQq() {
     document.body.removeChild(field);
     pushToast(copied ? "success" : "error", t(copied ? "settings.community.qqCopied" : "settings.community.qqCopyFailed"));
   }
+}
+/** Manual check from the settings card; reports the outcome with a toast. */
+async function checkUpdate() {
+  try {
+    const info = await update.check();
+    if (info.available) pushToast("info", t("settings.update.available", { version: info.version }));
+    else pushToast("success", t("settings.update.latest"));
+  } catch (error) {
+    emit("friendlyError", error);
+  }
+}
+/** Desktop: download and install, after which the backend relaunches the app. */
+async function installUpdate() {
+  try {
+    await update.install();
+  } catch (error) {
+    emit("friendlyError", error);
+  }
+}
+/** Android: open the APK download in the system browser for manual install. */
+async function downloadUpdate() {
+  const url = update.info?.downloadUrl;
+  if (!url) {
+    pushToast("error", t("settings.update.noDownload"));
+    return;
+  }
+  await openLink(url);
 }
 onMounted(() => {
   void invoke<string>("get_cache_dir").then((dir) => (cacheDir.value = dir)).catch(() => {});
@@ -224,6 +255,52 @@ button.text-dim:hover:not(:disabled) {
 
     <div class="mt-8 space-y-6">
       <section class="ak-frame grid gap-6 border border-line bg-surface p-6 lg:grid-cols-[1fr_1.3fr]">
+        <div><h2 class="text-sm font-bold uppercase tracking-[0.2em]">{{ t("settings.update.title") }}</h2><p class="mt-2 text-sm text-muted">{{ t("settings.update.desc") }}</p></div>
+        <div class="grid gap-4">
+          <p class="flex flex-wrap items-baseline gap-1.5 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.update.current") }}<span class="font-semibold tabular-nums text-fg">v{{ appVersion }}</span></p>
+          <div v-if="update.available" class="grid gap-3 border border-line bg-bg p-4">
+            <p class="text-sm font-semibold text-accent">{{ t("settings.update.available", { version: update.info?.version }) }}</p>
+            <div v-if="update.info?.notes" class="grid gap-1">
+              <span class="text-[11px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.update.notes") }}</span>
+              <pre class="max-h-48 overflow-y-auto whitespace-pre-wrap break-words font-sans text-xs leading-relaxed text-muted">{{ update.info.notes }}</pre>
+            </div>
+            <div v-if="update.installing" class="grid gap-2">
+              <span class="block h-2 w-full overflow-hidden bg-fg/10"><span class="block h-full bg-accent transition-[width]" :style="{ width: `${Math.round((update.progress ?? 0) * 100)}%` }"></span></span>
+              <p class="text-[11px] text-dim">{{ update.progress === null ? t("settings.update.downloading") : t("settings.update.progress", { percent: Math.round(update.progress * 100) }) }}</p>
+            </div>
+            <button v-if="desktop" type="button" class="ak-clip-tr flex h-10 items-center justify-center gap-2 bg-accent px-5 text-[13px] font-bold uppercase tracking-[0.25em] text-accent-fg disabled:opacity-60" :disabled="update.installing" @click="installUpdate">{{ t(update.installing ? "settings.update.installing" : "settings.update.install") }}</button>
+            <button v-else-if="android" type="button" class="ak-clip-tr flex h-10 items-center justify-center gap-2 bg-accent px-5 text-[13px] font-bold uppercase tracking-[0.25em] text-accent-fg" @click="downloadUpdate">{{ t("settings.update.download") }}</button>
+            <p class="text-[11px] leading-relaxed text-dim">{{ t(desktop ? "settings.update.installHint" : "settings.update.downloadHint") }}</p>
+          </div>
+          <template v-else>
+            <p v-if="update.error" class="text-[12px] leading-relaxed text-rose-500">{{ update.error }}</p>
+            <p v-else-if="update.checked" class="text-sm text-muted">{{ t("settings.update.latest") }}</p>
+          </template>
+          <div class="flex justify-end">
+            <button type="button" class="ak-clip-tr h-10 border border-line px-5 text-[13px] font-semibold uppercase tracking-[0.25em] disabled:opacity-60" :disabled="update.checking || update.installing" @click="checkUpdate">{{ t(update.checking ? "settings.update.checking" : "settings.update.check") }}</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="ak-frame grid gap-6 border border-line bg-surface p-6 lg:grid-cols-[1fr_1.3fr]">
+        <div><h2 class="text-sm font-bold uppercase tracking-[0.2em]">{{ t("settings.community.title") }}</h2><p class="mt-2 text-sm text-muted">{{ t("settings.community.desc") }}</p></div>
+        <div class="grid min-w-0 gap-3">
+          <div class="flex flex-col gap-3 border border-line bg-bg px-4 py-3 overflow-hidden sm:flex-row sm:items-center sm:justify-between">
+            <span class="flex min-w-0 items-center gap-3"><GitFork class="shrink-0 text-accent" :size="18" :stroke-width="2" /><span class="min-w-0"><span class="block text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.community.repo") }}</span><span class="block break-all font-mono text-xs leading-relaxed text-fg">{{ repoUrl }}</span></span></span>
+            <button type="button" class="ak-clip-tr flex min-h-9 w-full shrink-0 items-center justify-center gap-2 py-2 text-center leading-tight whitespace-normal bg-accent px-4 text-[12px] font-bold uppercase tracking-[0.2em] text-accent-fg sm:w-auto" @click="openLink(repoUrl)"><ExternalLink :size="14" />{{ t("settings.community.repoAction") }}</button>
+          </div>
+          <div class="flex flex-col gap-3 border border-line bg-bg px-4 py-3 overflow-hidden sm:flex-row sm:items-center sm:justify-between">
+            <span class="flex min-w-0 items-center gap-3"><Bug class="shrink-0 text-accent" :size="18" :stroke-width="2" /><span class="min-w-0"><span class="block text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.community.issues") }}</span><span class="block break-all font-mono text-xs leading-relaxed text-fg">{{ issuesUrl }}</span></span></span>
+            <button type="button" class="ak-clip-tr flex min-h-9 w-full shrink-0 items-center justify-center gap-2 py-2 text-center leading-tight whitespace-normal border border-line px-4 text-[12px] font-bold uppercase tracking-[0.2em] text-fg sm:w-auto" @click="openLink(issuesUrl)"><ExternalLink :size="14" />{{ t("settings.community.issuesAction") }}</button>
+          </div>
+          <div class="flex flex-col gap-3 border border-line bg-bg px-4 py-3 overflow-hidden sm:flex-row sm:items-center sm:justify-between">
+            <span class="flex min-w-0 items-center gap-3"><Users class="shrink-0 text-accent" :size="18" :stroke-width="2" /><span class="min-w-0"><span class="block text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.community.qq") }}</span><span class="block break-all font-mono text-xs leading-relaxed text-fg">{{ t("settings.community.qqNumber") }}</span></span></span>
+            <button type="button" class="ak-clip-tr flex min-h-9 w-full shrink-0 items-center justify-center gap-2 py-2 text-center leading-tight whitespace-normal border border-line px-4 text-[12px] font-bold uppercase tracking-[0.2em] text-fg sm:w-auto" @click="copyQq"><Copy :size="14" />{{ t("settings.community.qqCopy") }}</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="ak-frame grid gap-6 border border-line bg-surface p-6 lg:grid-cols-[1fr_1.3fr]">
         <div><h2 class="text-sm font-bold uppercase tracking-[0.2em]">{{ t("settings.profile.title") }}</h2><p class="mt-2 text-sm text-muted">{{ t("settings.profile.desc") }}</p></div>
         <div class="grid gap-4">
           <label class="grid gap-2 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.profile.nickname") }}<input v-model="profile.profile.nickname" maxlength="32" class="h-10 border border-line bg-bg px-3 text-sm font-normal normal-case tracking-normal text-fg outline-none focus:border-accent" :placeholder="t('settings.profile.nicknamePlaceholder')" @change="profile.setNickname(profile.profile.nickname)" /></label>
@@ -282,24 +359,6 @@ button.text-dim:hover:not(:disabled) {
           <p class="text-sm text-muted">{{ t("settings.sources.count", { count: sources.sources.length }) }}</p>
           <p class="flex items-center gap-2 text-[11px] text-dim"><span class="h-2 w-2" :class="sources.hasCloudSync ? 'bg-accent' : 'bg-dim'"></span>{{ sources.hasCloudSync ? t("settings.sources.cloudAvailable") : t("settings.sources.cloudUnavailable") }}</p>
           <div class="flex justify-end"><button type="button" class="ak-clip-tr flex h-10 items-center gap-2 bg-accent px-5 text-[13px] font-bold uppercase tracking-[0.25em] text-accent-fg" @click="emit('sources')"><HardDrive :size="15" />{{ t("settings.sources.manage") }}</button></div>
-        </div>
-      </section>
-
-      <section class="ak-frame grid gap-6 border border-line bg-surface p-6 lg:grid-cols-[1fr_1.3fr]">
-        <div><h2 class="text-sm font-bold uppercase tracking-[0.2em]">{{ t("settings.community.title") }}</h2><p class="mt-2 text-sm text-muted">{{ t("settings.community.desc") }}</p></div>
-        <div class="grid gap-3">
-          <div class="flex items-center justify-between gap-4 border border-line bg-bg px-4 py-3">
-            <span class="flex min-w-0 items-center gap-3"><GitFork class="shrink-0 text-accent" :size="18" :stroke-width="2" /><span class="min-w-0"><span class="block text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.community.repo") }}</span><span class="block truncate font-mono text-xs text-fg">{{ repoUrl }}</span></span></span>
-            <button type="button" class="ak-clip-tr flex h-9 shrink-0 items-center gap-2 bg-accent px-4 text-[12px] font-bold uppercase tracking-[0.2em] text-accent-fg" @click="openLink(repoUrl)"><ExternalLink :size="14" />{{ t("settings.community.repoAction") }}</button>
-          </div>
-          <div class="flex items-center justify-between gap-4 border border-line bg-bg px-4 py-3">
-            <span class="flex min-w-0 items-center gap-3"><Bug class="shrink-0 text-accent" :size="18" :stroke-width="2" /><span class="min-w-0"><span class="block text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.community.issues") }}</span><span class="block truncate font-mono text-xs text-fg">{{ issuesUrl }}</span></span></span>
-            <button type="button" class="ak-clip-tr flex h-9 shrink-0 items-center gap-2 border border-line px-4 text-[12px] font-bold uppercase tracking-[0.2em] text-fg" @click="openLink(issuesUrl)"><ExternalLink :size="14" />{{ t("settings.community.issuesAction") }}</button>
-          </div>
-          <div class="flex items-center justify-between gap-4 border border-line bg-bg px-4 py-3">
-            <span class="flex min-w-0 items-center gap-3"><Users class="shrink-0 text-accent" :size="18" :stroke-width="2" /><span class="min-w-0"><span class="block text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.community.qq") }}</span><span class="block truncate font-mono text-xs text-fg">{{ t("settings.community.qqNumber") }}</span></span></span>
-            <button type="button" class="ak-clip-tr flex h-9 shrink-0 items-center gap-2 border border-line px-4 text-[12px] font-bold uppercase tracking-[0.2em] text-fg" @click="copyQq"><Copy :size="14" />{{ t("settings.community.qqCopy") }}</button>
-          </div>
         </div>
       </section>
 

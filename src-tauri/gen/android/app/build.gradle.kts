@@ -13,6 +13,11 @@ val tauriProperties = Properties().apply {
     }
 }
 
+// Release signing is read from the environment so CI can inject the keystore
+// without committing it. When no keystore is configured (e.g. local builds) the
+// release variant falls back to the default debug signing.
+val releaseKeystorePath = System.getenv("ANDROID_KEYSTORE_PATH")
+
 android {
     compileSdk = 36
     namespace = "com.atemukesu.welkinplayer"
@@ -23,6 +28,16 @@ android {
         targetSdk = 36
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
+    }
+    signingConfigs {
+        if (!releaseKeystorePath.isNullOrBlank()) {
+            create("release") {
+                storeFile = file(releaseKeystorePath)
+                storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("ANDROID_KEY_ALIAS")
+                keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+            }
+        }
     }
     buildTypes {
         getByName("debug") {
@@ -37,6 +52,9 @@ android {
             }
         }
         getByName("release") {
+            if (!releaseKeystorePath.isNullOrBlank()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             isMinifyEnabled = true
             proguardFiles(
                 *fileTree(".") { include("**/*.pro") }

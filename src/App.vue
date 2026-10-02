@@ -40,6 +40,7 @@ import { useNetworkStore } from "./stores/network";
 import { useCacheStore } from "./stores/cache";
 import { useLicenseStore } from "./stores/license";
 import { useWindowBehaviorStore } from "./stores/windowBehavior";
+import { useUpdateStore } from "./stores/update";
 import AppNavigation from "./components/AppNavigation.vue";
 import QueuePanel from "./components/QueuePanel.vue";
 import PlayerBar from "./components/PlayerBar.vue";
@@ -74,6 +75,7 @@ const network = useNetworkStore();
 const cache = useCacheStore();
 const license = useLicenseStore();
 const windowBehavior = useWindowBehaviorStore();
+const update = useUpdateStore();
 const { loadingLibrary, refreshing, friendlyError, loadCachedLibrary, loadRemoteLibrary, refreshLibrary, downloadTrackMetadata } = useLibrary();
 const view = ref<View>(getViewFromHash());
 const baseView = ref<View>(view.value === "player" || view.value === "track-info" ? "library" : view.value);
@@ -224,6 +226,16 @@ function toggleQueue() {
 function openQueue() { showQueue.value = true; }
 function closeQueue() { showQueue.value = false; }
 
+/** Background update probe at boot; a failure is intentionally silent. */
+async function checkUpdatesOnBoot() {
+  try {
+    const info = await update.check();
+    if (info.available) pushToast("info", t("settings.update.available", { version: info.version }));
+  } catch {
+    // A failed background check must never disturb the user.
+  }
+}
+
 async function bootstrap() {
   await sources.hydrate();
   const firstRun = await profile.hydrate();
@@ -234,6 +246,7 @@ async function bootstrap() {
   await Promise.race([license.refresh(), new Promise((resolve) => window.setTimeout(resolve, 1500))]);
   booted.value = true;
   void loadCachedLibrary();
+  void checkUpdatesOnBoot();
   if (!firstRun) {
     // The wizard owns the first fetch; returning users refresh silently.
     void profile.syncRemote();

@@ -47,6 +47,19 @@ pub fn run() {
         .manage(media_control::MediaControlState::default())
         .manage(tray::CloseToTray::default())
         .setup(|app| {
+            // Apply signed updates from GitHub Releases. Registered here (rather
+            // than in the builder chain) so the whole block stays desktop-only.
+            #[cfg(desktop)]
+            {
+                if let Err(error) = app
+                    .handle()
+                    .plugin(tauri_plugin_updater::Builder::new().build())
+                {
+                    log::error!("failed to initialize updater plugin: {error}");
+                }
+                app.manage(commands::update::desktop::PendingUpdate::default());
+            }
+
             // Mint the per-install identifier on first launch so it is stable
             // from the very first run; later launches just read it back.
             match commands::sponsor::get_install_id() {
@@ -126,6 +139,12 @@ pub fn run() {
             commands::sources::test_source_write,
             commands::sponsor::get_install_id,
             commands::sponsor::build_sponsor_claim,
+            #[cfg(desktop)]
+            commands::update::check_update,
+            #[cfg(desktop)]
+            commands::update::install_update,
+            #[cfg(target_os = "android")]
+            commands::update::check_update,
             commands::license::activate_pro,
             commands::license::get_pro_status,
             commands::profile::load_local_profile,
