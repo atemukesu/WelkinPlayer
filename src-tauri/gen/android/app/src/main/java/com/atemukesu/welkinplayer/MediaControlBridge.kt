@@ -98,4 +98,15 @@ object MediaControlBridge {
         }
         instance.update(json)
     }
+
+    /**
+     * Update only the running session's playhead. Called on a slow cadence and
+     * immediately after a loop/seek so the lock-screen position does not drift;
+     * metadata and the notification are left untouched.
+     */
+    @JvmStatic
+    @Synchronized
+    fun updatePosition(positionMs: Long, playing: Boolean) {
+        service?.updatePosition(positionMs, playing)
+    }
 }

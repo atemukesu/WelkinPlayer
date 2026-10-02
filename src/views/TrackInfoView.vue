@@ -7,9 +7,8 @@ import { coverPending, initial } from "../lib/format";
 import { useMetadataStore } from "../stores/metadata";
 import { usePlayerStore } from "../stores/player";
 import type { Track } from "../stores/player";
-import { useProfileStore } from "../stores/profile";
+import { useProfileStore, profileKeyForTrack } from "../stores/profile";
 import { useSourcesStore } from "../stores/sources";
-import { trackKey } from "../lib/sources";
 import type { TrackTags } from "../lib/remote";
 
 const props = defineProps<{ path: string | null; sourceId?: string | null }>();
@@ -19,7 +18,7 @@ const player = usePlayerStore();
 const profile = useProfileStore();
 const sources = useSourcesStore();
 const metadata = useMetadataStore();
-const key = computed(() => trackKey({ sourceId: props.sourceId ?? undefined, path: props.path ?? undefined }));
+const key = computed(() => profileKeyForTrack({ sourceId: props.sourceId ?? undefined, path: props.path ?? undefined }));
 const sourceName = computed(() => sources.sources.find((source) => source.id === props.sourceId)?.name ?? "—");
 
 interface InfoRow { label: string; value: string; wide?: boolean; wrap?: boolean }

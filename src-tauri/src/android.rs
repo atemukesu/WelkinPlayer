@@ -383,6 +383,37 @@ pub fn media_control_update(json: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Update only the native MediaSession playhead, without rebuilding metadata.
+///
+/// Used on a slow cadence (and immediately after a track loops or is seeked) so
+/// the lock screen / notification position does not drift: the platform
+/// extrapolates position from the last `setPlaybackState`, so a loop that never
+/// reports the reset would keep counting past the track's duration.
+pub fn media_control_position(position_ms: f64, playing: bool) -> Result<(), String> {
+    let java_vm = JAVA_VM
+        .get()
+        .ok_or_else(|| "JNI_OnLoad has not run yet".to_string())?;
+    let mut env = java_vm
+        .attach_current_thread()
+        .map_err(|error| error.to_string())?;
+    // A failed JNI call leaves its Java exception pending. On an already-attached
+    // thread (the Android main thread) the attach guard does not detach, so the
+    // stale exception would poison every later call; clear it defensively.
+    let _ = env.exception_clear();
+    let class = media_bridge_class(&mut env)?;
+    env.call_static_method(
+        class,
+        "updatePosition",
+        "(JZ)V",
+        &[
+            JValue::Long(position_ms.max(0.0) as i64),
+            JValue::Bool(u8::from(playing)),
+        ],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 /// Stop the media-notification service and clear its MediaSession.
 pub fn media_control_stop() -> Result<(), String> {
     let java_vm = JAVA_VM

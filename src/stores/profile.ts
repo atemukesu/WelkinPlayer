@@ -523,7 +523,7 @@ export function tracksForPaths(keys: string[], tracks: Track[]): Track[] {
   for (const track of tracks) {
     if (!track.path) continue;
     byKey.set(trackKey(track) as string, track);
-    const profileKey = profileTrackKeyForTrack(track);
+    const profileKey = profileKeyForTrack(track);
     if (profileKey) byKey.set(profileKey, track);
   }
   return keys.map((key) => byKey.get(key) ?? placeholderTrack(key));
@@ -561,8 +561,17 @@ export function placeholderTrack(key: string): Track {
   };
 }
 
-function profileTrackKeyForTrack(track: Track): string | undefined {
-  if (!track.path) return undefined;
+/**
+ * Normalized key a track is stored under in the profile (favorites, play counts,
+ * recent, playlists). WebDAV sources map to a stable `dav-<hash>` namespace so
+ * the data survives across devices; local sources keep their machine-local UUID.
+ * Use this for any play-count/favorite lookup instead of the device-local
+ * `trackKey`.
+ */
+export function profileKeyForTrack(
+  track: { sourceId?: string; path?: string } | null | undefined,
+): string | undefined {
+  if (!track?.path) return undefined;
   const source = useSourcesStore().sources.find((item) => item.id === track.sourceId);
   return profileTrackKey({ sourceId: track.sourceId, path: track.path, profileSourceId: source ? sourceProfileId(source) : undefined });
 }

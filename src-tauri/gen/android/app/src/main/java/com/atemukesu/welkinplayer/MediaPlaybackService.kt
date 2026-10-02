@@ -101,6 +101,37 @@ class MediaPlaybackService : Service() {
         }
     }
 
+    /**
+     * Correct only the playhead of the running session, without touching the
+     * metadata or the notification. The platform extrapolates position from the
+     * last `setPlaybackState`, so this is how a loop/seek (or the periodic
+     * position tick) resets the reported time.
+     */
+    fun updatePosition(positionMs: Long, playing: Boolean) {
+        try {
+            session?.setPlaybackState(buildPlaybackState(playing, positionMs))
+        } catch (error: Throwable) {
+            // Never let a Java exception cross the JNI boundary.
+        }
+    }
+
+    private fun buildPlaybackState(playing: Boolean, position: Long): PlaybackState {
+        val state = if (playing) PlaybackState.STATE_PLAYING else PlaybackState.STATE_PAUSED
+        val actions = (
+            PlaybackState.ACTION_PLAY or
+                PlaybackState.ACTION_PAUSE or
+                PlaybackState.ACTION_PLAY_PAUSE or
+                PlaybackState.ACTION_STOP or
+                PlaybackState.ACTION_SKIP_TO_NEXT or
+                PlaybackState.ACTION_SKIP_TO_PREVIOUS or
+                PlaybackState.ACTION_SEEK_TO
+            ).toLong()
+        return PlaybackState.Builder()
+            .setActions(actions)
+            .setState(state, position, if (playing) 1f else 0f)
+            .build()
+    }
+
     private fun applySnapshot(json: String) {
         val payload = try {
             JSONObject(json)
@@ -122,22 +153,7 @@ class MediaPlaybackService : Service() {
             .putLong(MediaMetadata.METADATA_KEY_DURATION, duration)
         if (art != null) metadata.putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, art)
         session?.setMetadata(metadata.build())
-
-        val state = if (playing) PlaybackState.STATE_PLAYING else PlaybackState.STATE_PAUSED
-        val actions = (
-            PlaybackState.ACTION_PLAY or
-                PlaybackState.ACTION_PAUSE or
-                PlaybackState.ACTION_PLAY_PAUSE or
-                PlaybackState.ACTION_STOP or
-                PlaybackState.ACTION_SKIP_TO_NEXT or
-                PlaybackState.ACTION_SKIP_TO_PREVIOUS or
-                PlaybackState.ACTION_SEEK_TO
-            ).toLong()
-        val playback = PlaybackState.Builder()
-            .setActions(actions)
-            .setState(state, position, if (playing) 1f else 0f)
-            .build()
-        session?.setPlaybackState(playback)
+        session?.setPlaybackState(buildPlaybackState(playing, position))
 
         val notification = buildNotification(title, artist, playing, art)
         if (playing) {

@@ -4,7 +4,7 @@ import { Activity, CircleCheck, LoaderCircle, Music2, Play, TrendingUp } from "@
 import { useI18n } from "vue-i18n";
 import { usePlayerStore } from "../stores/player";
 import type { Track } from "../stores/player";
-import { useProfileStore } from "../stores/profile";
+import { useProfileStore, profileKeyForTrack } from "../stores/profile";
 import { useCacheStore } from "../stores/cache";
 import { coverPending, initial, pad } from "../lib/format";
 import { trackKey } from "../lib/sources";
@@ -31,11 +31,9 @@ interface RankedTrack {
 const ranked = computed<RankedTrack[]>(() => {
   const counts = profile.profile.playCounts;
   return player.tracks
-    .filter((track) => {
-      const key = trackKey(track);
-      return !!key && (counts[key] ?? 0) > 0;
-    })
-    .map((track) => ({ track, count: counts[trackKey(track) as string] ?? 0 }))
+    .map((track) => ({ track, key: profileKeyForTrack(track) }))
+    .filter((item): item is { track: Track; key: string } => !!item.key && (counts[item.key] ?? 0) > 0)
+    .map((item) => ({ track: item.track, count: counts[item.key] }))
     .sort((a, b) => b.count - a.count);
 });
 const queue = computed(() => ranked.value.flatMap((item) => (item.track.path ? [item.track] : [])));

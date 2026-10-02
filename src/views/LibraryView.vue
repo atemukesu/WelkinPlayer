@@ -5,7 +5,7 @@ import { Activity, AudioLines, Heart, Library, ListMusic, LoaderCircle, Play, Pl
 import { useI18n } from "vue-i18n";
 import { usePlayerStore } from "../stores/player";
 import type { Track } from "../stores/player";
-import { tracksForPaths, useProfileStore } from "../stores/profile";
+import { tracksForPaths, useProfileStore, profileKeyForTrack } from "../stores/profile";
 import { coverPending, initial } from "../lib/format";
 import { trackKey } from "../lib/sources";
 import type { View } from "../lib/app";
@@ -45,11 +45,9 @@ const favoriteTracks = computed(() => tracksForPaths(profile.favorites, player.t
 const playedTracks = computed(() => {
   const counts = profile.profile.playCounts;
   return player.tracks
-    .filter((track) => {
-      const key = trackKey(track);
-      return !!key && (counts[key] ?? 0) > 0;
-    })
-    .map((track) => ({ track, count: counts[trackKey(track) as string] ?? 0 }))
+    .map((track) => ({ track, key: profileKeyForTrack(track) }))
+    .filter((item): item is { track: Track; key: string } => !!item.key && (counts[item.key] ?? 0) > 0)
+    .map((item) => ({ track: item.track, count: counts[item.key] }))
     .sort((a, b) => b.count - a.count);
 });
 const totalPlays = computed(() => playedTracks.value.reduce((sum, item) => sum + item.count, 0));

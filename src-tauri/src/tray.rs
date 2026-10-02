@@ -15,6 +15,7 @@ use tauri::{AppHandle, Manager};
 pub struct CloseToTray(AtomicBool);
 
 impl CloseToTray {
+    #[cfg_attr(not(desktop), allow(dead_code))]
     pub fn get(&self) -> bool {
         self.0.load(Ordering::Relaxed)
     }

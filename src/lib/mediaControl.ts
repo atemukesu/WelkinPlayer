@@ -140,6 +140,18 @@ export function startMediaControl() {
       pushFull,
       { immediate: true },
     );
+
+    // The OS extrapolates the playhead while playing, so a repeat-one loop (or
+    // any seek) would leave the reported time drifting until the next slow tick.
+    // A large jump in the store position means the playhead was reset/moved, so
+    // snap the OS position immediately.
+    watch(
+      () => usePlayerStore().position,
+      (position, previous) => {
+        if (typeof previous !== "number") return;
+        if (Math.abs(position - previous) > 2) pushPosition();
+      },
+    );
   });
 
   void listen<unknown>("media:control", (event) => {
