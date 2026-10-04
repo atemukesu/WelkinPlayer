@@ -244,6 +244,14 @@ jobs:
             --notes-file changelog.md \
             --out latest.json
 
+      - name: Compose release notes (download guide + changelog)
+        run: |
+          node scripts/compose-release-notes.mjs \
+            --dist dist \
+            --tag "${{ github.ref_name }}" \
+            --changelog changelog.md \
+            --out release-notes.md
+
       - name: Create release and upload assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -252,8 +260,8 @@ jobs:
           mapfile -t files < <(find dist -type f)
           files+=(latest.json)
           if gh release view "$tag" >/dev/null 2>&1; then
-            gh release edit "$tag" --title "Welkin $tag" --notes-file changelog.md
+            gh release edit "$tag" --title "Welkin $tag" --notes-file release-notes.md
             gh release upload "$tag" "${files[@]}" --clobber
           else
-            gh release create "$tag" "${files[@]}" --title "Welkin $tag" --notes-file changelog.md --verify-tag
+            gh release create "$tag" "${files[@]}" --title "Welkin $tag" --notes-file release-notes.md --verify-tag
           fi

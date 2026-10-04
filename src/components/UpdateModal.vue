@@ -9,6 +9,7 @@ import { useI18n } from "vue-i18n";
 import { Clock, Download, SkipForward, X } from "@lucide/vue";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { formatBytes, formatSpeed } from "../lib/format";
+import { renderReleaseNotes } from "../lib/markdown";
 import { pushToast } from "../lib/toast";
 import { isAndroid } from "../lib/desktopLyric";
 import { useUpdateStore } from "../stores/update";
@@ -34,6 +35,8 @@ const releaseDate = computed(() => {
   const parsed = new Date(raw);
   return Number.isNaN(parsed.getTime()) ? raw : parsed.toLocaleDateString();
 });
+/** Release notes (Markdown) rendered for the dialog. */
+const notesHtml = computed(() => renderReleaseNotes(update.info?.notes ?? ""));
 
 /** "Update now": install in-app on desktop, or open the APK link on Android. */
 async function updateNow() {
@@ -87,6 +90,61 @@ button {
   opacity: 0;
   transform: translateY(12px) scale(0.97);
 }
+
+.release-notes :deep(h3),
+.release-notes :deep(h4),
+.release-notes :deep(h5),
+.release-notes :deep(h6) {
+  margin: 1em 0 0.35em;
+  color: var(--fg);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.release-notes :deep(h3:first-child),
+.release-notes :deep(h4:first-child),
+.release-notes :deep(h5:first-child),
+.release-notes :deep(h6:first-child) {
+  margin-top: 0;
+}
+
+.release-notes :deep(p) {
+  margin: 0;
+}
+
+.release-notes :deep(p + p) {
+  margin-top: 0.5em;
+}
+
+.release-notes :deep(ul),
+.release-notes :deep(ol) {
+  margin: 0.3em 0 0.6em;
+  padding-left: 1.15em;
+}
+
+.release-notes :deep(ul) {
+  list-style: square;
+}
+
+.release-notes :deep(ol) {
+  list-style: decimal;
+}
+
+.release-notes :deep(li) {
+  margin: 0.2em 0;
+}
+
+.release-notes :deep(strong) {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.release-notes :deep(code) {
+  padding: 0.1em 0.35em;
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+  font-family: var(--font-mono);
+  font-size: 0.95em;
+}
 </style>
 
 <template>
@@ -107,7 +165,7 @@ button {
 
           <div v-if="update.info?.notes" class="mt-4 flex min-h-0 flex-auto flex-col gap-1">
             <span class="shrink-0 text-[11px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.update.notes") }}</span>
-            <pre class="min-h-0 flex-auto overflow-y-auto whitespace-pre-wrap break-words border border-line bg-bg p-3 font-sans text-xs leading-relaxed text-muted">{{ update.info?.notes }}</pre>
+            <div class="release-notes min-h-0 flex-auto overflow-y-auto border border-line bg-bg p-3 text-xs leading-relaxed text-muted" v-html="notesHtml"></div>
           </div>
 
           <div v-if="update.installing" class="mt-5 grid shrink-0 gap-2.5">
