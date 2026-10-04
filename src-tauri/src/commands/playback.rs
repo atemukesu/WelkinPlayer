@@ -3,10 +3,11 @@
 
 //! Playback progress storage.
 //!
-//! Only the last played track and its position need to survive restarts, so it
-//! lives in its own tiny document instead of the (potentially large) profile.
-//! The local copy is written on every tick; the remote copy is written at low
-//! frequency (pause / seek / exit) to keep WebDAV traffic minimal.
+//! The last played track, its position and the surrounding play queue all need
+//! to survive restarts, so they live in their own tiny document instead of the
+//! (potentially large) profile. The local copy is written on every tick; the
+//! remote copy is written at low frequency (pause / seek / exit) to keep WebDAV
+//! traffic minimal.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -22,7 +23,8 @@ const LOCAL_KEY: &str = "playback";
 /// Resume document at the WebDAV collection root (ignored by the audio listing).
 const REMOTE_PATH: &str = "welkin-playback.json";
 /// Maximum resume document size accepted from the server, as a sanity bound.
-const MAX_PLAYBACK_BYTES: usize = 64 * 1024;
+/// The play queue can be long, so this allows a few thousand tracks.
+const MAX_PLAYBACK_BYTES: usize = 1024 * 1024;
 
 /// Persisted resume point.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,6 +37,12 @@ pub struct PlaybackState {
     /// Last modification time (ms since epoch).
     #[serde(default)]
     pub updated_at: i64,
+    /// Track keys of the play queue, in playback order.
+    #[serde(default)]
+    pub queue: Vec<String>,
+    /// Index of the current track within `queue`.
+    #[serde(default)]
+    pub queue_index: i64,
 }
 
 fn now_ms() -> i64 {
@@ -126,17 +134,27 @@ pub async fn load_remote_playback(app: AppHandle) -> Result<Option<PlaybackState
 /// Persist the resume point. The local copy is always written; the remote copy
 /// only when `remote` is true. Remote failures are logged but never surfaced:
 /// a lost progress tick must not interrupt playback.
+///
+/// `queue`/`queue_index` are optional: progress heartbeats omit them so the
+/// stored queue is preserved (and the large list is not resent every tick).
 #[tauri::command]
 pub async fn save_playback(
     app: AppHandle,
     path: String,
     position: f64,
     remote: bool,
+    queue: Option<Vec<String>>,
+    queue_index: Option<i64>,
 ) -> Result<(), AppError> {
+    let previous = local_get(&app);
     let state = PlaybackState {
         path,
         position: position.max(0.0),
         updated_at: now_ms(),
+        queue: queue.unwrap_or_else(|| previous.as_ref().map(|state| state.queue.clone()).unwrap_or_default()),
+        queue_index: queue_index
+            .or_else(|| previous.as_ref().map(|state| state.queue_index))
+            .unwrap_or(0),
     };
 
     local_set(&app, &state)?;

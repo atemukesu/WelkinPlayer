@@ -99,7 +99,6 @@ const editingPlaylist = ref<string | null>(null);
 const editingLyricsTrack = ref<Track | null>(null);
 const editingTrack = ref<Track | null>(null);
 const viewingTrack = ref<Track | null>(null);
-const playbackRestored = ref(false);
 const showQueue = ref(false);
 /** Whether the AMLL full-screen player should be open. */
 const amllActive = computed(() => view.value === "player" && !!player.currentTrack && lyrics.useAmll);
@@ -108,6 +107,10 @@ const amllMounted = ref(false);
 watch(amllActive, (active) => { if (active) amllMounted.value = true; }, { immediate: true });
 let restoringPlayback = false;
 let lastPositionSavedAt = 0;
+/** Once the user starts playback, a late cloud resume point must be ignored. */
+let userTookOver = false;
+/** Signature of the resume point already applied, to avoid redundant re-seeks. */
+let resumeSignature = "";
 /** Local-only safety-net cadence (ms) for periodic progress writes while playing. */
 const POSITION_SAVE_INTERVAL_MS = 30_000;
 
@@ -147,20 +150,38 @@ watch(() => trackKey(player.currentTrack), (key) => { if (booted.value && key &&
 watch(() => player.currentTrack?.id, () => metadata.request(player.currentTrack));
 
 // Resume the last track/position once the playback state and library are ready.
-watch([() => playback.ready, () => player.tracks.length], () => {
-  if (playbackRestored.value || !playback.ready || player.tracks.length === 0) return;
-  playbackRestored.value = true;
-  const stored = playback.path;
-  if (!stored) return;
-  const track = findTrackByKey(stored);
-  if (!track) return;
-  restoringPlayback = true;
-  player.currentTrack = track;
-  player.isPlaying = false;
-  const position = playback.position;
-  if (position > 0) void nextTick(() => seekTo(position));
-  window.setTimeout(() => { restoringPlayback = false; }, 1200);
-});
+// The local copy lands first; the authoritative remote copy may arrive later.
+// Keep accepting it until the user starts playing, then ignore any late reply
+// so it cannot yank playback out from under them.
+watch(
+  [() => playback.ready, () => player.tracks.length, () => playback.path, () => playback.position],
+  () => {
+    if (userTookOver || !playback.ready || player.tracks.length === 0 || player.isPlaying) return;
+    const stored = playback.path;
+    if (!stored) return;
+    const track = findTrackByKey(stored);
+    if (!track) return;
+    const signature = `${stored}|${Math.round(playback.position)}`;
+    if (signature === resumeSignature) return;
+    resumeSignature = signature;
+    restoringPlayback = true;
+    // Prefer the saved play queue so the exact playlist/context resumes; fall
+    // back to just the track when no queue was stored (older state).
+    if (!(playback.queue.length > 0 && player.restoreQueue(playback.queue, playback.queueIndex))) {
+      player.currentTrack = track;
+    } else {
+      const index = player.queue.findIndex((item) => trackKey(item) === stored);
+      if (index >= 0) {
+        player.queueIndex = index;
+        player.currentTrack = player.queue[index];
+      }
+    }
+    player.isPlaying = false;
+    const position = playback.position;
+    if (position > 0) void nextTick(() => seekTo(position));
+    window.setTimeout(() => { restoringPlayback = false; }, 1200);
+  },
+);
 
 /** Resolve a stored playback key to its track. */
 function findTrackByKey(key: string): Track | undefined {
@@ -193,8 +214,22 @@ watch(() => player.position, (position, previous) => {
   savePlaybackPosition();
 });
 watch(() => player.isPlaying, (playing) => {
-  if (!booted.value || restoringPlayback || playing) return;
+  if (playing) {
+    // The user took over before a slow cloud reply landed: keep their state and
+    // make sure a later reply cannot override it.
+    userTookOver = true;
+    playback.lockRemote();
+    return;
+  }
+  if (!booted.value || restoringPlayback) return;
   savePlaybackPosition(true);
+});
+
+// Persist the play queue whenever its contents or current position change, so
+// the playlist a track was started from survives the next launch.
+watch([() => player.queue, () => player.queueIndex], () => {
+  if (!booted.value || restoringPlayback || player.queue.length === 0) return;
+  playback.recordQueue(player.queueKeys(), player.queueIndex);
 });
 
 function readAccent(): Accent { const value = localStorage.getItem("welkin-accent"); return (accents.some((item) => item.id === value) ? value : "amber") as Accent; }

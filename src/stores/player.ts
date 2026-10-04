@@ -272,6 +272,36 @@ export const usePlayerStore = defineStore("player", () => {
       : -1;
   }
 
+  /** Serialize the play queue as stable track keys, for persistence. */
+  function queueKeys(): string[] {
+    return queue.value
+      .map((track) => trackKey(track))
+      .filter((key): key is string => !!key);
+  }
+
+  /**
+   * Rebuild the play queue from persisted keys once the library is available.
+   * Keys that no longer resolve to a track are dropped; the current index is
+   * clamped into range. Returns false when nothing could be restored.
+   */
+  function restoreQueue(keys: string[], index: number): boolean {
+    if (keys.length === 0) return false;
+    const byKey = new Map<string, Track>();
+    for (const track of tracks.value) {
+      const key = trackKey(track);
+      if (key && !byKey.has(key)) byKey.set(key, track);
+    }
+    const restored = keys
+      .map((key) => byKey.get(key))
+      .filter((track): track is Track => !!track);
+    if (restored.length === 0) return false;
+    queue.value = restored;
+    baseQueue.value = [...restored];
+    queueIndex.value = index >= 0 && index < restored.length ? index : 0;
+    currentTrack.value = restored[queueIndex.value];
+    return true;
+  }
+
   /** Merge a partial update into one track (metadata / cover arrive later). */
   function updateTrack(id: number, patch: Partial<Track>) {
     const track = tracks.value.find((item) => item.id === id);
@@ -389,6 +419,8 @@ export const usePlayerStore = defineStore("player", () => {
     toggleShuffle,
     cycleRepeat,
     setTracks,
+    queueKeys,
+    restoreQueue,
     updateTrack,
     updateTracks,
     togglePlayback,
