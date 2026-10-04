@@ -441,22 +441,46 @@ impl SmartCache {
                 state = guard;
                 continue;
             }
-            // Stop once the budget is full: the queue is rank-ordered, so the
-            // tracks already cached are the most valuable ones.
+            // Budget / admission. The queue is rank-ordered, so the head is the
+            // best remaining candidate. Admit it only if it actually fits:
+            // evict strictly lower-ranked cached tracks to make room, otherwise
+            // skip it. Using the known file size avoids downloading a track and
+            // then immediately evicting it again (which made the cache size
+            // oscillate up and down).
             let limit = self.limit_bytes.load(Ordering::Relaxed);
             if limit > 0 && !pinned {
-                // Pinned tracks are an explicit user choice and are excluded
-                // from the budget, so they never crowd out automatic caching.
-                let cached: u64 = state
-                    .entries
-                    .values()
-                    .filter(|entry| entry.complete && !entry.pinned)
-                    .map(|entry| file_len(&entry.file))
-                    .sum();
-                if cached >= limit {
-                    let (guard, _) = self.cv.wait_timeout(state, IDLE_WAIT).unwrap();
-                    state = guard;
-                    continue;
+                let want_freq = state.entries.get(&key).map(|entry| entry.freq).unwrap_or(0);
+                let size = state.entries.get(&key).and_then(|entry| entry.size);
+                match size {
+                    Some(size) => {
+                        let mut cached = Self::automatic_total(&state);
+                        while cached.saturating_add(size) > limit {
+                            let Some(victim) = Self::lowest_evictable(&state, want_freq) else { break };
+                            Self::evict_entry(&mut state, &victim);
+                            cached = Self::automatic_total(&state);
+                        }
+                        if cached.saturating_add(size) > limit {
+                            // Cannot fit without displacing higher-ranked tracks.
+                            state.queue.remove(0);
+                            continue;
+                        }
+                    }
+                    None => {
+                        // Size unknown: make sure there is at least some room for
+                        // a higher-ranked track, then download once to learn it.
+                        if Self::automatic_total(&state) >= limit {
+                            match Self::lowest_evictable(&state, want_freq) {
+                                Some(victim) => {
+                                    Self::evict_entry(&mut state, &victim);
+                                    continue;
+                                }
+                                None => {
+                                    state.queue.remove(0);
+                                    continue;
+                                }
+                            }
+                        }
+                    }
                 }
             }
             let Some(entry) = state.entries.get_mut(&key) else {
@@ -573,6 +597,49 @@ impl SmartCache {
         self.maybe_evict();
     }
 
+    /// Total bytes occupied by complete, non-pinned tracks (the budget usage).
+    fn automatic_total(state: &State) -> u64 {
+        state
+            .entries
+            .values()
+            .filter(|entry| entry.complete && !entry.pinned)
+            .map(|entry| file_len(&entry.file))
+            .sum()
+    }
+
+    /// The least-played complete, non-pinned entry ranked below `want_freq`.
+    fn lowest_evictable(state: &State, want_freq: u64) -> Option<String> {
+        state
+            .entries
+            .values()
+            .filter(|entry| entry.complete && !entry.pinned)
+            .min_by(|a, b| {
+                a.freq
+                    .cmp(&b.freq)
+                    .then_with(|| a.last_used.cmp(&b.last_used))
+            })
+            .filter(|entry| entry.freq < want_freq)
+            .map(|entry| entry.key.clone())
+    }
+
+    /// Delete a non-pinned track's file and mark its entry incomplete, keeping
+    /// the (now known) size so it is skipped instead of re-downloaded. This is
+    /// what stops the cache size from oscillating: a track that cannot fit is
+    /// not fetched again just to be evicted again.
+    fn evict_entry(state: &mut State, key: &str) {
+        let Some(entry) = state.entries.get_mut(key) else { return };
+        if entry.pinned {
+            return;
+        }
+        let size = entry.size.unwrap_or_else(|| file_len(&entry.file));
+        entry.size = Some(size);
+        entry.complete = false;
+        entry.written = 0;
+        entry.last_used = 0;
+        let _ = std::fs::remove_file(&entry.file);
+        log::debug!("smart cache evicted {key} ({size} bytes)");
+    }
+
     /// Evict the least-played non-pinned cached tracks until under budget.
     fn maybe_evict(&self) {
         let limit = self.limit_bytes.load(Ordering::Relaxed);
@@ -580,37 +647,17 @@ impl SmartCache {
             return;
         }
         let mut state = self.state.lock().unwrap();
-        // Pinned tracks are excluded: they are never evicted and do not consume
-        // the automatic caching budget.
-        let mut total: u64 = state
-            .entries
-            .values()
-            .filter(|entry| entry.complete && !entry.pinned)
-            .map(|entry| file_len(&entry.file))
-            .sum();
-        if total <= limit {
-            return;
+        let mut total = Self::automatic_total(&state);
+        while total > limit {
+            let Some(victim) = Self::lowest_evictable_all(&state) else { break };
+            Self::evict_entry(&mut state, &victim);
+            total = Self::automatic_total(&state);
         }
-        loop {
-            if total <= limit {
-                break;
-            }
-            let victim = state
-                .entries
-                .values()
-                .filter(|entry| entry.complete && !entry.pinned)
-                .min_by(|a, b| {
-                    a.freq
-                        .cmp(&b.freq)
-                        .then_with(|| a.last_used.cmp(&b.last_used))
-                })
-                .map(|entry| entry.key.clone());
-            let Some(victim) = victim else { break };
-            if let Some(entry) = state.entries.remove(&victim) {
-                total = total.saturating_sub(file_len(&entry.file));
-                let _ = std::fs::remove_file(&entry.file);
-            }
-        }
+    }
+
+    /// The least-played complete, non-pinned entry, regardless of rank.
+    fn lowest_evictable_all(state: &State) -> Option<String> {
+        Self::lowest_evictable(state, u64::MAX)
     }
 
     /// Write the index so pins and cached keys survive a restart.
