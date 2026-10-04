@@ -53,7 +53,7 @@ function classify(name) {
   if (lower.endsWith(".msi")) return { group: "Windows", rank: 1, hint: "MSI 安装包，适合批量部署" };
   if (lower.endsWith(".dmg")) return { group: "macOS", rank: 0, hint: macHint(name) };
   if (lower.endsWith(".app.tar.gz")) return { group: "macOS", rank: 2, hint: "自动更新用的应用包，无需手动下载" };
-  if (name.endsWith(".AppImage")) return { group: "Linux", rank: 0, hint: "免安装，赋予可执行权限后直接运行" };
+  if (lower.endsWith(".appimage")) return { group: "Linux", rank: 0, hint: "免安装，赋予可执行权限后直接运行" };
   if (lower.endsWith(".deb")) return { group: "Linux", rank: 1, hint: "Debian / Ubuntu 等" };
   if (lower.endsWith(".rpm")) return { group: "Linux", rank: 2, hint: "Fedora / RHEL / openSUSE 等" };
   if (lower.endsWith(".apk")) {
