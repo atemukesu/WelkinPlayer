@@ -238,7 +238,7 @@ impl StreamCache {
             // A real request clears the short preload override; a preload sets it.
             state.lead_override = lead;
             entry.cv.notify_all();
-            if state.complete && state.total.map_or(false, |total| want_start < total) {
+            if state.complete && state.total.is_some_and(|total| want_start < total) {
                 return;
             }
             // A downloader that stopped advancing is presumed hung; abandon it
@@ -456,13 +456,10 @@ impl Read for CacheReader {
         loop {
             let state = self.entry.state.lock().unwrap();
             if state.generation != self.generation {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "stream replaced",
-                ));
+                return Err(std::io::Error::other("stream replaced"));
             }
             if let Some((_, message)) = &state.failed {
-                return Err(std::io::Error::new(std::io::ErrorKind::Other, message.clone()));
+                return Err(std::io::Error::other(message.clone()));
             }
             let available = state.seg_end;
             if self.offset < available {

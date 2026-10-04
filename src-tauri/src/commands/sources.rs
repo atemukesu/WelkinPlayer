@@ -25,7 +25,7 @@ pub async fn pick_local_folder(app: AppHandle) -> Result<Option<String>, AppErro
     #[cfg(desktop)]
     {
         let folder = app.dialog().file().blocking_pick_folder();
-        return match folder {
+        match folder {
             Some(path) => {
                 let path = path
                     .into_path()
@@ -33,7 +33,7 @@ pub async fn pick_local_folder(app: AppHandle) -> Result<Option<String>, AppErro
                 Ok(Some(path.to_string_lossy().to_string()))
             }
             None => Ok(None),
-        };
+        }
     }
     #[cfg(target_os = "android")]
     {

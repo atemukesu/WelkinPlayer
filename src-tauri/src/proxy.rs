@@ -203,7 +203,7 @@ fn serve_cover(request: Request, app: &AppHandle, hash: &str) {
     };
     let mut response = Response::from_data(bytes);
     if let Ok(header) = Header::from_bytes("Content-Type", "image/jpeg") {
-        let _ = response.add_header(header);
+        response.add_header(header);
     }
     let _ = request.respond(response);
 }

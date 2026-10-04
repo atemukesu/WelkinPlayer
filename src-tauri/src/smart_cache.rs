@@ -17,7 +17,7 @@
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -494,6 +494,7 @@ impl SmartCache {
         let mut file = OpenOptions::new()
             .create(true)
             .write(true)
+            .truncate(false)
             .open(&file_path)
             .map_err(|error| error.to_string())?;
         file.seek(SeekFrom::Start(offset))
@@ -658,7 +659,7 @@ struct IndexRecord {
 }
 
 /// Load the persisted index, keeping only entries whose file still exists.
-fn load_index(dir: &PathBuf) -> HashMap<String, Entry> {
+fn load_index(dir: &Path) -> HashMap<String, Entry> {
     let mut entries = HashMap::new();
     let Ok(bytes) = std::fs::read(dir.join(INDEX_FILE)) else {
         return entries;

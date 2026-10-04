@@ -115,10 +115,7 @@ pub fn init(app: &AppHandle) {
 fn platform_hwnd(app: &AppHandle) -> Option<*mut std::ffi::c_void> {
     use tauri::Manager;
     let window = app.get_webview_window("main")?;
-    window
-        .hwnd()
-        .ok()
-        .map(|hwnd| hwnd.0 as *mut std::ffi::c_void)
+    window.hwnd().ok().map(|hwnd| hwnd.0)
 }
 
 #[cfg(all(desktop, not(target_os = "windows")))]
