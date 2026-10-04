@@ -19,6 +19,7 @@ import { useSourcesStore } from "../stores/sources";
 import { useLicenseStore } from "../stores/license";
 import { useWindowBehaviorStore } from "../stores/windowBehavior";
 import { useUpdateStore } from "../stores/update";
+import { useCacheStore } from "../stores/cache";
 import { isDesktop } from "../lib/desktopLyric";
 import LyricsSettings from "../components/LyricsSettings.vue";
 import DesktopLyricSettings from "../components/DesktopLyricSettings.vue";
@@ -38,6 +39,7 @@ const sources = useSourcesStore();
 const license = useLicenseStore();
 const windowBehavior = useWindowBehaviorStore();
 const update = useUpdateStore();
+const cache = useCacheStore();
 /** The close-to-tray preference is desktop-only; Android never shows it. */
 const desktop = isDesktop();
 /** Edition label shown in the About card's edition dial. */
@@ -49,23 +51,68 @@ const updateSizeText = computed(() =>
 /** Current update transfer rate, or null while unknown. */
 const updateSpeedText = computed(() => (update.speed && update.speed > 0 ? formatSpeed(update.speed) : null));
 const cacheDir = ref("");
-const cacheLimit = ref(1024);
-const cacheUsed = ref(0);
-const cacheLimitBytes = ref(1024 * 1024 * 1024);
+const smartLimit = ref(1024);
+const smartEnabled = ref(true);
+const streamEnabled = ref(true);
+const smartBytes = ref(0);
+const smartLimitBytes = ref(1024 * 1024 * 1024);
+const streamBytes = ref(0);
+const streamLimitBytes = ref(256 * 1024 * 1024);
 /** Manually pinned tracks; kept outside the automatic budget. */
 const cachePinned = ref(0);
-const cachePercent = computed(() => (cacheLimitBytes.value > 0 ? Math.min(100, (cacheUsed.value / cacheLimitBytes.value) * 100) : 0));
+const clearingCache = ref(false);
+const smartPercent = computed(() => (smartLimitBytes.value > 0 ? Math.min(100, (smartBytes.value / smartLimitBytes.value) * 100) : 0));
+const streamPercent = computed(() => (streamLimitBytes.value > 0 ? Math.min(100, (streamBytes.value / streamLimitBytes.value) * 100) : 0));
 let usageTimer = 0;
 async function refreshUsage() {
   try {
-    const usage = await invoke<{ usedBytes: number; limitBytes: number; pinnedBytes: number }>("cache_usage");
-    cacheUsed.value = usage.usedBytes;
-    cacheLimitBytes.value = usage.limitBytes;
+    const usage = await invoke<{ streamBytes: number; streamLimitBytes: number; smartBytes: number; smartLimitBytes: number; pinnedBytes: number }>("cache_usage");
+    streamBytes.value = usage.streamBytes;
+    streamLimitBytes.value = usage.streamLimitBytes;
+    smartBytes.value = usage.smartBytes;
+    smartLimitBytes.value = usage.smartLimitBytes;
     cachePinned.value = usage.pinnedBytes;
   } catch { /* ignore */ }
 }
 async function saveCacheDir() { try { cacheDir.value = await invoke<string>("set_cache_dir", { dir: cacheDir.value }); pushToast("success", t("settings.cache.saved")); } catch (error) { emit("friendlyError", error); } }
-async function saveCacheLimit() { try { cacheLimit.value = await invoke<number>("set_stream_cache_limit", { limitMb: cacheLimit.value }); pushToast("success", t("settings.cache.limitSaved")); void refreshUsage(); } catch (error) { emit("friendlyError", error); } }
+async function saveCacheLimit() { try { smartLimit.value = await invoke<number>("set_smart_cache_limit", { limitMb: smartLimit.value }); pushToast("success", t("settings.cache.limitSaved")); void refreshUsage(); } catch (error) { emit("friendlyError", error); } }
+/** Persist the smart-cache toggle; revert the switch if the backend rejects it. */
+async function toggleSmartEnabled() {
+  const next = !smartEnabled.value;
+  smartEnabled.value = next;
+  try {
+    smartEnabled.value = await invoke<boolean>("set_smart_cache_enabled", { enabled: next });
+    void cache.refresh();
+  } catch (error) {
+    smartEnabled.value = !next;
+    emit("friendlyError", error);
+  }
+}
+/** Persist the read-ahead buffer toggle; revert the switch on failure. */
+async function toggleStreamEnabled() {
+  const next = !streamEnabled.value;
+  streamEnabled.value = next;
+  try {
+    streamEnabled.value = await invoke<boolean>("set_stream_cache_enabled", { enabled: next });
+  } catch (error) {
+    streamEnabled.value = !next;
+    emit("friendlyError", error);
+  }
+}
+/** Clear the automatic caches; pinned tracks are kept. */
+async function clearCache() {
+  clearingCache.value = true;
+  try {
+    await invoke("clear_cache");
+    pushToast("success", t("settings.cache.cleared"));
+    void cache.refresh();
+    void refreshUsage();
+  } catch (error) {
+    emit("friendlyError", error);
+  } finally {
+    clearingCache.value = false;
+  }
+}
 /** Open an external link, falling back to a browser tab and finally a toast. */
 async function openLink(url: string) {
   try {
@@ -111,7 +158,13 @@ async function checkUpdate() {
 }
 onMounted(() => {
   void invoke<string>("get_cache_dir").then((dir) => (cacheDir.value = dir)).catch(() => {});
-  void invoke<number>("get_stream_cache_limit").then((limit) => (cacheLimit.value = limit)).catch(() => {});
+  void invoke<{ smartEnabled: boolean; smartLimitMb: number; streamEnabled: boolean }>("get_cache_config")
+    .then((config) => {
+      smartEnabled.value = config.smartEnabled;
+      streamEnabled.value = config.streamEnabled;
+      smartLimit.value = config.smartLimitMb;
+    })
+    .catch(() => {});
   void refreshUsage();
   usageTimer = window.setInterval(() => void refreshUsage(), 3000);
 });
@@ -330,16 +383,40 @@ button.text-dim:hover:not(:disabled) {
 
       <section class="ak-frame grid gap-6 border border-line bg-surface p-6 lg:grid-cols-[1fr_1.3fr]">
         <div><h2 class="text-sm font-bold uppercase tracking-[0.2em]">{{ t("settings.cache.title") }}</h2><p class="mt-2 text-sm text-muted">{{ t("settings.cache.desc") }}</p></div>
-        <div class="grid gap-4">
+        <div class="grid gap-5">
           <label class="grid gap-2 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.cache.dir") }}<input v-model="cacheDir" class="h-10 border border-line bg-bg px-3 text-sm font-normal normal-case tracking-normal text-fg outline-none focus:border-accent" /></label>
-          <label class="grid gap-2 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.cache.limit") }}<input v-model.number="cacheLimit" type="number" min="128" step="128" class="h-10 border border-line bg-bg px-3 text-sm font-normal normal-case tracking-normal text-fg outline-none focus:border-accent" /></label>
-          <p class="text-[11px] leading-relaxed text-dim">{{ t("settings.cache.limitDesc") }}</p>
-          <div class="grid gap-2">
-            <div class="flex items-baseline justify-between text-[11px] font-semibold uppercase tracking-[0.2em] text-dim"><span>{{ t("settings.cache.used") }}</span><span class="tabular-nums">{{ formatBytes(cacheUsed) }} / {{ formatBytes(cacheLimitBytes) }}</span></div>
-            <span class="block h-2 w-full overflow-hidden bg-fg/10"><span class="block h-full bg-accent transition-[width]" :style="{ width: `${cachePercent}%` }"></span></span>
-            <div class="flex items-baseline justify-between text-[11px] font-semibold uppercase tracking-[0.2em] text-dim"><span>{{ t("settings.cache.pinned") }}</span><span class="tabular-nums">{{ formatBytes(cachePinned) }}</span></div>
+
+          <div class="grid gap-4 border border-line bg-bg p-4">
+            <div class="flex items-start justify-between gap-4">
+              <div class="min-w-0"><p class="text-[13px] font-semibold uppercase tracking-[0.2em] text-fg">{{ t("settings.cache.smartTitle") }}</p><p class="mt-1 text-[11px] leading-relaxed text-dim">{{ t("settings.cache.smartDesc") }}</p></div>
+              <button type="button" role="switch" :aria-checked="smartEnabled" :aria-label="t('settings.cache.smartEnabled')" class="relative mt-0.5 h-6 w-11 shrink-0 rounded-full border border-line transition-colors" :class="smartEnabled ? 'bg-accent' : 'bg-fg/10'" @click="toggleSmartEnabled"><span class="absolute top-1/2 h-4 w-4 -translate-y-1/2 rounded-full bg-surface transition-[left]" :class="smartEnabled ? 'left-6' : 'left-1'"></span></button>
+            </div>
+            <label class="grid gap-2 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.cache.smartLimit") }}<input v-model.number="smartLimit" type="number" min="128" step="128" class="h-10 border border-line bg-bg px-3 text-sm font-normal normal-case tracking-normal text-fg outline-none focus:border-accent" /></label>
+            <div class="grid gap-2">
+              <div class="flex items-baseline justify-between text-[11px] font-semibold uppercase tracking-[0.2em] text-dim"><span>{{ t("settings.cache.smartUsed") }}</span><span class="tabular-nums">{{ formatBytes(smartBytes) }} / {{ formatBytes(smartLimitBytes) }}</span></div>
+              <span class="block h-2 w-full overflow-hidden bg-fg/10"><span class="block h-full bg-accent transition-[width]" :style="{ width: `${smartPercent}%` }"></span></span>
+            </div>
+            <div class="flex justify-end"><button type="button" class="ak-clip-tr h-10 border border-line px-5 text-[13px] font-semibold uppercase tracking-[0.25em]" @click="saveCacheLimit">{{ t("settings.cache.limitSave") }}</button></div>
           </div>
-          <div class="flex justify-end gap-2"><button type="button" class="ak-clip-tr h-10 border border-line px-5 text-[13px] font-semibold uppercase tracking-[0.25em]" @click="saveCacheDir">{{ t("settings.cache.save") }}</button><button type="button" class="ak-clip-tr h-10 border border-line px-5 text-[13px] font-semibold uppercase tracking-[0.25em]" @click="saveCacheLimit">{{ t("settings.cache.limitSave") }}</button></div>
+
+          <div class="grid gap-4 border border-line bg-bg p-4">
+            <div class="flex items-start justify-between gap-4">
+              <div class="min-w-0"><p class="text-[13px] font-semibold uppercase tracking-[0.2em] text-fg">{{ t("settings.cache.streamTitle") }}</p><p class="mt-1 text-[11px] leading-relaxed text-dim">{{ t("settings.cache.streamDesc") }}</p></div>
+              <button type="button" role="switch" :aria-checked="streamEnabled" :aria-label="t('settings.cache.streamEnabled')" class="relative mt-0.5 h-6 w-11 shrink-0 rounded-full border border-line transition-colors" :class="streamEnabled ? 'bg-accent' : 'bg-fg/10'" @click="toggleStreamEnabled"><span class="absolute top-1/2 h-4 w-4 -translate-y-1/2 rounded-full bg-surface transition-[left]" :class="streamEnabled ? 'left-6' : 'left-1'"></span></button>
+            </div>
+            <div class="grid gap-2">
+              <div class="flex items-baseline justify-between text-[11px] font-semibold uppercase tracking-[0.2em] text-dim"><span>{{ t("settings.cache.streamUsed") }}</span><span class="tabular-nums">{{ formatBytes(streamBytes) }} / {{ formatBytes(streamLimitBytes) }}</span></div>
+              <span class="block h-2 w-full overflow-hidden bg-fg/10"><span class="block h-full bg-accent transition-[width]" :style="{ width: `${streamPercent}%` }"></span></span>
+            </div>
+          </div>
+
+          <div class="flex items-baseline justify-between text-[11px] font-semibold uppercase tracking-[0.2em] text-dim"><span>{{ t("settings.cache.pinned") }}</span><span class="tabular-nums">{{ formatBytes(cachePinned) }}</span></div>
+
+          <p class="text-[11px] leading-relaxed text-dim">{{ t("settings.cache.clearHint") }}</p>
+          <div class="flex justify-between gap-2">
+            <button type="button" class="ak-clip-tr h-10 border border-line px-5 text-[13px] font-semibold uppercase tracking-[0.25em]" @click="saveCacheDir">{{ t("settings.cache.save") }}</button>
+            <button type="button" class="ak-clip-tr h-10 border border-rose-500/60 px-5 text-[13px] font-semibold uppercase tracking-[0.25em] text-rose-500 disabled:opacity-60" :disabled="clearingCache" @click="clearCache">{{ t(clearingCache ? "settings.cache.clearing" : "settings.cache.clear") }}</button>
+          </div>
         </div>
       </section>
 

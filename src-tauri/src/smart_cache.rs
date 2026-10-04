@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -83,6 +83,9 @@ pub struct SmartCache {
     dir: PathBuf,
     client: Client,
     limit_bytes: AtomicU64,
+    /// Whether automatic (non-pinned) caching is active. Manual pins ignore
+    /// this: they are explicit user actions and keep downloading.
+    enabled: AtomicBool,
     state: Mutex<State>,
     cv: Condvar,
 }
@@ -123,6 +126,7 @@ impl SmartCache {
             dir,
             client,
             limit_bytes: AtomicU64::new(limit_bytes),
+            enabled: AtomicBool::new(true),
             state,
             cv: Condvar::new(),
         });
@@ -303,6 +307,13 @@ impl SmartCache {
         self.limit_bytes.load(Ordering::Relaxed)
     }
 
+    /// Turn automatic smart caching on or off. Manual pins ignore this and keep
+    /// downloading; only the automatic candidate set is paused.
+    pub fn set_enabled(&self, enabled: bool) {
+        self.enabled.store(enabled, Ordering::Relaxed);
+        self.cv.notify_all();
+    }
+
     /// Whether a key's whole file is already cached (no side effects).
     pub fn is_complete(&self, key: &str) -> bool {
         self.state
@@ -419,6 +430,12 @@ impl SmartCache {
                 .get(&key)
                 .map(|entry| entry.pinned)
                 .unwrap_or(false);
+            // Automatic caching is paused when disabled; manual pins continue.
+            if !pinned && !self.enabled.load(Ordering::Relaxed) {
+                let (guard, _) = self.cv.wait_timeout(state, IDLE_WAIT).unwrap();
+                state = guard;
+                continue;
+            }
             if !crate::network::is_unmetered() && !pinned {
                 let (guard, _) = self.cv.wait_timeout(state, IDLE_WAIT).unwrap();
                 state = guard;

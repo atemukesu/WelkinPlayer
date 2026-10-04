@@ -14,13 +14,15 @@
 //! Playback still starts on the first byte: a request is served from a blocking
 //! reader that yields bytes as the downloader produces them. A seek past the
 //! cached region rebases the downloader onto the new offset. Cache entries are
-//! evicted least-recently-used once the user-configured disk budget is exceeded.
+//! evicted least-recently-used once the fixed read-ahead budget is exceeded.
+//! The buffer can be disabled entirely, in which case the proxy streams straight
+//! from the source.
 
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -41,12 +43,20 @@ const READ_CHUNK: usize = 64 * 1024;
 /// How long the proxy waits for the first upstream response headers.
 pub const TOTAL_WAIT: Duration = Duration::from_secs(20);
 
-/// `settings.json` key holding the stream cache budget in mebibytes.
-pub const CACHE_LIMIT_KEY: &str = "stream.cacheLimitMb";
-/// Default budget when the user has not chosen one.
-pub const DEFAULT_CACHE_LIMIT_MB: u64 = 1024;
-/// The read-ahead tier may take at most this share of the total budget.
-pub const HOT_BUDGET_DIVISOR: u64 = 4;
+/// `settings.json` key holding the smart cache budget in mebibytes.
+pub const SMART_LIMIT_KEY: &str = "cache.smartLimitMb";
+/// `settings.json` key toggling the automatic (whole-track) cache.
+pub const SMART_ENABLED_KEY: &str = "cache.smartEnabled";
+/// `settings.json` key toggling the read-ahead buffer used while streaming.
+pub const STREAM_ENABLED_KEY: &str = "cache.streamEnabled";
+/// Legacy key from before the smart/stream split; read as a fallback only.
+const LEGACY_LIMIT_KEY: &str = "stream.cacheLimitMb";
+/// Default smart cache budget when the user has not chosen one.
+pub const DEFAULT_SMART_LIMIT_MB: u64 = 1024;
+/// Fixed read-ahead budget. This buffer is needed for smooth playback and seek,
+/// so it is independent of the user's smart-cache limit and never spends the
+/// smart-cache budget.
+pub const STREAM_BUDGET_MB: u64 = 256;
 
 /// Outcome of waiting for a track's total size.
 pub enum TotalState {
@@ -124,6 +134,9 @@ pub struct StreamCache {
     dir: PathBuf,
     client: Client,
     limit_bytes: AtomicU64,
+    /// Whether the read-ahead buffer is in use. When off, the proxy streams
+    /// straight from the source instead of caching bytes locally.
+    enabled: AtomicBool,
     entries: Mutex<HashMap<String, Arc<Entry>>>,
     /// Least-recently-used key order (oldest first) for eviction.
     order: Mutex<Vec<String>>,
@@ -147,10 +160,22 @@ impl StreamCache {
             dir,
             client,
             limit_bytes: AtomicU64::new(limit_bytes),
+            enabled: AtomicBool::new(true),
             entries: Mutex::new(HashMap::new()),
             order: Mutex::new(Vec::new()),
             active: Mutex::new(None),
         })
+    }
+
+    /// Whether the read-ahead buffer is enabled.
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.load(Ordering::Relaxed)
+    }
+
+    /// Turn the read-ahead buffer on or off. Cached bytes are left on disk;
+    /// [`StreamCache::clear`] reclaims them.
+    pub fn set_enabled(&self, enabled: bool) {
+        self.enabled.store(enabled, Ordering::Relaxed);
     }
 
     /// Mark the track currently being played so it resists eviction.
@@ -171,12 +196,6 @@ impl StreamCache {
     /// Configured budget in bytes.
     pub fn limit_bytes(&self) -> u64 {
         self.limit_bytes.load(Ordering::Relaxed)
-    }
-
-    /// Update the budget and evict down to it.
-    pub fn set_limit_bytes(&self, bytes: u64) {
-        self.limit_bytes.store(bytes, Ordering::Relaxed);
-        self.maybe_evict();
     }
 
     /// Look up or create the entry for a `(source, path)` pair.
@@ -350,16 +369,25 @@ impl StreamCache {
         }
     }
 
-    /// Drop every cached track.
+    /// Drop every cached track except the one playing right now, so a clear
+    /// during playback does not cut the active stream.
     pub fn clear(&self) {
-        let drained: Vec<Arc<Entry>> = self
-            .entries
-            .lock()
-            .unwrap()
-            .drain()
-            .map(|(_, entry)| entry)
-            .collect();
-        for entry in drained {
+        let active = self.active.lock().unwrap().clone();
+        let drained: Vec<(String, Arc<Entry>)> = {
+            let mut entries = self.entries.lock().unwrap();
+            let keys: Vec<String> = entries.keys().cloned().collect();
+            let mut drained = Vec::new();
+            for key in keys {
+                if active.as_deref() == Some(key.as_str()) {
+                    continue;
+                }
+                if let Some(entry) = entries.remove(&key) {
+                    drained.push((key, entry));
+                }
+            }
+            drained
+        };
+        for (_, entry) in &drained {
             {
                 let mut state = entry.state.lock().unwrap();
                 state.generation = state.generation.wrapping_add(1);
@@ -367,7 +395,10 @@ impl StreamCache {
             }
             let _ = std::fs::remove_file(&entry.path);
         }
-        self.order.lock().unwrap().clear();
+        self.order
+            .lock()
+            .unwrap()
+            .retain(|key| active.as_deref() == Some(key.as_str()));
     }
 
     /// Evict least-recently-used, non-downloading entries until under budget.
@@ -686,29 +717,58 @@ fn file_len(path: &std::path::Path) -> u64 {
     std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0)
 }
 
-/// Split the total cache budget into `(read-ahead, persistent)` byte budgets.
-/// The transient read-ahead tier takes at most a quarter (and never more than
-/// the total); the rest is the persistent smart tier.
-pub fn split_budget(total_bytes: u64) -> (u64, u64) {
-    let hot = (total_bytes / HOT_BUDGET_DIVISOR)
-        .max(64 * 1024 * 1024)
-        .min(total_bytes);
-    (hot, total_bytes.saturating_sub(hot))
+/// Read the configured smart cache budget (MiB), honouring the legacy key from
+/// before the smart/stream split.
+pub fn read_smart_limit_mb(app: &AppHandle) -> u64 {
+    let Ok(store) = app.store(SETTINGS_FILE) else {
+        return DEFAULT_SMART_LIMIT_MB;
+    };
+    store
+        .get(SMART_LIMIT_KEY)
+        .and_then(|value| value.as_u64())
+        .or_else(|| store.get(LEGACY_LIMIT_KEY).and_then(|value| value.as_u64()))
+        .unwrap_or(DEFAULT_SMART_LIMIT_MB)
 }
 
-/// Read the configured stream cache budget (MiB).
-pub fn read_cache_limit_mb(app: &AppHandle) -> u64 {
+/// Persist the smart cache budget (MiB).
+pub fn write_smart_limit_mb(app: &AppHandle, limit_mb: u64) -> Result<(), String> {
+    let store = app.store(SETTINGS_FILE).map_err(|error| error.to_string())?;
+    store.set(SMART_LIMIT_KEY, serde_json::json!(limit_mb));
+    store.save().map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+/// Whether the automatic smart cache is enabled (defaults to on).
+pub fn read_smart_enabled(app: &AppHandle) -> bool {
+    read_bool(app, SMART_ENABLED_KEY, true)
+}
+
+/// Persist the smart cache enabled flag.
+pub fn write_smart_enabled(app: &AppHandle, enabled: bool) -> Result<(), String> {
+    write_bool(app, SMART_ENABLED_KEY, enabled)
+}
+
+/// Whether the read-ahead stream buffer is enabled (defaults to on).
+pub fn read_stream_enabled(app: &AppHandle) -> bool {
+    read_bool(app, STREAM_ENABLED_KEY, true)
+}
+
+/// Persist the stream buffer enabled flag.
+pub fn write_stream_enabled(app: &AppHandle, enabled: bool) -> Result<(), String> {
+    write_bool(app, STREAM_ENABLED_KEY, enabled)
+}
+
+fn read_bool(app: &AppHandle, key: &str, fallback: bool) -> bool {
     app.store(SETTINGS_FILE)
         .ok()
-        .and_then(|store| store.get(CACHE_LIMIT_KEY))
-        .and_then(|value| value.as_u64())
-        .unwrap_or(DEFAULT_CACHE_LIMIT_MB)
+        .and_then(|store| store.get(key))
+        .and_then(|value| value.as_bool())
+        .unwrap_or(fallback)
 }
 
-/// Persist the stream cache budget (MiB).
-pub fn write_cache_limit_mb(app: &AppHandle, limit_mb: u64) -> Result<(), String> {
+fn write_bool(app: &AppHandle, key: &str, value: bool) -> Result<(), String> {
     let store = app.store(SETTINGS_FILE).map_err(|error| error.to_string())?;
-    store.set(CACHE_LIMIT_KEY, serde_json::json!(limit_mb));
+    store.set(key, serde_json::json!(value));
     store.save().map_err(|error| error.to_string())?;
     Ok(())
 }

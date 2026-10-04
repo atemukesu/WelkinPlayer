@@ -27,7 +27,8 @@ use crate::dav::resolve_under_base;
 use crate::sources::find_source;
 use crate::smart_cache::{SmartCache, SmartCandidate};
 use crate::stream_cache::{
-    read_cache_limit_mb, split_budget, write_cache_limit_mb, StreamCache, TotalState,
+    read_smart_enabled, read_smart_limit_mb, read_stream_enabled, write_smart_enabled,
+    write_smart_limit_mb, write_stream_enabled, StreamCache, TotalState, STREAM_BUDGET_MB,
 };
 
 /// Shared state handed to the frontend via the `stream_endpoint` command.
@@ -55,10 +56,14 @@ pub fn start(app: AppHandle) -> Result<StreamProxy, String> {
         .map(|addr| addr.port())
         .ok_or_else(|| "could not determine proxy port".to_string())?;
     let token = generate_token();
-    let total_bytes = read_cache_limit_mb(&app).saturating_mul(1024 * 1024);
-    let (hot_bytes, smart_bytes) = split_budget(total_bytes);
+    // The read-ahead buffer has its own fixed budget: it is required for smooth
+    // streaming and never eats into the user's smart-cache limit.
+    let hot_bytes = STREAM_BUDGET_MB.saturating_mul(1024 * 1024);
+    let smart_bytes = read_smart_limit_mb(&app).saturating_mul(1024 * 1024);
     let cache = Arc::new(StreamCache::new(&app, hot_bytes)?);
+    cache.set_enabled(read_stream_enabled(&app));
     let smart = SmartCache::new(&app, smart_bytes)?;
+    smart.set_enabled(read_smart_enabled(&app));
 
     let thread_token = token.clone();
     let thread_cache = cache.clone();
@@ -224,6 +229,12 @@ fn serve_stream(
     // A fully cached track is served straight from disk, no network at all.
     if let Some(file) = smart.complete_file(&key) {
         serve_cached_file(request, &file, remote_path, range);
+        return;
+    }
+
+    // Read-ahead disabled: proxy the source directly with no local buffering.
+    if !cache.is_enabled() {
+        serve_webdav(request, app, client, source, remote_path, range);
         return;
     }
 
@@ -618,6 +629,9 @@ pub fn prefetch_track(
     if source.is_local() {
         return Ok(());
     }
+    if !proxy.cache.is_enabled() {
+        return Ok(());
+    }
     if proxy.smart.is_complete(&asset_hash(&source_id, &path)) {
         return Ok(());
     }
@@ -670,27 +684,31 @@ pub fn cache_status(
     Ok(proxy.smart.status())
 }
 
-/// Disk usage snapshot for the settings progress bar.
+/// Disk usage snapshot for the settings progress bars.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CacheUsage {
-    /// Automatic cache (read-ahead + non-pinned whole tracks), counted against
-    /// `limit_bytes`.
-    pub used_bytes: u64,
-    /// Configured budget for the automatic cache.
-    pub limit_bytes: u64,
-    /// Manually pinned (user-cached) tracks. Excluded from the budget and never
-    /// evicted, so they are reported separately.
+    /// Read-ahead buffer currently on disk (the smooth-playback working set).
+    pub stream_bytes: u64,
+    /// Fixed read-ahead buffer budget.
+    pub stream_limit_bytes: u64,
+    /// Automatic whole-track cache currently on disk.
+    pub smart_bytes: u64,
+    /// Configured budget for the automatic whole-track cache.
+    pub smart_limit_bytes: u64,
+    /// Manually pinned (user-cached) tracks. Never evicted, so reported apart.
     pub pinned_bytes: u64,
 }
 
-/// Automatic cache usage (read-ahead + persistent) and budget, plus the
-/// separately tracked manual (pinned) cache size, in bytes.
+/// Separate usage figures for the read-ahead buffer, the automatic whole-track
+/// cache, and the manual (pinned) cache, in bytes.
 #[tauri::command]
 pub fn cache_usage(proxy: tauri::State<StreamProxy>) -> Result<CacheUsage, crate::error::AppError> {
     Ok(CacheUsage {
-        used_bytes: proxy.cache.used_bytes() + proxy.smart.automatic_bytes(),
-        limit_bytes: proxy.cache.limit_bytes() + proxy.smart.limit_bytes(),
+        stream_bytes: proxy.cache.used_bytes(),
+        stream_limit_bytes: proxy.cache.limit_bytes(),
+        smart_bytes: proxy.smart.automatic_bytes(),
+        smart_limit_bytes: proxy.smart.limit_bytes(),
         pinned_bytes: proxy.smart.pinned_bytes(),
     })
 }
@@ -738,31 +756,68 @@ pub fn report_stream_progress(
     Ok(())
 }
 
-/// Current stream cache budget in mebibytes.
-#[tauri::command]
-pub fn get_stream_cache_limit(app: AppHandle) -> Result<u64, crate::error::AppError> {
-    Ok(read_cache_limit_mb(&app))
+/// Cache preferences shown in settings.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheConfig {
+    /// Whether automatic whole-track caching is enabled.
+    pub smart_enabled: bool,
+    /// Smart cache budget in mebibytes.
+    pub smart_limit_mb: u64,
+    /// Whether the read-ahead stream buffer is enabled.
+    pub stream_enabled: bool,
 }
 
-/// Persist a new stream cache budget (MiB) and evict down to it.
+/// Read the cache toggles and the smart-cache budget.
 #[tauri::command]
-pub fn set_stream_cache_limit(
+pub fn get_cache_config(app: AppHandle) -> Result<CacheConfig, crate::error::AppError> {
+    Ok(CacheConfig {
+        smart_enabled: read_smart_enabled(&app),
+        smart_limit_mb: read_smart_limit_mb(&app),
+        stream_enabled: read_stream_enabled(&app),
+    })
+}
+
+/// Persist a new smart-cache budget (MiB) and evict down to it.
+#[tauri::command]
+pub fn set_smart_cache_limit(
     proxy: tauri::State<StreamProxy>,
     app: AppHandle,
     limit_mb: u64,
 ) -> Result<u64, crate::error::AppError> {
-    write_cache_limit_mb(&app, limit_mb).map_err(crate::error::AppError::Store)?;
-    // The budget is shared: a small transient read-ahead slice, the rest
-    // persistent. Applying it keeps the displayed total honest.
-    let (hot_bytes, smart_bytes) = split_budget(limit_mb.saturating_mul(1024 * 1024));
-    proxy.cache.set_limit_bytes(hot_bytes);
-    proxy.smart.set_limit_bytes(smart_bytes);
+    write_smart_limit_mb(&app, limit_mb).map_err(crate::error::AppError::Store)?;
+    proxy.smart.set_limit_bytes(limit_mb.saturating_mul(1024 * 1024));
     Ok(limit_mb)
 }
 
-/// Drop cached streams; the read-ahead tier and all non-pinned smart tracks.
+/// Enable or disable automatic whole-track caching. Manual pins are unaffected.
 #[tauri::command]
-pub fn clear_stream_cache(proxy: tauri::State<StreamProxy>) -> Result<(), crate::error::AppError> {
+pub fn set_smart_cache_enabled(
+    proxy: tauri::State<StreamProxy>,
+    app: AppHandle,
+    enabled: bool,
+) -> Result<bool, crate::error::AppError> {
+    write_smart_enabled(&app, enabled).map_err(crate::error::AppError::Store)?;
+    proxy.smart.set_enabled(enabled);
+    Ok(enabled)
+}
+
+/// Enable or disable the read-ahead stream buffer.
+#[tauri::command]
+pub fn set_stream_cache_enabled(
+    proxy: tauri::State<StreamProxy>,
+    app: AppHandle,
+    enabled: bool,
+) -> Result<bool, crate::error::AppError> {
+    write_stream_enabled(&app, enabled).map_err(crate::error::AppError::Store)?;
+    proxy.cache.set_enabled(enabled);
+    Ok(enabled)
+}
+
+/// Drop the automatic caches (read-ahead buffer and non-pinned whole tracks);
+/// manually pinned tracks are kept.
+#[tauri::command]
+pub fn clear_cache(proxy: tauri::State<StreamProxy>) -> Result<(), crate::error::AppError> {
     proxy.cache.clear();
     proxy.smart.clear();
     Ok(())
