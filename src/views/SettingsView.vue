@@ -385,12 +385,13 @@ button.text-dim:hover:not(:disabled) {
         <div><h2 class="text-sm font-bold uppercase tracking-[0.2em]">{{ t("settings.cache.title") }}</h2><p class="mt-2 text-sm text-muted">{{ t("settings.cache.desc") }}</p></div>
         <div class="grid gap-5">
           <label class="grid gap-2 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.cache.dir") }}<input v-model="cacheDir" class="h-10 border border-line bg-bg px-3 text-sm font-normal normal-case tracking-normal text-fg outline-none focus:border-accent" /></label>
+          <div class="flex justify-end"><button type="button" class="ak-clip-tr h-10 border border-line px-5 text-[13px] font-semibold uppercase tracking-[0.25em]" @click="saveCacheDir">{{ t("settings.cache.save") }}</button></div>
 
           <div class="grid gap-4 border border-line bg-bg p-4">
-            <div class="flex items-start justify-between gap-4">
-              <div class="min-w-0"><p class="text-[13px] font-semibold uppercase tracking-[0.2em] text-fg">{{ t("settings.cache.smartTitle") }}</p><p class="mt-1 text-[11px] leading-relaxed text-dim">{{ t("settings.cache.smartDesc") }}</p></div>
-              <button type="button" role="switch" :aria-checked="smartEnabled" :aria-label="t('settings.cache.smartEnabled')" class="relative mt-0.5 h-6 w-11 shrink-0 rounded-full border border-line transition-colors" :class="smartEnabled ? 'bg-accent' : 'bg-fg/10'" @click="toggleSmartEnabled"><span class="absolute top-1/2 h-4 w-4 -translate-y-1/2 rounded-full bg-surface transition-[left]" :class="smartEnabled ? 'left-6' : 'left-1'"></span></button>
-            </div>
+            <label class="flex items-start justify-between gap-4">
+              <span class="grid gap-1 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.cache.smartTitle") }}<span class="text-[11px] font-normal normal-case tracking-normal text-dim">{{ t("settings.cache.smartDesc") }}</span></span>
+              <input :checked="smartEnabled" class="ak-switch shrink-0" type="checkbox" :aria-label="t('settings.cache.smartEnabled')" @change="toggleSmartEnabled" />
+            </label>
             <label class="grid gap-2 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.cache.smartLimit") }}<input v-model.number="smartLimit" type="number" min="128" step="128" class="h-10 border border-line bg-bg px-3 text-sm font-normal normal-case tracking-normal text-fg outline-none focus:border-accent" /></label>
             <div class="grid gap-2">
               <div class="flex items-baseline justify-between text-[11px] font-semibold uppercase tracking-[0.2em] text-dim"><span>{{ t("settings.cache.smartUsed") }}</span><span class="tabular-nums">{{ formatBytes(smartBytes) }} / {{ formatBytes(smartLimitBytes) }}</span></div>
@@ -400,10 +401,10 @@ button.text-dim:hover:not(:disabled) {
           </div>
 
           <div class="grid gap-4 border border-line bg-bg p-4">
-            <div class="flex items-start justify-between gap-4">
-              <div class="min-w-0"><p class="text-[13px] font-semibold uppercase tracking-[0.2em] text-fg">{{ t("settings.cache.streamTitle") }}</p><p class="mt-1 text-[11px] leading-relaxed text-dim">{{ t("settings.cache.streamDesc") }}</p></div>
-              <button type="button" role="switch" :aria-checked="streamEnabled" :aria-label="t('settings.cache.streamEnabled')" class="relative mt-0.5 h-6 w-11 shrink-0 rounded-full border border-line transition-colors" :class="streamEnabled ? 'bg-accent' : 'bg-fg/10'" @click="toggleStreamEnabled"><span class="absolute top-1/2 h-4 w-4 -translate-y-1/2 rounded-full bg-surface transition-[left]" :class="streamEnabled ? 'left-6' : 'left-1'"></span></button>
-            </div>
+            <label class="flex items-start justify-between gap-4">
+              <span class="grid gap-1 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.cache.streamTitle") }}<span class="text-[11px] font-normal normal-case tracking-normal text-dim">{{ t("settings.cache.streamDesc") }}</span></span>
+              <input :checked="streamEnabled" class="ak-switch shrink-0" type="checkbox" :aria-label="t('settings.cache.streamEnabled')" @change="toggleStreamEnabled" />
+            </label>
             <div class="grid gap-2">
               <div class="flex items-baseline justify-between text-[11px] font-semibold uppercase tracking-[0.2em] text-dim"><span>{{ t("settings.cache.streamUsed") }}</span><span class="tabular-nums">{{ formatBytes(streamBytes) }} / {{ formatBytes(streamLimitBytes) }}</span></div>
               <span class="block h-2 w-full overflow-hidden bg-fg/10"><span class="block h-full bg-accent transition-[width]" :style="{ width: `${streamPercent}%` }"></span></span>
@@ -413,8 +414,7 @@ button.text-dim:hover:not(:disabled) {
           <div class="flex items-baseline justify-between text-[11px] font-semibold uppercase tracking-[0.2em] text-dim"><span>{{ t("settings.cache.pinned") }}</span><span class="tabular-nums">{{ formatBytes(cachePinned) }}</span></div>
 
           <p class="text-[11px] leading-relaxed text-dim">{{ t("settings.cache.clearHint") }}</p>
-          <div class="flex justify-between gap-2">
-            <button type="button" class="ak-clip-tr h-10 border border-line px-5 text-[13px] font-semibold uppercase tracking-[0.25em]" @click="saveCacheDir">{{ t("settings.cache.save") }}</button>
+          <div class="flex justify-end">
             <button type="button" class="ak-clip-tr h-10 border border-rose-500/60 px-5 text-[13px] font-semibold uppercase tracking-[0.25em] text-rose-500 disabled:opacity-60" :disabled="clearingCache" @click="clearCache">{{ t(clearingCache ? "settings.cache.clearing" : "settings.cache.clear") }}</button>
           </div>
         </div>
