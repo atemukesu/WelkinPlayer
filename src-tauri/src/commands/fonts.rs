@@ -11,7 +11,7 @@
 
 use std::sync::OnceLock;
 
-use crate::error::AppError;
+use crate::core::error::AppError;
 
 /// Sorted, de-duplicated family names. The scan parses every installed font
 /// file, so the result is cached for the lifetime of the process.

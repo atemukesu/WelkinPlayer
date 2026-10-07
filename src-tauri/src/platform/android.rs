@@ -576,17 +576,17 @@ pub fn request_folder_access() -> Result<(), String> {
 ///
 /// Requires `ACCESS_NETWORK_STATE`; any failure falls back to "unmetered" so a
 /// missing permission cannot silently disable streaming.
-pub fn network_status() -> crate::network::NetworkStatus {
+pub fn network_status() -> crate::core::network::NetworkStatus {
     match query_network() {
         Ok(status) => status,
         Err(error) => {
             log::warn!("network status query failed: {error}");
-            crate::network::NetworkStatus::UNMETERED
+            crate::core::network::NetworkStatus::UNMETERED
         }
     }
 }
 
-fn query_network() -> Result<crate::network::NetworkStatus, String> {
+fn query_network() -> Result<crate::core::network::NetworkStatus, String> {
     use jni::objects::{JObject, JValue};
 
     let java_vm = JAVA_VM
@@ -654,7 +654,7 @@ fn query_network() -> Result<crate::network::NetworkStatus, String> {
         }
     }
 
-    Ok(crate::network::NetworkStatus {
+    Ok(crate::core::network::NetworkStatus {
         metered,
         wifi: wifi && !metered,
         available,

@@ -22,7 +22,7 @@ pub mod sponsor;
 pub mod update;
 pub mod webdav;
 
-use crate::error::AppError;
+use crate::core::error::AppError;
 
 /// Connectivity probe for the frontend <-> Rust IPC channel.
 ///

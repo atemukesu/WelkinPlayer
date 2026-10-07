@@ -19,8 +19,8 @@ use reqwest::{header, Client, Url};
 use tauri::AppHandle;
 
 use super::media::{asset_hash, lyric_path, resolve_cache_dir, write_lyric};
-use crate::backend::backend_for;
-use crate::error::AppError;
+use crate::data::backend::backend_for;
+use crate::core::error::AppError;
 
 /// A desktop browser UA; the music platforms reject the default agent.
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \

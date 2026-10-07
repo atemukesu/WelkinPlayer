@@ -18,7 +18,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 
-use crate::error::AppError;
+use crate::core::error::AppError;
 
 /// GitHub repository whose releases carry the update artifacts.
 pub const REPO: &str = "atemukesu/WelkinPlayer";
@@ -161,7 +161,7 @@ pub mod desktop {
     use tauri_plugin_updater::{Update, UpdaterExt};
 
     use super::{cumulative_notes, DownloadEvent, UpdateInfo};
-    use crate::error::AppError;
+    use crate::core::error::AppError;
 
     /// The update found by [`check`], held between the check and install calls.
     ///
@@ -256,7 +256,7 @@ pub mod android {
     use tauri::AppHandle;
 
     use super::{cumulative_notes, UpdateInfo, REPO};
-    use crate::error::AppError;
+    use crate::core::error::AppError;
 
     /// The subset of a GitHub release the updater cares about.
     #[derive(Debug, Deserialize)]

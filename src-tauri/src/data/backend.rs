@@ -20,9 +20,9 @@ use std::time::UNIX_EPOCH;
 use tauri::AppHandle;
 
 use crate::commands::webdav::{enforce_url_policy, source_password};
-use crate::dav::{is_audio_file, RemoteEntry, WebDavClient};
-use crate::error::AppError;
-use crate::sources::{find_source, SourceConfig, LOCAL_KIND, WEBDAV_KIND};
+use crate::data::dav::{is_audio_file, RemoteEntry, WebDavClient};
+use crate::core::error::AppError;
+use crate::data::sources::{find_source, SourceConfig, LOCAL_KIND, WEBDAV_KIND};
 
 /// A resolved source transport.
 pub enum Backend {
@@ -174,7 +174,7 @@ pub fn backend_for(app: &AppHandle, source_id: &str) -> Result<Backend, AppError
 
 /// Build the backend for the configured sync source, when one exists.
 pub fn sync_backend(app: &AppHandle) -> Result<Option<Backend>, AppError> {
-    match crate::sources::sync_source(app) {
+    match crate::data::sources::sync_source(app) {
         Some(source) => Ok(Some(build_backend(app, &source)?)),
         None => Ok(None),
     }

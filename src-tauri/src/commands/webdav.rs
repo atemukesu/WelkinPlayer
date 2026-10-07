@@ -15,7 +15,7 @@ use std::sync::OnceLock;
 use serde::Serialize;
 use tauri::AppHandle;
 
-use crate::error::AppError;
+use crate::core::error::AppError;
 
 /// Keychain service name; together with the account it forms the lookup key.
 /// Prefixed with the app bundle identifier so entries are namespaced per app.

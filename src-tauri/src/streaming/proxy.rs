@@ -20,13 +20,13 @@ use serde::Serialize;
 use tauri::AppHandle;
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
-use crate::backend::{content_type_for, safe_join};
+use crate::data::backend::{content_type_for, safe_join};
 use crate::commands::media::asset_hash;
 use crate::commands::webdav::{enforce_url_policy, source_password};
-use crate::dav::resolve_under_base;
-use crate::sources::find_source;
-use crate::smart_cache::{SmartCache, SmartCandidate};
-use crate::stream_cache::{
+use crate::data::dav::resolve_under_base;
+use crate::data::sources::find_source;
+use crate::streaming::smart_cache::{SmartCache, SmartCandidate};
+use crate::streaming::stream_cache::{
     read_smart_enabled, read_smart_limit_mb, read_stream_enabled, write_smart_enabled,
     write_smart_limit_mb, write_stream_enabled, StreamCache, TotalState, STREAM_BUDGET_MB,
 };
@@ -218,7 +218,7 @@ fn serve_stream(
     client: &Client,
     cache: &Arc<StreamCache>,
     smart: &Arc<SmartCache>,
-    source: &crate::sources::SourceConfig,
+    source: &crate::data::sources::SourceConfig,
     remote_path: &str,
     range: Option<&str>,
 ) {
@@ -244,7 +244,7 @@ fn serve_stream(
     let requested_start = range.and_then(parse_range_start).unwrap_or(0);
     cache.ensure_stream(app, source, remote_path, &entry, requested_start, None);
 
-    let total = match cache.wait_total(&entry, crate::stream_cache::TOTAL_WAIT) {
+    let total = match cache.wait_total(&entry, crate::streaming::stream_cache::TOTAL_WAIT) {
         TotalState::Known(total) => total,
         TotalState::Failed(status, message) => {
             let _ = request.respond(text(status, &message));
@@ -370,7 +370,7 @@ fn parse_range_start(value: &str) -> Option<u64> {
 }
 
 /// The directory of a local source, validated to exist.
-fn local_root(source: &crate::sources::SourceConfig) -> Result<PathBuf, String> {
+fn local_root(source: &crate::data::sources::SourceConfig) -> Result<PathBuf, String> {
     let root = source.root_path.clone().unwrap_or_default();
     if root.trim().is_empty() {
         return Err("local source has no directory".to_string());
@@ -483,7 +483,7 @@ fn serve_webdav(
     request: Request,
     app: &AppHandle,
     client: &Client,
-    source: &crate::sources::SourceConfig,
+    source: &crate::data::sources::SourceConfig,
     remote_path: &str,
     range: Option<&str>,
 ) {
@@ -624,7 +624,7 @@ pub fn prefetch_track(
     source_id: String,
     path: String,
     lead_secs: Option<f64>,
-) -> Result<(), crate::error::AppError> {
+) -> Result<(), crate::core::error::AppError> {
     let source = find_source(&app, &source_id)?;
     if source.is_local() {
         return Ok(());
@@ -645,7 +645,7 @@ pub fn prefetch_track(
 pub fn sync_smart_cache(
     proxy: tauri::State<StreamProxy>,
     candidates: Vec<SmartCandidate>,
-) -> Result<(), crate::error::AppError> {
+) -> Result<(), crate::core::error::AppError> {
     proxy.smart.sync(candidates);
     Ok(())
 }
@@ -657,7 +657,7 @@ pub fn pin_track(
     app: AppHandle,
     source_id: String,
     path: String,
-) -> Result<(), crate::error::AppError> {
+) -> Result<(), crate::core::error::AppError> {
     let source = find_source(&app, &source_id)?;
     if !source.is_local() {
         proxy.smart.pin(&source_id, &path);
@@ -671,7 +671,7 @@ pub fn unpin_track(
     proxy: tauri::State<StreamProxy>,
     source_id: String,
     path: String,
-) -> Result<(), crate::error::AppError> {
+) -> Result<(), crate::core::error::AppError> {
     proxy.smart.unpin(&asset_hash(&source_id, &path));
     Ok(())
 }
@@ -680,7 +680,7 @@ pub fn unpin_track(
 #[tauri::command]
 pub fn cache_status(
     proxy: tauri::State<StreamProxy>,
-) -> Result<crate::smart_cache::CacheStatus, crate::error::AppError> {
+) -> Result<crate::streaming::smart_cache::CacheStatus, crate::core::error::AppError> {
     Ok(proxy.smart.status())
 }
 
@@ -703,7 +703,7 @@ pub struct CacheUsage {
 /// Separate usage figures for the read-ahead buffer, the automatic whole-track
 /// cache, and the manual (pinned) cache, in bytes.
 #[tauri::command]
-pub fn cache_usage(proxy: tauri::State<StreamProxy>) -> Result<CacheUsage, crate::error::AppError> {
+pub fn cache_usage(proxy: tauri::State<StreamProxy>) -> Result<CacheUsage, crate::core::error::AppError> {
     Ok(CacheUsage {
         stream_bytes: proxy.cache.used_bytes(),
         stream_limit_bytes: proxy.cache.limit_bytes(),
@@ -715,8 +715,8 @@ pub fn cache_usage(proxy: tauri::State<StreamProxy>) -> Result<CacheUsage, crate
 
 /// Active network classification (metered / Wi-Fi).
 #[tauri::command]
-pub fn network_status() -> crate::network::NetworkStatus {
-    crate::network::status()
+pub fn network_status() -> crate::core::network::NetworkStatus {
+    crate::core::network::status()
 }
 
 /// Cache coverage (0-100) for the progress bar's prefill. Local files need no
@@ -727,7 +727,7 @@ pub fn stream_progress(
     proxy: tauri::State<StreamProxy>,
     source_id: String,
     path: String,
-) -> Result<f64, crate::error::AppError> {
+) -> Result<f64, crate::core::error::AppError> {
     let local = find_source(&app, &source_id)
         .map(|source| source.is_local())
         .unwrap_or(false);
@@ -749,7 +749,7 @@ pub fn report_stream_progress(
     path: String,
     position_secs: f64,
     duration_secs: f64,
-) -> Result<(), crate::error::AppError> {
+) -> Result<(), crate::core::error::AppError> {
     proxy
         .cache
         .report(&source_id, &path, position_secs, duration_secs);
@@ -770,7 +770,7 @@ pub struct CacheConfig {
 
 /// Read the cache toggles and the smart-cache budget.
 #[tauri::command]
-pub fn get_cache_config(app: AppHandle) -> Result<CacheConfig, crate::error::AppError> {
+pub fn get_cache_config(app: AppHandle) -> Result<CacheConfig, crate::core::error::AppError> {
     Ok(CacheConfig {
         smart_enabled: read_smart_enabled(&app),
         smart_limit_mb: read_smart_limit_mb(&app),
@@ -784,8 +784,8 @@ pub fn set_smart_cache_limit(
     proxy: tauri::State<StreamProxy>,
     app: AppHandle,
     limit_mb: u64,
-) -> Result<u64, crate::error::AppError> {
-    write_smart_limit_mb(&app, limit_mb).map_err(crate::error::AppError::Store)?;
+) -> Result<u64, crate::core::error::AppError> {
+    write_smart_limit_mb(&app, limit_mb).map_err(crate::core::error::AppError::Store)?;
     proxy.smart.set_limit_bytes(limit_mb.saturating_mul(1024 * 1024));
     Ok(limit_mb)
 }
@@ -796,8 +796,8 @@ pub fn set_smart_cache_enabled(
     proxy: tauri::State<StreamProxy>,
     app: AppHandle,
     enabled: bool,
-) -> Result<bool, crate::error::AppError> {
-    write_smart_enabled(&app, enabled).map_err(crate::error::AppError::Store)?;
+) -> Result<bool, crate::core::error::AppError> {
+    write_smart_enabled(&app, enabled).map_err(crate::core::error::AppError::Store)?;
     proxy.smart.set_enabled(enabled);
     Ok(enabled)
 }
@@ -808,8 +808,8 @@ pub fn set_stream_cache_enabled(
     proxy: tauri::State<StreamProxy>,
     app: AppHandle,
     enabled: bool,
-) -> Result<bool, crate::error::AppError> {
-    write_stream_enabled(&app, enabled).map_err(crate::error::AppError::Store)?;
+) -> Result<bool, crate::core::error::AppError> {
+    write_stream_enabled(&app, enabled).map_err(crate::core::error::AppError::Store)?;
     proxy.cache.set_enabled(enabled);
     Ok(enabled)
 }
@@ -817,7 +817,7 @@ pub fn set_stream_cache_enabled(
 /// Drop the automatic caches (read-ahead buffer and non-pinned whole tracks);
 /// manually pinned tracks are kept.
 #[tauri::command]
-pub fn clear_cache(proxy: tauri::State<StreamProxy>) -> Result<(), crate::error::AppError> {
+pub fn clear_cache(proxy: tauri::State<StreamProxy>) -> Result<(), crate::core::error::AppError> {
     proxy.cache.clear();
     proxy.smart.clear();
     Ok(())

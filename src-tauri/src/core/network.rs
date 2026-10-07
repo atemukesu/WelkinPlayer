@@ -32,7 +32,7 @@ impl NetworkStatus {
 pub fn status() -> NetworkStatus {
     #[cfg(target_os = "android")]
     {
-        crate::android::network_status()
+        crate::platform::android::network_status()
     }
     #[cfg(not(target_os = "android"))]
     {

@@ -17,7 +17,7 @@ use lofty::probe::Probe;
 use lofty::tag::{ItemKey, Tag};
 use serde::{Deserialize, Serialize};
 
-use crate::error::AppError;
+use crate::core::error::AppError;
 
 /// Text metadata returned to the frontend (also persisted to the metadata cache).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

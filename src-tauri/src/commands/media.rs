@@ -20,10 +20,10 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_store::StoreExt;
 
-use crate::backend::{backend_for, Backend};
-use crate::dav::RemoteEntry;
-use crate::error::AppError;
-use crate::metadata::{self, ParsedMetadata, TrackMetadata};
+use crate::data::backend::{backend_for, Backend};
+use crate::data::dav::RemoteEntry;
+use crate::core::error::AppError;
+use crate::data::metadata::{self, ParsedMetadata, TrackMetadata};
 
 const SETTINGS_FILE: &str = "settings.json";
 const CACHE_DIR_KEY: &str = "cache.dir";

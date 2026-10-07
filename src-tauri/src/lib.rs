@@ -1,21 +1,11 @@
 // Copyright 2026 Atemukesu
 // SPDX-License-Identifier: GPL-3.0-only
 
-#[cfg(target_os = "android")]
-mod android;
-mod backend;
 mod commands;
-mod dav;
-mod error;
-mod logging;
-mod media_control;
-mod metadata;
-mod network;
-mod proxy;
-mod smart_cache;
-mod sources;
-mod stream_cache;
-mod tray;
+mod core;
+mod data;
+mod platform;
+mod streaming;
 
 use tauri::Manager;
 
@@ -33,22 +23,22 @@ pub(crate) const WEBVIEW_BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPd
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    logging::init();
+    core::logging::init();
 
     // Android has no keyring backend; install the Keystore-backed one before
     // anything touches the keychain. A failure is recorded so the WebDAV
     // commands report an unavailable keychain instead of silently writing to
     // keyring's non-persistent mock store.
     #[cfg(target_os = "android")]
-    commands::webdav::set_keychain_init_error(android::initialize_keychain());
+    commands::webdav::set_keychain_init_error(platform::android::initialize_keychain());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .manage(commands::desktop_lyric::DesktopLyricCache::default())
-        .manage(media_control::MediaControlState::default())
-        .manage(tray::CloseToTray::default())
+        .manage(platform::media_control::MediaControlState::default())
+        .manage(platform::tray::CloseToTray::default())
         .setup(|app| {
             // Apply signed updates from GitHub Releases. Registered here (rather
             // than in the builder chain) so the whole block stays desktop-only.
@@ -76,7 +66,7 @@ pub fn run() {
 
             // Let the webview load cached cover thumbnails as plain asset URLs.
             commands::media::allow_cache_dir(app.handle());
-            match proxy::start(app.handle().clone()) {
+            match streaming::proxy::start(app.handle().clone()) {
                 Ok(stream_proxy) => {
                     log::info!(
                         "streaming proxy listening on 127.0.0.1:{}",
@@ -93,7 +83,7 @@ pub fn run() {
             {
                 // System tray: left click restores the window; right click
                 // opens the 打开 / 退出 menu.
-                if let Err(error) = tray::init(app) {
+                if let Err(error) = platform::tray::init(app) {
                     log::warn!("failed to create tray icon: {error}");
                 }
 
@@ -106,7 +96,7 @@ pub fn run() {
                             // the process alive so audio and the floating lyrics
                             // keep running in the background.
                             let close_to_tray = handle
-                                .try_state::<tray::CloseToTray>()
+                                .try_state::<platform::tray::CloseToTray>()
                                 .map(|state| state.get())
                                 .unwrap_or(false);
                             if close_to_tray {
@@ -123,7 +113,7 @@ pub fn run() {
                 }
                 // OS transport controls need the main window (Windows SMTC uses
                 // its HWND) and must be created on the main thread.
-                media_control::init(app.handle());
+                platform::media_control::init(app.handle());
             }
             Ok(())
         })
@@ -181,21 +171,21 @@ pub fn run() {
             commands::media::load_library_cache,
             commands::media::save_library_cache,
             commands::media::refresh_source_library,
-            proxy::stream_endpoint,
-            proxy::prefetch_track,
-            proxy::report_stream_progress,
-            proxy::stream_progress,
-            proxy::sync_smart_cache,
-            proxy::pin_track,
-            proxy::unpin_track,
-            proxy::cache_status,
-            proxy::cache_usage,
-            proxy::network_status,
-            proxy::get_cache_config,
-            proxy::set_smart_cache_limit,
-            proxy::set_smart_cache_enabled,
-            proxy::set_stream_cache_enabled,
-            proxy::clear_cache,
+            streaming::proxy::stream_endpoint,
+            streaming::proxy::prefetch_track,
+            streaming::proxy::report_stream_progress,
+            streaming::proxy::stream_progress,
+            streaming::proxy::sync_smart_cache,
+            streaming::proxy::pin_track,
+            streaming::proxy::unpin_track,
+            streaming::proxy::cache_status,
+            streaming::proxy::cache_usage,
+            streaming::proxy::network_status,
+            streaming::proxy::get_cache_config,
+            streaming::proxy::set_smart_cache_limit,
+            streaming::proxy::set_smart_cache_enabled,
+            streaming::proxy::set_stream_cache_enabled,
+            streaming::proxy::clear_cache,
             commands::desktop_lyric::desktop_lyric_open,
             commands::desktop_lyric::desktop_lyric_close,
             commands::desktop_lyric::desktop_lyric_load,
@@ -204,11 +194,11 @@ pub fn run() {
             commands::desktop_lyric::desktop_lyric_status,
             commands::desktop_lyric::desktop_lyric_take_control,
             commands::desktop_lyric::desktop_lyric_request_permission,
-            media_control::media_control_update,
-            media_control::media_control_position,
-            media_control::media_control_clear,
-            media_control::media_control_take_control,
-            tray::set_close_to_tray
+            platform::media_control::media_control_update,
+            platform::media_control::media_control_position,
+            platform::media_control::media_control_clear,
+            platform::media_control::media_control_take_control,
+            platform::tray::set_close_to_tray
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

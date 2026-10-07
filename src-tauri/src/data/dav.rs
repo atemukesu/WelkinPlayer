@@ -22,7 +22,7 @@ use reqwest::{header, Client, Method, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-use crate::error::AppError;
+use crate::core::error::AppError;
 
 const AUDIO_EXTENSIONS: [&str; 8] = ["mp3", "flac", "m4a", "ogg", "wav", "aac", "opus", "wma"];
 

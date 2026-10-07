@@ -18,7 +18,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 
-use crate::error::AppError;
+use crate::core::error::AppError;
 
 #[cfg(desktop)]
 use std::time::Duration;
@@ -240,10 +240,10 @@ pub fn media_control_update(
         // rejected (and take the lyric overlay down with it). Only start it on
         // play; otherwise just refresh an already-running session.
         if payload.playing {
-            crate::android::media_control_start().map_err(AppError::other)?;
+            crate::platform::android::media_control_start().map_err(AppError::other)?;
         }
         let json = android_payload(&app, &payload)?;
-        crate::android::media_control_update(&json).map_err(AppError::other)?;
+        crate::platform::android::media_control_update(&json).map_err(AppError::other)?;
     }
 
     let _ = &state;
@@ -278,7 +278,7 @@ pub fn media_control_position(
     }
 
     #[cfg(target_os = "android")]
-    crate::android::media_control_position(position_ms, playing).map_err(AppError::other)?;
+    crate::platform::android::media_control_position(position_ms, playing).map_err(AppError::other)?;
 
     let _ = &state;
     Ok(())
@@ -303,7 +303,7 @@ pub fn media_control_clear(
     #[cfg(target_os = "android")]
     {
         let _ = &state;
-        crate::android::media_control_stop().map_err(AppError::other)?;
+        crate::platform::android::media_control_stop().map_err(AppError::other)?;
     }
 
     let _ = &app;
@@ -314,7 +314,7 @@ pub fn media_control_clear(
 #[tauri::command]
 pub fn media_control_take_control() -> Result<Option<String>, AppError> {
     #[cfg(target_os = "android")]
-    return crate::android::media_control_take_control().map_err(AppError::other);
+    return crate::platform::android::media_control_take_control().map_err(AppError::other);
     #[cfg(not(target_os = "android"))]
     Ok(None)
 }
@@ -329,7 +329,7 @@ fn desktop_cover_url(app: &AppHandle, payload: &MediaControlPayload) -> Option<S
         // SMTC cannot read arbitrary `file://` URIs from an unpackaged app, so
         // artwork is served through the loopback proxy that is already running.
         use tauri::Manager;
-        let proxy = app.try_state::<crate::proxy::StreamProxy>()?;
+        let proxy = app.try_state::<crate::streaming::proxy::StreamProxy>()?;
         Some(format!(
             "http://127.0.0.1:{}/cover?token={}&hash={}",
             proxy.port, proxy.token, hash

@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 use tauri_plugin_store::StoreExt;
 
-use crate::error::AppError;
+use crate::core::error::AppError;
 
 /// `tauri-plugin-store` file that holds all non-secret settings.
 pub const SETTINGS_FILE: &str = "settings.json";

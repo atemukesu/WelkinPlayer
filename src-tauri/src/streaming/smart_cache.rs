@@ -3,7 +3,7 @@
 
 //! Persistent "smart" cache: whole tracks kept for reuse, chosen by play rank.
 //!
-//! Unlike the transient read-ahead cache ([`crate::stream_cache`]), this keeps
+//! Unlike the transient read-ahead cache ([`crate::streaming::stream_cache`]), this keeps
 //! complete files so replaying a frequent track needs no network. Candidates
 //! come from the synced play counts (the play ranking): tracks played at least
 //! five times, best-ranked first. Eviction is LFU — the least-played cached
@@ -27,8 +27,8 @@ use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 
 use crate::commands::media::{asset_hash, resolve_cache_dir};
-use crate::sources::{find_source, load_sources};
-use crate::stream_cache::{open_upstream, response_total};
+use crate::data::sources::{find_source, load_sources};
+use crate::streaming::stream_cache::{open_upstream, response_total};
 
 const READ_CHUNK: usize = 64 * 1024;
 const IDLE_WAIT: Duration = Duration::from_secs(15);
@@ -436,7 +436,7 @@ impl SmartCache {
                 state = guard;
                 continue;
             }
-            if !crate::network::is_unmetered() && !pinned {
+            if !crate::core::network::is_unmetered() && !pinned {
                 let (guard, _) = self.cv.wait_timeout(state, IDLE_WAIT).unwrap();
                 state = guard;
                 continue;

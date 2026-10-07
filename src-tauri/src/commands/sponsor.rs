@@ -18,7 +18,7 @@ use tauri::AppHandle;
 
 use crate::commands::profile::local_nickname;
 use crate::commands::webdav::keychain_init_error;
-use crate::error::AppError;
+use crate::core::error::AppError;
 
 /// Keychain service for the install identifier. Kept separate from the WebDAV
 /// service (`com.atemukesu.welkinplayer.webdav`) so the install identifier and

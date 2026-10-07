@@ -13,9 +13,9 @@ use lofty::picture::MimeType;
 use tauri::AppHandle;
 
 use super::media::{asset_hash, cover_file, resolve_cache_dir, write_cover, write_meta};
-use crate::backend::backend_for;
-use crate::error::AppError;
-use crate::metadata::{self, TrackMetadata, TrackTags};
+use crate::data::backend::backend_for;
+use crate::core::error::AppError;
+use crate::data::metadata::{self, TrackMetadata, TrackTags};
 
 /// Hard cap on a newly embedded cover image, guarding against pathological uploads.
 const MAX_COVER_BYTES: usize = 8 * 1024 * 1024;

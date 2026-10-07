@@ -28,7 +28,7 @@ use tauri::AppHandle;
 use crate::commands::profile::local_nickname;
 use crate::commands::sponsor::{get_install_id, InstallId};
 use crate::commands::webdav::keychain_init_error;
-use crate::error::AppError;
+use crate::core::error::AppError;
 
 /// Keychain service/account holding the activation code. Kept separate from the
 /// install-id (`...instid`) and WebDAV (`...webdav`) entries.

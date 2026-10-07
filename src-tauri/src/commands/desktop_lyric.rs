@@ -22,7 +22,7 @@ use tauri::webview::PageLoadEvent;
 use tauri::Emitter;
 use tauri::{AppHandle, Manager};
 
-use crate::error::AppError;
+use crate::core::error::AppError;
 
 /// Last documents pushed by the frontend, replayed once the floating window's
 /// webview has actually loaded (events emitted before then would be lost).
@@ -116,9 +116,9 @@ fn status(app: &AppHandle) -> DesktopLyricStatus {
     {
         let _ = app;
         return DesktopLyricStatus {
-            supported: crate::android::desktop_lyric_supported(),
-            permission_granted: crate::android::desktop_lyric_has_permission(),
-            active: crate::android::desktop_lyric_is_running(),
+            supported: crate::platform::android::desktop_lyric_supported(),
+            permission_granted: crate::platform::android::desktop_lyric_has_permission(),
+            active: crate::platform::android::desktop_lyric_is_running(),
         };
     }
 }
@@ -185,9 +185,9 @@ pub async fn desktop_lyric_open(app: AppHandle) -> Result<DesktopLyricStatus, Ap
     }
     #[cfg(target_os = "android")]
     {
-        if crate::android::desktop_lyric_has_permission() {
+        if crate::platform::android::desktop_lyric_has_permission() {
             let html = OVERLAY_HTML.replace(SCRIPT_TAG, "");
-            crate::android::desktop_lyric_start(&html, OVERLAY_JS).map_err(|error| {
+            crate::platform::android::desktop_lyric_start(&html, OVERLAY_JS).map_err(|error| {
                 log::warn!("failed to start desktop lyric overlay: {error}");
                 AppError::other(error)
             })?;
@@ -208,7 +208,7 @@ pub fn desktop_lyric_close(app: AppHandle) -> Result<(), AppError> {
     #[cfg(target_os = "android")]
     {
         let _ = &app;
-        crate::android::desktop_lyric_stop().map_err(AppError::other)?;
+        crate::platform::android::desktop_lyric_stop().map_err(AppError::other)?;
     }
     Ok(())
 }
@@ -226,7 +226,7 @@ pub fn desktop_lyric_load(app: AppHandle, payload: DesktopLyricLoadPayload) -> R
     #[cfg(target_os = "android")]
     {
         let json = serde_json::to_string(&payload)?;
-        crate::android::desktop_lyric_update("load", &json).map_err(AppError::other)?;
+        crate::platform::android::desktop_lyric_update("load", &json).map_err(AppError::other)?;
     }
     Ok(())
 }
@@ -242,7 +242,7 @@ pub fn desktop_lyric_tick(app: AppHandle, payload: DesktopLyricTickPayload) -> R
     {
         let _ = &app;
         let json = serde_json::to_string(&payload)?;
-        crate::android::desktop_lyric_update("tick", &json).map_err(AppError::other)?;
+        crate::platform::android::desktop_lyric_update("tick", &json).map_err(AppError::other)?;
     }
     Ok(())
 }
@@ -260,7 +260,7 @@ pub fn desktop_lyric_set_settings(app: AppHandle, settings: serde_json::Value) -
     #[cfg(target_os = "android")]
     {
         let json = serde_json::to_string(&settings)?;
-        crate::android::desktop_lyric_update("settings", &json).map_err(AppError::other)?;
+        crate::platform::android::desktop_lyric_update("settings", &json).map_err(AppError::other)?;
     }
     Ok(())
 }
@@ -278,7 +278,7 @@ pub fn desktop_lyric_status(app: AppHandle) -> Result<DesktopLyricStatus, AppErr
 #[tauri::command]
 pub fn desktop_lyric_take_control() -> Result<Option<String>, AppError> {
     #[cfg(target_os = "android")]
-    let control = crate::android::desktop_lyric_take_control().map_err(AppError::other)?;
+    let control = crate::platform::android::desktop_lyric_take_control().map_err(AppError::other)?;
     #[cfg(not(target_os = "android"))]
     let control: Option<String> = None;
     Ok(control)
@@ -289,7 +289,7 @@ pub fn desktop_lyric_take_control() -> Result<Option<String>, AppError> {
 pub fn desktop_lyric_request_permission() -> Result<(), AppError> {
     #[cfg(target_os = "android")]
     {
-        crate::android::desktop_lyric_open_settings().map_err(AppError::other)?;
+        crate::platform::android::desktop_lyric_open_settings().map_err(AppError::other)?;
     }
     Ok(())
 }

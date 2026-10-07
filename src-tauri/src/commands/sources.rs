@@ -12,9 +12,9 @@ use tauri::AppHandle;
 #[cfg(desktop)]
 use tauri_plugin_dialog::DialogExt;
 
-use crate::backend::{backend_for, build_backend};
-use crate::dav::{Depth, RemoteEntry};
-use crate::error::AppError;
+use crate::data::backend::{backend_for, build_backend};
+use crate::data::dav::{Depth, RemoteEntry};
+use crate::core::error::AppError;
 
 /// Temporary object used to prove a source allows writes.
 const WRITE_TEST_PATH: &str = "welkin-write-test.tmp";
@@ -55,7 +55,7 @@ pub async fn pick_local_folder(app: AppHandle) -> Result<Option<String>, AppErro
 #[cfg(target_os = "android")]
 async fn pick_local_folder_android() -> Result<Option<String>, AppError> {
     let result = tauri::async_runtime::spawn_blocking(|| -> Result<Option<String>, AppError> {
-        match crate::android::pick_folder().map_err(AppError::other)? {
+        match crate::platform::android::pick_folder().map_err(AppError::other)? {
             0 => {}
             1 => {
                 return Err(AppError::other(
@@ -66,7 +66,7 @@ async fn pick_local_folder_android() -> Result<Option<String>, AppError> {
         }
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
         loop {
-            match crate::android::take_folder_pick().map_err(AppError::other)? {
+            match crate::platform::android::take_folder_pick().map_err(AppError::other)? {
                 Some(Some(path)) => return Ok(Some(path)),
                 Some(None) => return Ok(None),
                 None => {
@@ -94,7 +94,7 @@ async fn pick_local_folder_android() -> Result<Option<String>, AppError> {
 pub fn local_file_access_granted() -> bool {
     #[cfg(target_os = "android")]
     {
-        crate::android::folder_access_granted()
+        crate::platform::android::folder_access_granted()
     }
     #[cfg(not(target_os = "android"))]
     {
@@ -107,7 +107,7 @@ pub fn local_file_access_granted() -> bool {
 pub fn request_local_file_access() {
     #[cfg(target_os = "android")]
     {
-        if let Err(error) = crate::android::request_folder_access() {
+        if let Err(error) = crate::platform::android::request_folder_access() {
             log::warn!("failed to open file-access settings: {error}");
         }
     }
@@ -128,7 +128,7 @@ pub async fn list_source_audio(
 /// Verify a source is reachable and readable. Returns a display string.
 #[tauri::command]
 pub async fn test_source_connection(app: AppHandle, source_id: String) -> Result<String, AppError> {
-    let source = crate::sources::find_source(&app, &source_id)?;
+    let source = crate::data::sources::find_source(&app, &source_id)?;
     if source.is_local() {
         // `build_backend` already validates the directory exists.
         let backend = build_backend(&app, &source)?;
@@ -138,7 +138,7 @@ pub async fn test_source_connection(app: AppHandle, source_id: String) -> Result
 
     let backend = build_backend(&app, &source)?;
     match backend {
-        crate::backend::Backend::Webdav(client) => {
+        crate::data::backend::Backend::Webdav(client) => {
             let xml = client.propfind("", Depth::Zero).await?;
             if xml.trim().is_empty() {
                 return Err(AppError::Xml("服务器返回了空的 PROPFIND 响应".to_string()));

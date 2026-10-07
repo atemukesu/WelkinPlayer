@@ -14,10 +14,10 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tauri::AppHandle;
 
-use crate::backend::{sync_backend, Backend};
+use crate::data::backend::{sync_backend, Backend};
 use crate::commands::media::{cover_file, cover_path_for, resolve_cache_dir, write_cover};
-use crate::error::AppError;
-use crate::metadata;
+use crate::core::error::AppError;
+use crate::data::metadata;
 
 /// Prefix that scopes cover objects away from audio files and profile documents.
 const COVER_PREFIX: &str = "welkin-cover-";

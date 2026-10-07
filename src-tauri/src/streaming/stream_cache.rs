@@ -33,7 +33,7 @@ use tauri_plugin_store::StoreExt;
 
 use crate::commands::media::{asset_hash, resolve_cache_dir};
 use crate::commands::webdav::{enforce_url_policy, source_password};
-use crate::sources::{SourceConfig, SETTINGS_FILE};
+use crate::data::sources::{SourceConfig, SETTINGS_FILE};
 
 /// Seconds of audio kept downloaded ahead of the playhead.
 pub const LEAD_SECONDS: f64 = 120.0;
@@ -508,7 +508,7 @@ pub(crate) fn open_upstream(
     enforce_url_policy(app, &url, source.allow_insecure)
         .map_err(|error| (403, error.to_string()))?;
     let password = source_password(app, &source.id).map_err(|error| (401, error.to_string()))?;
-    let url = crate::proxy::build_url(&url, remote_path).map_err(|error| (400, error))?;
+    let url = crate::streaming::proxy::build_url(&url, remote_path).map_err(|error| (400, error))?;
 
     let response = client
         .get(url)
