@@ -215,6 +215,8 @@ pub fn run() {
             playback::commands::audio_stop,
             #[cfg(any(desktop, target_os = "android"))]
             playback::commands::audio_state,
+            #[cfg(any(desktop, target_os = "android"))]
+            playback::commands::audio_spectrum_config,
             commands::desktop_lyric::desktop_lyric_open,
             commands::desktop_lyric::desktop_lyric_close,
             commands::desktop_lyric::desktop_lyric_load,
@@ -227,7 +229,10 @@ pub fn run() {
             platform::media_control::media_control_position,
             platform::media_control::media_control_clear,
             platform::media_control::media_control_take_control,
-            platform::tray::set_close_to_tray
+            platform::tray::set_close_to_tray,
+            platform::tray::esc_quit_enabled,
+            #[cfg(desktop)]
+            platform::tray::quit_application
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -69,6 +69,8 @@ import TrackInfoView from "./views/TrackInfoView.vue";
 import SourceConfigView from "./views/SourceConfigView.vue";
 
 const AmllPlayerView = defineAsyncComponent(() => import("./views/AmllPlayerView.vue"));
+const VisualizerView = defineAsyncComponent(() => import("./views/VisualizerView.vue"));
+const AudioVisualizer = defineAsyncComponent(() => import("./components/AudioVisualizer.vue"));
 
 const { t, locale } = useI18n();
 const player = usePlayerStore();
@@ -85,6 +87,20 @@ const update = useUpdateStore();
 const { loadingLibrary, refreshing, friendlyError, loadCachedLibrary, loadRemoteLibrary, refreshLibrary, downloadTrackMetadata } = useLibrary();
 const view = ref<View>(getViewFromHash());
 const baseView = ref<View>(view.value === "player" || view.value === "track-info" ? "library" : view.value);
+
+/** The full-screen visualiser is a screen of its own, not a routed view. */
+type VisualizerStyle = "mirror" | "bars" | "radial";
+function readVisualizerStyle(): VisualizerStyle {
+  const saved = localStorage.getItem("welkin-visualizer-style");
+  return saved === "bars" || saved === "radial" ? saved : "mirror";
+}
+const visualizerStyle = ref<VisualizerStyle>(readVisualizerStyle());
+const visualizerFullscreen = ref(false);
+
+function startVisualizer(style: VisualizerStyle) {
+  visualizerStyle.value = style;
+  visualizerFullscreen.value = true;
+}
 const theme = ref<Theme>(localStorage.getItem("welkin-theme") === "dark" ? "dark" : "light");
 const accent = ref<Accent>(readAccent());
 const sidebarCollapsed = ref(localStorage.getItem("welkin-sidebar-collapsed") === "1");
@@ -233,7 +249,7 @@ watch([() => player.queue, () => player.queueIndex], () => {
 });
 
 function readAccent(): Accent { const value = localStorage.getItem("welkin-accent"); return (accents.some((item) => item.id === value) ? value : "amber") as Accent; }
-function getViewFromHash(): View { const route = window.location.hash.slice(1); return route === "settings" || route === "sponsor" || route === "player" || route === "tracks" || route === "favorites" || route === "stats" || route === "artists" || route === "albums" || route === "sources" || route === "source-config" || route === "playlists" || route === "playlist-new" || route === "lyrics-edit" || route === "track-edit" || route === "track-info" ? route : "library"; }
+function getViewFromHash(): View { const route = window.location.hash.slice(1); return route === "visualizer" || route === "settings" || route === "sponsor" || route === "player" || route === "tracks" || route === "favorites" || route === "stats" || route === "artists" || route === "albums" || route === "sources" || route === "source-config" || route === "playlists" || route === "playlist-new" || route === "lyrics-edit" || route === "track-edit" || route === "track-info" ? route : "library"; }
 function setView(nextView: View) { view.value = nextView; window.location.hash = nextView === "library" ? "" : nextView; }
 function clearCollectionFilters() { playlistFilter.value = null; artistFilter.value = null; albumFilter.value = null; sourceFilter.value = null; }
 function navigate(nextView: View) { clearCollectionFilters(); setView(nextView); }
@@ -313,7 +329,29 @@ async function downloadMetadata(track: Track) {
 function toggleSidebar() { sidebarCollapsed.value = !sidebarCollapsed.value; localStorage.setItem("welkin-sidebar-collapsed", sidebarCollapsed.value ? "1" : "0"); }
 /** Re-verify the Pro license from scratch whenever the app regains focus. */
 function recheckLicense() { void license.refresh(); }
+/**
+ * Escape quits on kiosk builds: the Batocera port launcher sets WELKIN_ESC_QUITS=1
+ * so the player returns to EmulationStation like any other emulator.
+ */
+let escQuits = false;
+async function loadEscQuit() {
+  try {
+    escQuits = await invoke<boolean>("esc_quit_enabled");
+  } catch (error) {
+    console.warn("[welkin] esc-quit probe failed", describeError(error));
+  }
+}
+
 function onGlobalKeydown(event: KeyboardEvent) {
+  if (escQuits && event.key === "Escape") {
+    const escapeTarget = event.target as HTMLElement | null;
+    if (escapeTarget) {
+      const tag = escapeTarget.tagName.toLowerCase();
+      if (escapeTarget.isContentEditable || tag === "input" || tag === "textarea" || tag === "select") return;
+    }
+    void invoke("quit_application").catch((error) => console.warn("[welkin] quit failed", describeError(error)));
+    return;
+  }
   if (event.code !== "Space" && event.key !== " ") return;
   const target = event.target as HTMLElement | null;
   if (!target) return;
@@ -325,12 +363,22 @@ function onGlobalKeydown(event: KeyboardEvent) {
   player.togglePlayback();
 }
 
-onMounted(() => { windowBehavior.sync(); window.addEventListener("hashchange", syncViewFromHash); window.addEventListener("keydown", onGlobalKeydown); window.addEventListener("beforeunload", savePlaybackPositionOnLeave); window.addEventListener("pagehide", savePlaybackPositionOnLeave); window.addEventListener("focus", recheckLicense); document.addEventListener("visibilitychange", onVisibilityChange); void initAudio(); void network.start(); void cache.start(); bootDesktopLyrics(); bootMediaControl(); void invoke<string>("ping").catch((error) => console.warn("[welkin] ping failed", describeError(error))); void bootstrap(); });
+onMounted(() => { void loadEscQuit(); windowBehavior.sync(); window.addEventListener("hashchange", syncViewFromHash); window.addEventListener("keydown", onGlobalKeydown); window.addEventListener("beforeunload", savePlaybackPositionOnLeave); window.addEventListener("pagehide", savePlaybackPositionOnLeave); window.addEventListener("focus", recheckLicense); document.addEventListener("visibilitychange", onVisibilityChange); void initAudio(); void network.start(); void cache.start(); bootDesktopLyrics(); bootMediaControl(); void invoke<string>("ping").catch((error) => console.warn("[welkin] ping failed", describeError(error))); void bootstrap(); });
 onUnmounted(() => { savePlaybackPosition(true); stopDesktopLyrics(); stopMediaControl(); window.removeEventListener("hashchange", syncViewFromHash); window.removeEventListener("keydown", onGlobalKeydown); window.removeEventListener("beforeunload", savePlaybackPositionOnLeave); window.removeEventListener("pagehide", savePlaybackPositionOnLeave); window.removeEventListener("focus", recheckLicense); document.removeEventListener("visibilitychange", onVisibilityChange); void profile.flush(); });
 </script>
 
 <template>
   <AmllPlayerView v-if="amllMounted && player.currentTrack" :active="amllActive" :return-view="baseView" @navigate="navigate" @closed="amllMounted = false" />
+  <!-- Full-screen visualiser: its own opaque screen, revealed from the picker. -->
+  <AudioVisualizer
+    v-if="visualizerFullscreen"
+    :variant="visualizerStyle"
+    :color="player.currentTrack?.color || '#ff6ad5'"
+    :bands="72"
+    :fps="30"
+    :render-scale="0.6"
+    @exit="visualizerFullscreen = false"
+  />
   <Transition name="slide"><PlayerView v-if="view === 'player' && player.currentTrack && !lyrics.useAmll" :return-view="baseView" @navigate="navigate" @queue="toggleQueue" @open-artist="openArtist" @open-album="openAlbum" /></Transition>
   <Transition name="info"><TrackInfoView v-if="view === 'track-info' && viewingTrack" :path="viewingTrack.path ?? null" :source-id="viewingTrack.sourceId" @back="closeTrackInfo" /></Transition>
   <SetupWizard v-if="booted && profile.firstRun" v-model:theme="theme" v-model:accent="accent" @finish="onWizardFinish" />
@@ -352,6 +400,7 @@ onUnmounted(() => { savePlaybackPosition(true); stopDesktopLyrics(); stopMediaCo
           <LyricsEditorView v-else-if="baseView === 'lyrics-edit'" key="lyrics-edit" :path="editingLyricsTrack?.path ?? null" :source-id="editingLyricsTrack?.sourceId" @back="navigate('library')" @friendly-error="showError" />
           <TrackEditorView v-else-if="baseView === 'track-edit'" key="track-edit" :path="editingTrack?.path ?? null" :source-id="editingTrack?.sourceId" @back="navigate('library')" @friendly-error="showError" />
           <SponsorView v-else-if="baseView === 'sponsor'" key="sponsor" @back="navigate('library')" />
+          <VisualizerView v-else-if="baseView === 'visualizer'" key="visualizer" @start="startVisualizer" />
           <SettingsView v-else key="settings" v-model:theme="theme" v-model:accent="accent" @sponsor="navigate('sponsor')" @sources="openSourceConfig('settings')" @friendly-error="showError" />
         </Transition>
       </main>

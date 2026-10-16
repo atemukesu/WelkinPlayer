@@ -51,6 +51,25 @@ fn quit_app(app: &AppHandle) {
     app.exit(0);
 }
 
+/// Quit the whole application from the frontend. The Batocera port launcher maps
+/// Escape to this so the player exits back to EmulationStation.
+#[cfg(desktop)]
+#[tauri::command]
+pub fn quit_application(app: AppHandle) {
+    quit_app(&app);
+}
+
+/// Whether Escape should quit the app. Opt-in through the environment so packaged
+/// desktop builds keep their current keyboard behaviour; the Batocera launcher
+/// sets `WELKIN_ESC_QUITS=1`.
+#[tauri::command]
+pub fn esc_quit_enabled() -> bool {
+    matches!(
+        std::env::var("WELKIN_ESC_QUITS").as_deref(),
+        Ok("1") | Ok("true") | Ok("yes")
+    )
+}
+
 /// Create the tray icon and its context menu.
 #[cfg(desktop)]
 pub fn init(app: &tauri::App) -> tauri::Result<()> {

@@ -26,6 +26,7 @@ use tauri::{AppHandle, Emitter};
 
 use crate::core::error::AppError;
 use crate::playback::source::{open_track, ReadSeek};
+use crate::playback::spectrum::Spectrum;
 use crate::streaming::smart_cache::SmartCache;
 use crate::streaming::stream_cache::StreamCache;
 
@@ -75,6 +76,9 @@ pub struct Shared {
     failure: Mutex<Option<ErrorInfo>>,
     /// `(source_id, path)` of the loaded track, for cache progress reporting.
     location: Mutex<Option<(String, String)>>,
+    /// Sample tap for the visualiser. Fed by the decode worker, read by its own
+    /// emitter thread; the audio callback never touches it.
+    pub spectrum: Arc<Spectrum>,
 }
 
 impl Shared {
@@ -93,6 +97,7 @@ impl Shared {
             ended: AtomicBool::new(false),
             failure: Mutex::new(None),
             location: Mutex::new(None),
+            spectrum: Arc::new(Spectrum::new()),
         }
     }
 
@@ -303,6 +308,7 @@ impl Engine {
 pub fn start(app: AppHandle, cache: Arc<StreamCache>, smart: Arc<SmartCache>) -> Engine {
     let (tx, rx) = mpsc::channel();
     let shared = Arc::new(Shared::new());
+    let app_handle = app.clone();
 
     let worker_shared = shared.clone();
     let worker_app = app.clone();
@@ -310,6 +316,11 @@ pub fn start(app: AppHandle, cache: Arc<StreamCache>, smart: Arc<SmartCache>) ->
 
     let events_shared = shared.clone();
     std::thread::spawn(move || events::run(app, events_shared));
+
+    // The visualiser needs frames far faster than the 250 ms state tick, and only
+    // while one is subscribed, so it gets a thread of its own.
+    let spectrum_shared = shared.clone();
+    std::thread::spawn(move || events::run_spectrum(app_handle, spectrum_shared));
 
     Engine { tx, shared }
 }
@@ -348,6 +359,26 @@ mod events {
             if state.ended && generation != last_ended_generation {
                 last_ended_generation = generation;
                 let _ = app.emit("audio:ended", ());
+            }
+        }
+    }
+
+    /// Offer analyser frames while a visualiser is subscribed.
+    ///
+    /// Idle — no analysis, no allocation, no IPC — whenever nothing is on screen,
+    /// so keeping the full-screen player closed costs nothing.
+    pub fn run_spectrum(app: AppHandle, shared: Arc<Shared>) {
+        let mut last_seq = 0u64;
+        loop {
+            let spectrum = &shared.spectrum;
+            let fps = spectrum.fps().max(1) as u64;
+            std::thread::sleep(Duration::from_millis(1000 / fps));
+            if !spectrum.is_enabled() {
+                continue;
+            }
+            if let Some(frame) = spectrum.frame_if_new(last_seq) {
+                last_seq = frame.seq;
+                let _ = app.emit("audio:spectrum", frame);
             }
         }
     }
@@ -707,6 +738,15 @@ mod worker {
                 return;
             }
             let pushed = ring.push_slice(&current.pending[current.pending_offset..]);
+            // Visualiser tap: the same samples, on this worker thread, after they
+            // were offered to the ring, so analysis can never delay audio.
+            if pushed > 0 {
+                shared.spectrum.push(
+                    &current.pending[current.pending_offset..current.pending_offset + pushed],
+                    shared.channels.load(Ordering::Relaxed),
+                    shared.sample_rate.load(Ordering::Relaxed),
+                );
+            }
             current.pending_offset += pushed;
             if current.source_done && current.pending_offset >= current.pending.len() {
                 ring.done.store(true, Ordering::Relaxed);

@@ -4,9 +4,9 @@
  */
 
 import type { Component } from "vue";
-import { Disc3, HardDrive, Heart, Library, ListMusic, Mic2, Settings2 } from "@lucide/vue";
+import { AudioLines, Disc3, HardDrive, Heart, Library, ListMusic, Mic2, Settings2 } from "@lucide/vue";
 
-export type View = "library" | "tracks" | "favorites" | "stats" | "artists" | "albums" | "sources" | "source-config" | "playlists" | "playlist-new" | "lyrics-edit" | "track-edit" | "track-info" | "settings" | "sponsor" | "player";
+export type View = "library" | "tracks" | "favorites" | "stats" | "visualizer" | "artists" | "albums" | "sources" | "source-config" | "playlists" | "playlist-new" | "lyrics-edit" | "track-edit" | "track-info" | "settings" | "sponsor" | "player";
 export type Theme = "light" | "dark";
 export type Accent = "amber" | "orange" | "cyan" | "red" | "green" | "blue";
 
@@ -32,6 +32,8 @@ export const collectionNavItems: NavItem[] = [
 
 /** Library classifications, grouped with the collections in the navigation. */
 export const classificationNavItems: NavItem[] = [
+  /** Kiosk entry point: sits between "all tracks" and "artists". */
+  { id: "visualizer", labelKey: "nav.visualizer", index: "V", icon: AudioLines },
   { id: "artists", labelKey: "nav.artists", index: "G", icon: Mic2 },
   { id: "albums", labelKey: "nav.albums", index: "B", icon: Disc3 },
   { id: "sources", labelKey: "nav.sources", index: "S", icon: HardDrive },
