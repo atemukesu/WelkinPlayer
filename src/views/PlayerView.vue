@@ -401,11 +401,11 @@ watch(
         </div>
       </div>
       <div class="flex min-h-0 min-w-0 flex-col justify-center">
-        <div class="mb-5 md:hidden">
+         <div class="mb-5 md:hidden">
           <h1 class="mt-2 truncate text-xl font-black leading-none tracking-tight">{{ player.currentTrack.title }}</h1>
           <button v-if="player.currentTrack.album" type="button" class="mt-2 block w-fit max-w-full truncate text-left text-sm text-muted transition-colors hover:text-accent" :title="t('library.openAlbum')" @click="emit('openAlbum', player.currentTrack.album)">{{ player.currentTrack.album }}</button>
-        </div>
-        <div ref="lyricsScroll" class="lyrics-scroll min-h-0 flex-1 overflow-hidden border-l border-line pl-6 md:max-h-[76vh] md:pl-10" :style="{ '--active-index': lyrics.activeIndex, '--line-size': `${lyrics.classic.lineSize}px`, '--translation-size': `${lyrics.classic.translationSize}px`, '--line-spacing': `${lyrics.classic.lineSpacing}px`, '--line-weight': lyrics.classic.fontWeight, '--line-weight-active': lyricActiveWeight, fontFamily: lyricFontFamily }" @wheel.prevent="onWheel" @pointerdown="onTouchStart" @pointermove="onTouchMove" @pointerup="onTouchEnd" @pointercancel="onTouchEnd">
+         </div>
+         <div ref="lyricsScroll" class="lyrics-scroll min-h-0 flex-1 overflow-hidden border-l border-line pl-6 md:max-h-[76vh] md:pl-10" :style="{ '--active-index': lyrics.activeIndex, '--line-size': `${lyrics.classic.lineSize}px`, '--translation-size': `${lyrics.classic.translationSize}px`, '--line-spacing': `${lyrics.classic.lineSpacing}px`, '--line-weight': lyrics.classic.fontWeight, '--line-weight-active': lyricActiveWeight, fontFamily: lyricFontFamily }" @wheel.prevent="onWheel" @pointerdown="onTouchStart" @pointermove="onTouchMove" @pointerup="onTouchEnd" @pointercancel="onTouchEnd">
           <div ref="lyricsTrack" class="lyrics-track" :class="{ 'is-manual': manualScroll }" :style="{ transform: `translate3d(0, ${-scrollOffset}px, 0)` }">
           <div class="pt-[30vh] pb-[50vh]">
             <p v-if="lyrics.status === 'loading'" class="text-muted">{{ t("lyrics.loading") }}</p>
@@ -430,7 +430,7 @@ watch(
         </div>
       </div>
     </div>
-    <PlayerBar @open="emit('navigate', returnView)" @queue="emit('queue')" />
+    <PlayerBar waveform @open="emit('navigate', returnView)" @queue="emit('queue')" />
   </div>
 </template>
 

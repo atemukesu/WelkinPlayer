@@ -533,6 +533,8 @@ const messages = {
       appearance: {
         title: "外观",
         desc: "自定义界面主题、主题色与语言。",
+        waveform: "显示波形图",
+        waveformHint: "在播放页显示实时频谱波形，默认关闭。",
       },
       cache: {
         title: "本地缓存",
@@ -1319,7 +1321,9 @@ const messages = {
       },
       appearance: {
         title: "Appearance",
-        desc: "Customize the interface theme, accent color, and language.",
+        desc: "Customize the interface theme, accent colour and language.",
+        waveform: "Show waveform",
+        waveformHint: "Show a real-time frequency spectrum on the player pages. Off by default.",
       },
       cache: {
         title: "Local cache",

@@ -89,6 +89,7 @@ rodio = { version = "0.21", default-features = false, features = ["playback", "f
 # Pitch-preserving playback-speed changes (WSOLA time-stretch). Pure Rust, so
 # it cross-compiles to Android with no extra C/C++ toolchain.
 wsola = "0.2"
+rustfft = "6"
 # Lock-free single-producer/single-consumer audio transport. The producer
 # stays on the decode worker and the consumer is owned by RingSource.
 rtrb = "0.3"

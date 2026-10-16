@@ -51,12 +51,23 @@ fn output_samples(rate: u32, channels: u16, millis: usize) -> usize {
 }
 /// Interleaved output samples produced per stretcher refill on the worker.
 const STRETCH_REFILL: usize = 8192;
+/// Number of output frames represented by one realtime waveform sample.
+const WAVEFORM_BUCKET_FRAMES: usize = 1024;
+const WAVEFORM_SLOTS: usize = 96;
+const SPECTRUM_SIZE: usize = 2048;
 
 /// A transport error surfaced to the frontend on `audio:error`.
 #[derive(Clone, Serialize)]
 pub struct ErrorInfo {
     pub code: String,
     pub message: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpectrumPayload {
+    pub sample_rate: u32,
+    pub magnitudes: Vec<f32>,
 }
 
 /// State snapshot pushed on `audio:state` (and returned by `audio_state`).
@@ -94,6 +105,12 @@ pub struct Shared {
     /// A new entry is recorded whenever the tempo changes so the playhead stays
     /// continuous even though the stretcher only ever sees constant-rate runs.
     segments: Mutex<VecDeque<Segment>>,
+    /// Peak amplitudes written by the realtime output callback. Each slot is an
+    /// atomic bit pattern so the callback never takes a lock or allocates.
+    waveform: [AtomicU32; WAVEFORM_SLOTS],
+    waveform_sequence: AtomicU64,
+    spectrum: [AtomicU32; SPECTRUM_SIZE],
+    spectrum_sequence: AtomicU64,
 }
 
 /// One constant-tempo run of playback. `out` is an interleaved output-sample
@@ -140,6 +157,10 @@ impl Shared {
             failure: Mutex::new(None),
             location: Mutex::new(None),
             segments: Mutex::new(VecDeque::new()),
+            waveform: std::array::from_fn(|_| AtomicU32::new(0)),
+            waveform_sequence: AtomicU64::new(0),
+            spectrum: std::array::from_fn(|_| AtomicU32::new(0)),
+            spectrum_sequence: AtomicU64::new(0),
         }
     }
 
@@ -276,6 +297,60 @@ impl Shared {
             pos_secs: base_secs,
             tempo,
         });
+        self.waveform_sequence.store(0, Ordering::Release);
+        for sample in &self.waveform {
+            sample.store(0, Ordering::Relaxed);
+        }
+        self.spectrum_sequence.store(0, Ordering::Release);
+        for sample in &self.spectrum {
+            sample.store(0, Ordering::Relaxed);
+        }
+    }
+
+    fn waveform_samples(&self) -> (u64, Vec<f32>) {
+        let sequence = self.waveform_sequence.load(Ordering::Acquire);
+        let count = sequence.min(WAVEFORM_SLOTS as u64) as usize;
+        let start = sequence.saturating_sub(count as u64);
+        let samples = (0..count)
+            .map(|offset| {
+                f32::from_bits(
+                    self.waveform[(start as usize + offset) % WAVEFORM_SLOTS]
+                        .load(Ordering::Relaxed),
+                )
+            })
+            .collect();
+        (sequence, samples)
+    }
+
+    /// Publish one completed waveform bucket from the output callback.
+    fn push_waveform_sample(&self, peak: f32) {
+        let sequence = self.waveform_sequence.load(Ordering::Relaxed);
+        self.waveform[(sequence as usize) % WAVEFORM_SLOTS]
+            .store(peak.to_bits(), Ordering::Relaxed);
+        self.waveform_sequence
+            .store(sequence + 1, Ordering::Release);
+    }
+
+    fn push_spectrum_sample(&self, sample: f32) {
+        let sequence = self.spectrum_sequence.load(Ordering::Relaxed);
+        self.spectrum[(sequence as usize) % SPECTRUM_SIZE]
+            .store(sample.to_bits(), Ordering::Relaxed);
+        self.spectrum_sequence
+            .store(sequence + 1, Ordering::Release);
+    }
+
+    fn spectrum_samples(&self) -> Vec<f32> {
+        let sequence = self.spectrum_sequence.load(Ordering::Acquire);
+        let count = sequence.min(SPECTRUM_SIZE as u64) as usize;
+        let start = sequence.saturating_sub(count as u64);
+        (0..count)
+            .map(|offset| {
+                f32::from_bits(
+                    self.spectrum[(start as usize + offset) % SPECTRUM_SIZE]
+                        .load(Ordering::Relaxed),
+                )
+            })
+            .collect()
     }
 
     /// Anchor a new constant-tempo segment at the given produced output index.
@@ -392,6 +467,9 @@ struct RingSource {
     gain_step: f32,
     ramp_frames: u32,
     channel_cursor: u16,
+    waveform_peak: f32,
+    waveform_frames: usize,
+    spectrum_sum: f32,
 }
 
 impl Iterator for RingSource {
@@ -432,6 +510,20 @@ impl Iterator for RingSource {
         match popped {
             Some(value) => {
                 self.progress.frames.fetch_add(1, Ordering::Relaxed);
+                self.waveform_peak = self.waveform_peak.max(value.abs());
+                self.spectrum_sum += value;
+                if self.channel_cursor + 1 >= self.channels {
+                    self.shared
+                        .push_spectrum_sample(self.spectrum_sum / self.channels as f32);
+                    self.spectrum_sum = 0.0;
+                    self.waveform_frames += 1;
+                    if self.waveform_frames >= WAVEFORM_BUCKET_FRAMES {
+                        self.shared
+                            .push_waveform_sample(self.waveform_peak.clamp(0.0, 1.0));
+                        self.waveform_peak = 0.0;
+                        self.waveform_frames = 0;
+                    }
+                }
                 if self.channel_cursor == 0 && self.ramp_frames > 0 {
                     self.gain += self.gain_step;
                     self.ramp_frames -= 1;
@@ -561,23 +653,63 @@ mod events {
     pub fn run(app: AppHandle, shared: Arc<Shared>, shutdown: Arc<AtomicBool>) {
         let mut last_ended_generation = u64::MAX;
         let mut last_underruns = 0u64;
+        let mut state_ticks = 0u64;
+        let mut last_waveform_sequence = 0u64;
+        let mut planner = rustfft::FftPlanner::<f32>::new();
+        let fft = planner.plan_fft_forward(SPECTRUM_SIZE);
         while !shutdown.load(Ordering::Acquire) {
-            std::thread::sleep(Duration::from_millis(STATE_INTERVAL_MS));
+            std::thread::sleep(Duration::from_millis(50));
             if shutdown.load(Ordering::Acquire) {
                 break;
             }
 
             let state = shared.snapshot();
-            let _ = app.emit("audio:state", state);
-            log::debug!(
-                "playback: state playing={} pos={:.3}s dur={:.3}s ended={} played={}",
-                state.playing,
-                state.position_ms / 1000.0,
-                state.duration_ms / 1000.0,
-                state.ended,
-                shared.played(),
-            );
-
+            // State remains intentionally low frequency; waveform samples use
+            // the faster loop below without making transport events noisy.
+            state_ticks += 1;
+            let emit_state = state_ticks >= (STATE_INTERVAL_MS / 50);
+            if emit_state {
+                state_ticks = 0;
+                let _ = app.emit("audio:state", state);
+                log::debug!(
+                    "playback: state playing={} pos={:.3}s dur={:.3}s ended={} played={}",
+                    state.playing,
+                    state.position_ms / 1000.0,
+                    state.duration_ms / 1000.0,
+                    state.ended,
+                    shared.played(),
+                );
+            }
+            let (waveform_sequence, waveform) = shared.waveform_samples();
+            let should_emit_waveform = waveform_sequence != last_waveform_sequence;
+            if should_emit_waveform {
+                last_waveform_sequence = waveform_sequence;
+                let _ = app.emit("audio:waveform", waveform);
+            }
+            let samples = shared.spectrum_samples();
+            if samples.len() == SPECTRUM_SIZE {
+                let mut buffer: Vec<rustfft::num_complex::Complex<f32>> = samples
+                    .into_iter()
+                    .map(|sample| rustfft::num_complex::Complex::new(sample, 0.0))
+                    .collect();
+                let mean =
+                    buffer.iter().map(|sample| sample.re).sum::<f32>() / SPECTRUM_SIZE as f32;
+                for sample in &mut buffer {
+                    sample.re -= mean;
+                }
+                fft.process(&mut buffer);
+                let magnitudes = buffer[..SPECTRUM_SIZE / 2]
+                    .iter()
+                    .map(|sample| (sample.norm() / SPECTRUM_SIZE as f32 * 2.0).min(1.0))
+                    .collect();
+                let _ = app.emit(
+                    "audio:spectrum",
+                    SpectrumPayload {
+                        sample_rate: shared.sample_rate.load(Ordering::Relaxed),
+                        magnitudes,
+                    },
+                );
+            }
             // Surface buffer underruns: silence injected before the decoder
             // caught up (debug level; hidden at the default `Info` cap).
             let underruns = shared.underruns.load(Ordering::Relaxed);
@@ -1331,6 +1463,9 @@ mod worker {
                 gain_step: 0.0,
                 ramp_frames: 0,
                 channel_cursor: 0,
+                waveform_peak: 0.0,
+                waveform_frames: 0,
+                spectrum_sum: 0.0,
             });
         }
 
@@ -1383,6 +1518,9 @@ mod tests {
             gain_step: 0.0,
             ramp_frames: 0,
             channel_cursor: 0,
+            waveform_peak: 0.0,
+            waveform_frames: 0,
+            spectrum_sum: 0.0,
         }
     }
 

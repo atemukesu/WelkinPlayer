@@ -23,6 +23,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import "@applemusic-like-lyrics/core/style.css";
 import AmllBackground from "../components/AmllBackground.vue";
 import AmllLyrics from "../components/AmllLyrics.vue";
+import RealtimeWaveform from "../components/RealtimeWaveform.vue";
 import { usePlayerStore } from "../stores/player";
 import { useLyricsStore } from "../stores/lyrics";
 import { currentTime, seekPercent, seekTo } from "../lib/audio";
@@ -296,56 +297,36 @@ function onLyricSeek(timeMs: number) {
           <small class="truncate text-xs leading-tight text-white/70">{{ player.currentTrack.artist }}</small>
         </span>
       </div>
-      <div class="absolute right-4 top-1/2 -translate-y-1/2">
-        <div class="flex items-center gap-2 transition-all duration-300 ease-out" :class="revealClass">
-          <button
-            type="button"
-            class="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-white/10 text-white backdrop-blur transition hover:bg-white/20"
-            :aria-label="t('controls.return')"
-            @click="emit('navigate', returnView)"
-          >
-            <ChevronDown :size="20" :stroke-width="2" />
-          </button>
-          <button
-            type="button"
-            class="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-white/10 text-white backdrop-blur transition hover:bg-white/20"
-            :title="fullscreenTitle"
-            :aria-label="fullscreenTitle"
-            :aria-pressed="isFullscreen"
-            @click="toggleFullscreen()"
-          >
-            <Minimize2 v-if="isFullscreen" :size="18" :stroke-width="2" />
-            <Maximize2 v-else :size="18" :stroke-width="2" />
-          </button>
-        </div>
-      </div>
     </header>
+
+    <div class="pointer-events-none absolute right-8 top-[calc(env(safe-area-inset-top)+2rem)] z-30">
+      <div class="flex items-center gap-4 transition-all duration-300 ease-out" :class="revealClass">
+        <button
+          type="button"
+          class="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-white/10 text-white backdrop-blur transition hover:bg-white/20"
+          :aria-label="t('controls.return')"
+          @click="emit('navigate', returnView)"
+        >
+          <ChevronDown :size="20" :stroke-width="2" />
+        </button>
+        <button
+          type="button"
+          class="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-white/10 text-white backdrop-blur transition hover:bg-white/20"
+          :title="fullscreenTitle"
+          :aria-label="fullscreenTitle"
+          :aria-pressed="isFullscreen"
+          @click="toggleFullscreen()"
+        >
+          <Minimize2 v-if="isFullscreen" :size="18" :stroke-width="2" />
+          <Maximize2 v-else :size="18" :stroke-width="2" />
+        </button>
+      </div>
+    </div>
 
     <div class="relative z-10 flex h-full flex-col px-6 pt-[env(safe-area-inset-top)] md:grid md:grid-cols-[minmax(240px,0.82fr)_minmax(0,1.18fr)] md:grid-rows-1 md:gap-14 md:px-14 md:pt-0 lg:px-24">
       <div class="amll-controls order-2 shrink-0 md:order-none md:min-h-0" :data-collapsed="controlsVisible ? 'false' : 'true'">
-        <div class="flex flex-col items-center justify-center gap-6 px-6 pb-6 pt-4 md:h-full md:gap-6 md:px-0 md:pb-16 md:pt-24">
+        <div class="relative flex flex-col items-center justify-center gap-6 px-6 pb-6 pt-4 md:h-full md:gap-6 md:px-0 md:py-10">
         <div class="relative hidden w-full max-w-[420px] md:block">
-          <div class="absolute -top-20 left-1/2 flex -translate-x-1/2 items-center gap-4 transition-all duration-300 ease-out" :class="revealClass">
-            <button
-              type="button"
-              class="grid h-11 w-11 place-items-center rounded-full bg-white/10 text-white backdrop-blur transition hover:bg-white/20"
-              :aria-label="t('controls.return')"
-              @click="emit('navigate', returnView)"
-            >
-              <ChevronDown :size="20" :stroke-width="2" />
-            </button>
-            <button
-              type="button"
-              class="grid h-11 w-11 place-items-center rounded-full bg-white/10 text-white backdrop-blur transition hover:bg-white/20"
-              :title="fullscreenTitle"
-              :aria-label="fullscreenTitle"
-              :aria-pressed="isFullscreen"
-              @click="toggleFullscreen()"
-            >
-              <Minimize2 v-if="isFullscreen" :size="18" :stroke-width="2" />
-              <Maximize2 v-else :size="18" :stroke-width="2" />
-            </button>
-          </div>
           <div class="aspect-square w-full overflow-hidden rounded-2xl shadow-2xl shadow-black/40" :style="{ backgroundColor: player.currentTrack.color }">
             <img v-if="player.currentTrack.cover" :src="player.currentTrack.cover" alt="" decoding="async" class="h-full w-full object-cover" />
             <span v-else-if="coverPending(player.currentTrack)" class="grid h-full w-full place-items-center text-white/90"><LoaderCircle :size="44" :stroke-width="1.8" class="animate-spin" /></span>
@@ -357,8 +338,8 @@ function onLyricSeek(timeMs: number) {
           <p class="mt-2 truncate text-lg text-white/75">{{ player.currentTrack.artist }}</p>
         </div>
 
-        <div class="w-full max-w-[420px]">
-          <div class="flex h-[9px] items-center">
+         <div class="w-full max-w-[420px]">
+           <div class="flex h-[9px] items-center">
             <input
               :value="sliderValue"
               :style="{ '--fill': percent(sliderValue), '--buffered': percent(player.bufferedProgress) }"
@@ -414,6 +395,7 @@ function onLyricSeek(timeMs: number) {
             </button>
           </div>
         </div>
+          <RealtimeWaveform class="w-full max-w-[420px] text-white md:absolute md:inset-x-0 md:bottom-0 md:mx-auto" />
         </div>
       </div>
 
@@ -459,7 +441,7 @@ function onLyricSeek(timeMs: number) {
  * animate `max-height` instead.
  */
 .amll-controls {
-  max-height: 180px;
+  max-height: 230px;
   overflow: hidden;
   transition: max-height 320ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 220ms ease;
 }
@@ -480,6 +462,14 @@ function onLyricSeek(timeMs: number) {
   }
 }
 
+
+/*
+ * The waveform is pinned flush to the bottom of the screen (inside the left
+ * column) and only grows upward, mirroring the full-screen player's waveform.
+ */
+.amll-page :deep(.realtime-waveform__bar) {
+  transform-origin: bottom;
+}
 
 .amll-page :deep(.ak-slider) {
   height: 6px;

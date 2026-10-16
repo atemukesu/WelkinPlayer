@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: GPL-3.0-only
  */
 
-import { effectScope, watch } from "vue";
+import { effectScope, shallowRef, watch } from "vue";
 import type { EffectScope } from "vue";
 import { listen } from "@tauri-apps/api/event";
 import type { UnlistenFn } from "@tauri-apps/api/event";
@@ -61,6 +61,14 @@ interface AudioErrorPayload {
   message: string;
 }
 
+export interface SpectrumData {
+  sampleRate: number;
+  magnitudes: number[];
+}
+
+/** FFT frequency magnitudes published by the native output callback. */
+export const spectrumData = shallowRef<SpectrumData | null>(null);
+
 let scope: EffectScope | null = null;
 let initPromise: Promise<void> | null = null;
 let unlisteners: UnlistenFn[] = [];
@@ -100,6 +108,14 @@ function onState(payload: AudioStatePayload) {
   maybePrefetchNext(position, duration);
 }
 
+function onSpectrum(payload: SpectrumData) {
+  if (!payload || !Array.isArray(payload.magnitudes)) return;
+  spectrumData.value = {
+    sampleRate: Number(payload.sampleRate) || 44100,
+    magnitudes: payload.magnitudes.map((sample) => Math.max(0, Math.min(1, Number(sample) || 0))),
+  };
+}
+
 function reportStreamProgress(position: number, duration: number, force = false) {
   const track = usePlayerStore().currentTrack;
   if (!track?.path || !track.sourceId) return;
@@ -127,6 +143,7 @@ async function syncTrack() {
   const player = usePlayerStore();
   const track = player.currentTrack;
   prefetchedKey = null;
+  spectrumData.value = null;
   lastStreamReportKey = null;
   lastStreamReportAt = 0;
   if (!track?.path) {
@@ -217,6 +234,7 @@ async function bootstrap(): Promise<void> {
   const player = usePlayerStore();
 
   unlisteners.push(await listen<AudioStatePayload>("audio:state", (event) => onState(event.payload)));
+  unlisteners.push(await listen<SpectrumData>("audio:spectrum", (event) => onSpectrum(event.payload)));
   unlisteners.push(await listen("audio:ended", onEnded));
   unlisteners.push(await listen<AudioErrorPayload>("audio:error", (event) => onError(event.payload)));
 
