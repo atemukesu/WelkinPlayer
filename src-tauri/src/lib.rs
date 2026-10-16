@@ -215,6 +215,8 @@ pub fn run() {
             playback::commands::audio_stop,
             #[cfg(any(desktop, target_os = "android"))]
             playback::commands::audio_state,
+            #[cfg(any(desktop, target_os = "android"))]
+            playback::commands::audio_spectrum_config,
             commands::desktop_lyric::desktop_lyric_open,
             commands::desktop_lyric::desktop_lyric_close,
             commands::desktop_lyric::desktop_lyric_load,

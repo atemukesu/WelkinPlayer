@@ -60,3 +60,25 @@ pub fn audio_stop(engine: State<Engine>) -> Result<(), AppError> {
 pub fn audio_state(engine: State<Engine>) -> AudioState {
     engine.shared().snapshot()
 }
+
+/// Turn the spectrum analyser on/off and size it for the visualiser.
+///
+/// Analysis only runs while a visualiser is on screen, so this is what keeps a
+/// closed full-screen player free of the extra per-sample work.
+#[tauri::command]
+pub fn audio_spectrum_config(
+    engine: State<Engine>,
+    enabled: bool,
+    bands: Option<usize>,
+    fps: Option<u32>,
+) {
+    let shared = engine.shared();
+    let spectrum = &shared.spectrum;
+    spectrum.set_enabled(enabled);
+    if let Some(bands) = bands {
+        spectrum.set_bands(bands);
+    }
+    if let Some(fps) = fps {
+        spectrum.set_fps(fps);
+    }
+}
