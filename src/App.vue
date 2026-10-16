@@ -313,7 +313,29 @@ async function downloadMetadata(track: Track) {
 function toggleSidebar() { sidebarCollapsed.value = !sidebarCollapsed.value; localStorage.setItem("welkin-sidebar-collapsed", sidebarCollapsed.value ? "1" : "0"); }
 /** Re-verify the Pro license from scratch whenever the app regains focus. */
 function recheckLicense() { void license.refresh(); }
+/**
+ * Escape quits on kiosk builds: the Batocera port launcher sets WELKIN_ESC_QUITS=1
+ * so the player returns to EmulationStation like any other emulator.
+ */
+let escQuits = false;
+async function loadEscQuit() {
+  try {
+    escQuits = await invoke<boolean>("esc_quit_enabled");
+  } catch (error) {
+    console.warn("[welkin] esc-quit probe failed", describeError(error));
+  }
+}
+
 function onGlobalKeydown(event: KeyboardEvent) {
+  if (escQuits && event.key === "Escape") {
+    const escapeTarget = event.target as HTMLElement | null;
+    if (escapeTarget) {
+      const tag = escapeTarget.tagName.toLowerCase();
+      if (escapeTarget.isContentEditable || tag === "input" || tag === "textarea" || tag === "select") return;
+    }
+    void invoke("quit_application").catch((error) => console.warn("[welkin] quit failed", describeError(error)));
+    return;
+  }
   if (event.code !== "Space" && event.key !== " ") return;
   const target = event.target as HTMLElement | null;
   if (!target) return;
@@ -325,7 +347,7 @@ function onGlobalKeydown(event: KeyboardEvent) {
   player.togglePlayback();
 }
 
-onMounted(() => { windowBehavior.sync(); window.addEventListener("hashchange", syncViewFromHash); window.addEventListener("keydown", onGlobalKeydown); window.addEventListener("beforeunload", savePlaybackPositionOnLeave); window.addEventListener("pagehide", savePlaybackPositionOnLeave); window.addEventListener("focus", recheckLicense); document.addEventListener("visibilitychange", onVisibilityChange); void initAudio(); void network.start(); void cache.start(); bootDesktopLyrics(); bootMediaControl(); void invoke<string>("ping").catch((error) => console.warn("[welkin] ping failed", describeError(error))); void bootstrap(); });
+onMounted(() => { void loadEscQuit(); windowBehavior.sync(); window.addEventListener("hashchange", syncViewFromHash); window.addEventListener("keydown", onGlobalKeydown); window.addEventListener("beforeunload", savePlaybackPositionOnLeave); window.addEventListener("pagehide", savePlaybackPositionOnLeave); window.addEventListener("focus", recheckLicense); document.addEventListener("visibilitychange", onVisibilityChange); void initAudio(); void network.start(); void cache.start(); bootDesktopLyrics(); bootMediaControl(); void invoke<string>("ping").catch((error) => console.warn("[welkin] ping failed", describeError(error))); void bootstrap(); });
 onUnmounted(() => { savePlaybackPosition(true); stopDesktopLyrics(); stopMediaControl(); window.removeEventListener("hashchange", syncViewFromHash); window.removeEventListener("keydown", onGlobalKeydown); window.removeEventListener("beforeunload", savePlaybackPositionOnLeave); window.removeEventListener("pagehide", savePlaybackPositionOnLeave); window.removeEventListener("focus", recheckLicense); document.removeEventListener("visibilitychange", onVisibilityChange); void profile.flush(); });
 </script>
 
