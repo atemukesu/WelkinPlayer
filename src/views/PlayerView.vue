@@ -5,16 +5,28 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { ChevronDown, LoaderCircle, Maximize2, Minimize2 } from "@lucide/vue";
+import {
+  ChevronDown,
+  LoaderCircle,
+  Maximize2,
+  Minimize2,
+  Pause,
+  Play,
+  Repeat,
+  Repeat1,
+  Shuffle,
+  SkipBack,
+  SkipForward,
+} from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { usePlayerStore } from "../stores/player";
 import { useLyricsStore } from "../stores/lyrics";
-import { currentTime } from "../lib/audio";
-import { coverPending, initial } from "../lib/format";
+import { currentTime, seekPercent } from "../lib/audio";
+import { coverPending, initial, percent } from "../lib/format";
 import { cssFontFamily } from "../lib/fonts";
 import { useWakeLock } from "../composables/useWakeLock";
-import PlayerBar from "../components/PlayerBar.vue";
+import RealtimeWaveform from "../components/RealtimeWaveform.vue";
 import type { View } from "../lib/app";
 
 defineProps<{ returnView: View }>();
@@ -91,6 +103,61 @@ async function toggleFullscreen() {
 }
 
 const fullscreenTitle = computed(() => (isFullscreen.value ? t("controls.exitFullscreen") : t("controls.fullscreen")));
+
+const repeatTitle = computed(() => player.repeat === "one" ? t("controls.repeatOne") : player.repeat === "all" ? t("controls.repeatAll") : t("controls.repeatOff"));
+const shuffleTitle = computed(() => player.shuffle ? t("controls.shuffleOn") : t("controls.shuffleOff"));
+/** Whether the total-time label toggles to show the remaining time instead. */
+const showRemaining = ref(false);
+
+/**
+ * Scrub state. While the user drags, the slider shows `seekValue` instead of
+ * `player.progress`, so the engine's ~4 Hz state ticks cannot yank the thumb
+ * back mid-gesture. The value is committed on pointer release (and on `change`
+ * for keyboard), never left dangling as a bare preview.
+ */
+const seekValue = ref<number | null>(null);
+const sliderValue = computed(() => seekValue.value ?? player.progress);
+let pointerSeeking = false;
+let pointerCommitDone = false;
+
+function onSeek(event: Event) {
+  const value = Number((event.target as HTMLInputElement).value);
+  if (!Number.isFinite(value)) return;
+  seekValue.value = value;
+  pointerCommitDone = false;
+  seekPercent(value, false);
+}
+
+function commitSeek(event: Event) {
+  // `change` handles keyboard and is the normal release path, but the webview
+  // can skip it after a pointer release; a pointer gesture already commits.
+  if (pointerSeeking) return;
+  if (pointerCommitDone) {
+    pointerCommitDone = false;
+    return;
+  }
+  const value = Number((event.target as HTMLInputElement).value);
+  if (!Number.isFinite(value)) return;
+  seekValue.value = null;
+  seekPercent(value, true);
+}
+
+function beginSeek() {
+  pointerSeeking = true;
+  pointerCommitDone = false;
+  seekValue.value = player.progress;
+}
+
+function endSeek() {
+  if (!pointerSeeking) return;
+  pointerSeeking = false;
+  if (pointerCommitDone) return;
+  const value = seekValue.value;
+  if (value === null) return;
+  pointerCommitDone = true;
+  seekValue.value = null;
+  seekPercent(value, true);
+}
 
 function syncLyrics() {
   const positionMs = currentTime() * 1000;
@@ -387,23 +454,68 @@ watch(
         </button>
       </div>
     </header>
-    <div class="relative z-10 grid min-h-0 flex-1 gap-6 overflow-hidden px-5 py-4 md:grid-cols-[minmax(220px,0.34fr)_minmax(0,0.66fr)] md:gap-12 md:px-10 md:py-8 lg:grid-cols-[minmax(280px,0.32fr)_minmax(0,0.68fr)] lg:gap-16 lg:px-16">
-      <div class="hidden min-h-0 flex-col justify-center md:flex">
-        <div class="ak-frame mx-auto aspect-square w-full max-w-[420px] overflow-hidden" :style="{ backgroundColor: player.currentTrack.color }">
+    <div class="relative z-10 grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] gap-6 overflow-hidden px-5 py-4 md:grid-cols-[minmax(220px,0.34fr)_minmax(0,0.66fr)] md:grid-rows-1 md:gap-12 md:px-10 md:py-8 lg:grid-cols-[minmax(280px,0.32fr)_minmax(0,0.68fr)] lg:gap-16 lg:px-16">
+      <div class="order-2 flex min-h-0 flex-col justify-end md:order-none md:justify-center">
+        <div class="ak-frame mx-auto hidden aspect-square w-full max-w-[420px] overflow-hidden md:block" :style="{ backgroundColor: player.currentTrack.color }">
           <img v-if="player.currentTrack.cover" :src="player.currentTrack.cover" alt="" decoding="async" class="h-full w-full object-cover" />
           <span v-else-if="coverPending(player.currentTrack)" class="grid h-full w-full place-items-center text-white/90"><LoaderCircle :size="40" :stroke-width="1.8" class="animate-spin" /></span>
           <span v-else-if="player.currentTrack.metaLoaded" class="grid h-full w-full place-items-center text-8xl font-black text-white/90">{{ initial(player.currentTrack) }}</span>
         </div>
-        <div class="mx-auto mt-6 w-full max-w-[420px]">
+        <div class="mx-auto mt-4 hidden w-full max-w-[420px] md:block">
           <h1 class="mt-3 text-2xl font-black leading-none tracking-tight lg:text-3xl">{{ player.currentTrack.title }}</h1>
-          <button v-if="player.currentTrack.album" type="button" class="mt-4 block w-fit max-w-full truncate text-left text-lg text-muted transition-colors hover:text-accent" :title="t('library.openAlbum')" @click="emit('openAlbum', player.currentTrack.album)">{{ player.currentTrack.album }}</button>
           <button v-if="player.currentTrack.artist" type="button" class="mt-2 block w-fit max-w-full truncate text-left text-base text-dim transition-colors hover:text-accent" :title="t('library.openArtist')" @click="emit('openArtist', player.currentTrack.artist)">{{ player.currentTrack.artist }}</button>
         </div>
+        <div class="mx-auto w-full max-w-[420px] md:mt-4">
+          <div class="flex h-6 items-center">
+            <input
+              :value="sliderValue"
+              :style="{ '--fill': percent(sliderValue), '--buffered': percent(player.bufferedProgress) }"
+              class="ak-slider"
+              type="range"
+              min="0"
+              max="100"
+              aria-label="Playback position"
+              @pointerdown="beginSeek"
+              @input="onSeek"
+              @change="commitSeek"
+              @pointerup="endSeek"
+              @pointercancel="endSeek"
+              @lostpointercapture="endSeek"
+            />
+          </div>
+          <div class="mt-1.5 flex items-center justify-between font-mono text-[13px] tabular-nums text-muted">
+            <span>{{ player.elapsedTime }}</span>
+            <button type="button" class="transition-colors hover:text-fg" :aria-pressed="showRemaining" @click="showRemaining = !showRemaining">
+              <template v-if="showRemaining">-{{ player.remainingTime }}</template>
+              <template v-else>{{ player.totalTime }}</template>
+            </button>
+          </div>
+          <div class="mt-3 flex items-center justify-between gap-3">
+            <button class="grid h-9 w-9 place-items-center" :class="player.shuffle ? 'text-accent' : 'text-muted'" :title="shuffleTitle" @click="player.toggleShuffle()">
+              <Shuffle :size="16" :stroke-width="1.8" />
+            </button>
+            <div class="flex items-center gap-2">
+              <button class="grid h-10 w-10 place-items-center text-fg transition-colors hover:text-accent" @click="player.previous()">
+                <SkipBack :size="18" :stroke-width="2" />
+              </button>
+              <button class="ak-clip grid h-11 w-11 place-items-center bg-accent text-accent-fg transition-transform hover:scale-[1.03] active:scale-95" :aria-label="player.isPlaying ? t('controls.pause') : t('controls.play')" @click="player.togglePlayback()">
+                <Pause v-if="player.isPlaying" :size="20" :stroke-width="2.2" />
+                <Play v-else :size="20" :stroke-width="2.2" />
+              </button>
+              <button class="grid h-10 w-10 place-items-center text-fg transition-colors hover:text-accent" @click="player.next()">
+                <SkipForward :size="18" :stroke-width="2" />
+              </button>
+            </div>
+            <button class="grid h-9 w-9 place-items-center" :class="player.repeat !== 'off' ? 'text-accent' : 'text-muted'" :title="repeatTitle" @click="player.cycleRepeat()">
+              <Repeat1 v-if="player.repeat === 'one'" :size="16" :stroke-width="1.8" />
+              <Repeat v-else :size="16" :stroke-width="1.8" />
+            </button>
+          </div>
+        </div>
       </div>
-      <div class="flex min-h-0 min-w-0 flex-col justify-center">
-         <div class="mb-5 md:hidden">
+      <div class="order-1 flex min-h-0 min-w-0 flex-col justify-center md:order-none">
+         <div class="mb-4 md:hidden">
           <h1 class="mt-2 truncate text-xl font-black leading-none tracking-tight">{{ player.currentTrack.title }}</h1>
-          <button v-if="player.currentTrack.album" type="button" class="mt-2 block w-fit max-w-full truncate text-left text-sm text-muted transition-colors hover:text-accent" :title="t('library.openAlbum')" @click="emit('openAlbum', player.currentTrack.album)">{{ player.currentTrack.album }}</button>
          </div>
          <div ref="lyricsScroll" class="lyrics-scroll min-h-0 flex-1 overflow-hidden border-l border-line pl-6 md:max-h-[76vh] md:pl-10" :style="{ '--active-index': lyrics.activeIndex, '--line-size': `${lyrics.classic.lineSize}px`, '--translation-size': `${lyrics.classic.translationSize}px`, '--line-spacing': `${lyrics.classic.lineSpacing}px`, '--line-weight': lyrics.classic.fontWeight, '--line-weight-active': lyricActiveWeight, fontFamily: lyricFontFamily }" @wheel.prevent="onWheel" @pointerdown="onTouchStart" @pointermove="onTouchMove" @pointerup="onTouchEnd" @pointercancel="onTouchEnd">
           <div ref="lyricsTrack" class="lyrics-track" :class="{ 'is-manual': manualScroll }" :style="{ transform: `translate3d(0, ${-scrollOffset}px, 0)` }">
@@ -430,7 +542,9 @@ watch(
         </div>
       </div>
     </div>
-    <PlayerBar waveform @open="emit('navigate', returnView)" @queue="emit('queue')" />
+    <div class="player-waveform relative z-10 shrink-0">
+      <RealtimeWaveform fit class="text-accent" />
+    </div>
   </div>
 </template>
 
@@ -619,5 +733,16 @@ watch(
   .lyric-primary {
     font-size: var(--line-size, 24px);
   }
+}
+
+/* A touch thicker than the compact PlayerBar slider so it reads clearly on the
+   full-screen player, while keeping the same flat, square-cornered style. */
+.ak-slider {
+  height: 5px;
+}
+
+.ak-slider:hover,
+.ak-slider:focus-visible {
+  height: 7px;
 }
 </style>

@@ -301,14 +301,6 @@ function endSeek() {
 </template>
 
 <style scoped>
-/* The PlayerView waveform sits directly on top of the progress bar and only
-   grows upward from the baseline, so it reads as the top half of the spectrum.
-   `fit` spreads the bars across the wrapper (70% of the progress bar on wide
-   screens, 100% on narrow) with a small gap between them. */
-.player-waveform :deep(.realtime-waveform__bar) {
-  transform-origin: bottom;
-}
-
 .player-tray {
   display: grid;
   grid-template-rows: 1fr;

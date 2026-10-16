@@ -13,7 +13,7 @@ import { formatBytes, formatSpeed } from "../lib/format";
 import { pushToast } from "../lib/toast";
 import { accents } from "../lib/app";
 import type { Accent, Theme } from "../lib/app";
-import { showWaveform } from "../lib/waveform";
+import { showWaveform, waveformScale } from "../lib/waveform";
 import { localeOptions } from "../i18n";
 import { useProfileStore } from "../stores/profile";
 import { useSourcesStore } from "../stores/sources";
@@ -372,10 +372,6 @@ button.text-dim:hover:not(:disabled) {
             <span class="text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("language.label") }}</span>
             <div class="inline-flex border border-line"><button v-for="(item, index) in localeOptions" :key="item.id" type="button" class="h-9 px-4 text-[13px] font-semibold uppercase tracking-[0.2em]" :class="[index ? 'border-l border-line' : '', locale === item.id ? 'bg-accent text-accent-fg' : 'text-muted hover:text-fg']" @click="locale = item.id">{{ t(item.labelKey) }}</button></div>
           </div>
-          <label class="flex items-center justify-between gap-4">
-            <span class="grid gap-1 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.appearance.waveform") }}<span class="text-[11px] font-normal normal-case tracking-normal text-dim">{{ t("settings.appearance.waveformHint") }}</span></span>
-            <input v-model="showWaveform" class="ak-switch shrink-0" type="checkbox" :aria-label="t('settings.appearance.waveform')" />
-          </label>
         </div>
       </section>
 
@@ -437,6 +433,23 @@ button.text-dim:hover:not(:disabled) {
           <p class="text-sm text-muted">{{ t("settings.sources.count", { count: sources.sources.length }) }}</p>
           <p class="flex items-center gap-2 text-[11px] text-dim"><span class="h-2 w-2" :class="sources.hasCloudSync ? 'bg-accent' : 'bg-dim'"></span>{{ sources.hasCloudSync ? t("settings.sources.cloudAvailable") : t("settings.sources.cloudUnavailable") }}</p>
           <div class="flex justify-end"><button type="button" class="ak-clip-tr flex h-10 items-center gap-2 bg-accent px-5 text-[13px] font-bold uppercase tracking-[0.25em] text-accent-fg" @click="emit('sources')"><HardDrive :size="15" />{{ t("settings.sources.manage") }}</button></div>
+        </div>
+      </section>
+
+      <section class="ak-frame grid gap-6 border border-line bg-surface p-6 lg:grid-cols-[1fr_1.3fr]">
+        <div><h2 class="text-sm font-bold uppercase tracking-[0.2em]">{{ t("settings.waveform.title") }}</h2><p class="mt-2 text-sm text-muted">{{ t("settings.waveform.desc") }}</p></div>
+        <div class="grid gap-5">
+          <label class="flex items-center justify-between gap-4">
+            <span class="grid gap-1 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.waveform.show") }}<span class="text-[11px] font-normal normal-case tracking-normal text-dim">{{ t("settings.waveform.showHint") }}</span></span>
+            <input v-model="showWaveform" class="ak-switch shrink-0" type="checkbox" :aria-label="t('settings.waveform.show')" />
+          </label>
+          <label class="flex items-center justify-between gap-4" :class="{ 'opacity-40': !showWaveform }">
+            <span class="grid gap-1 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.waveform.height") }}<span class="text-[11px] font-normal normal-case tracking-normal text-dim">{{ t("settings.waveform.heightHint") }}</span></span>
+            <span class="flex shrink-0 items-center gap-3">
+              <input v-model.number="waveformScale" class="ak-slider w-40" type="range" min="0.5" max="3" step="0.25" :style="{ '--fill': `${((waveformScale - 0.5) / 2.5) * 100}%` }" :disabled="!showWaveform" :aria-label="t('settings.waveform.height')" />
+              <span class="w-12 text-right font-mono text-sm tabular-nums text-fg">{{ waveformScale }}×</span>
+            </span>
+          </label>
         </div>
       </section>
 

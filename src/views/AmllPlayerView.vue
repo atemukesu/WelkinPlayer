@@ -260,7 +260,7 @@ function onLyricSeek(timeMs: number) {
 <template>
   <div
     v-if="player.currentTrack"
-    class="amll-page fixed inset-0 z-50 overflow-hidden text-white"
+    class="amll-page fixed inset-0 z-50 flex flex-col overflow-hidden text-white"
     :class="{ 'is-open': visible }"
     @transitionend="onTransitionEnd"
     :style="{
@@ -323,7 +323,7 @@ function onLyricSeek(timeMs: number) {
       </div>
     </div>
 
-    <div class="relative z-10 flex h-full flex-col px-6 pt-[env(safe-area-inset-top)] md:grid md:grid-cols-[minmax(240px,0.82fr)_minmax(0,1.18fr)] md:grid-rows-1 md:gap-14 md:px-14 md:pt-0 lg:px-24">
+    <div class="relative z-10 flex min-h-0 flex-1 flex-col px-6 pt-[env(safe-area-inset-top)] md:grid md:grid-cols-[minmax(240px,0.82fr)_minmax(0,1.18fr)] md:grid-rows-1 md:gap-14 md:px-14 md:pt-0 lg:px-24">
       <div class="amll-controls order-2 shrink-0 md:order-none md:min-h-0" :data-collapsed="controlsVisible ? 'false' : 'true'">
         <div class="relative flex flex-col items-center justify-center gap-6 px-6 pb-6 pt-4 md:h-full md:gap-6 md:px-0 md:py-10">
         <div class="relative hidden w-full max-w-[420px] md:block">
@@ -395,7 +395,6 @@ function onLyricSeek(timeMs: number) {
             </button>
           </div>
         </div>
-          <RealtimeWaveform class="w-full max-w-[420px] text-white md:absolute md:inset-x-0 md:bottom-0 md:mx-auto" />
         </div>
       </div>
 
@@ -419,6 +418,7 @@ function onLyricSeek(timeMs: number) {
         <p v-else-if="!lyrics.suppressed" class="text-center text-white/70">{{ t("lyrics.empty") }}</p>
       </div>
     </div>
+    <RealtimeWaveform fit class="pointer-events-none relative z-30 shrink-0 text-white md:absolute md:inset-x-0 md:bottom-0" />
   </div>
 </template>
 
@@ -462,14 +462,6 @@ function onLyricSeek(timeMs: number) {
   }
 }
 
-
-/*
- * The waveform is pinned flush to the bottom of the screen (inside the left
- * column) and only grows upward, mirroring the full-screen player's waveform.
- */
-.amll-page :deep(.realtime-waveform__bar) {
-  transform-origin: bottom;
-}
 
 .amll-page :deep(.ak-slider) {
   height: 6px;

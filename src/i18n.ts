@@ -533,8 +533,14 @@ const messages = {
       appearance: {
         title: "外观",
         desc: "自定义界面主题、主题色与语言。",
-        waveform: "显示波形图",
-        waveformHint: "在播放页显示实时频谱波形，默认关闭。",
+      },
+      waveform: {
+        title: "波形图",
+        desc: "播放页底部的实时频谱波形。",
+        show: "显示波形图",
+        showHint: "在播放页显示实时频谱波形，默认关闭。",
+        height: "波形高度",
+        heightHint: "以默认高度的倍数缩放波形高度。",
       },
       cache: {
         title: "本地缓存",
@@ -1322,8 +1328,14 @@ const messages = {
       appearance: {
         title: "Appearance",
         desc: "Customize the interface theme, accent colour and language.",
-        waveform: "Show waveform",
-        waveformHint: "Show a real-time frequency spectrum on the player pages. Off by default.",
+      },
+      waveform: {
+        title: "Waveform",
+        desc: "The real-time frequency spectrum shown at the bottom of the player pages.",
+        show: "Show waveform",
+        showHint: "Show a real-time frequency spectrum on the player pages. Off by default.",
+        height: "Waveform height",
+        heightHint: "Scale the waveform height by a multiple of the default.",
       },
       cache: {
         title: "Local cache",
