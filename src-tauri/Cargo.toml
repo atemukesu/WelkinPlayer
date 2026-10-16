@@ -86,6 +86,12 @@ tauri-plugin-updater = "2"
 # pull the matching Symphonia demuxer+codec pairs; `symphonia-alac` adds ALAC.
 # `playback` enables the cpal output stream.
 rodio = { version = "0.21", default-features = false, features = ["playback", "flac", "mp3", "mp4", "vorbis", "wav", "symphonia-alac", "symphonia-adpcm", "cpal-shared-stdcxx"] }
+# Pitch-preserving playback-speed changes (WSOLA time-stretch). Pure Rust, so
+# it cross-compiles to Android with no extra C/C++ toolchain.
+wsola = "0.2"
+# Lock-free single-producer/single-consumer audio transport. The producer
+# stays on the decode worker and the consumer is owned by RingSource.
+rtrb = "0.3"
 
 # Android has no keyring backend of its own. `android-keyring` installs a
 # Keystore-backed credential builder over the plain `keyring` crate.
@@ -105,3 +111,10 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+# The WSOLA time-stretcher runs a per-sample similarity search (~hundreds of
+# millions of multiply-adds per second) on the decode worker. At the dev
+# profile's `opt-level = 0` it cannot keep up with realtime playback, so build
+# just this dependency optimized even in `cargo run` / `tauri dev`.
+[profile.dev.package.wsola]
+opt-level = 3

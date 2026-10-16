@@ -41,6 +41,7 @@ const ERROR_KEYS: Record<string, string> = {
   INVALID_ARGUMENT: "errors.invalidArgument",
   UNSUPPORTED: "playback.unsupported",
   AUDIO_DEVICE: "playback.failed",
+  SEEK_UNSUPPORTED: "playback.seekUnsupported",
 };
 
 /** Prefetch the next queue entry once this many seconds remain. */
@@ -135,8 +136,13 @@ async function syncTrack() {
   }
   playbackLog("syncTrack: loading", { sourceId: track.sourceId, path: track.path, playing: player.isPlaying });
   try {
-    await invoke("audio_load", { sourceId: track.sourceId, path: track.path });
-    await invoke(player.isPlaying ? "audio_play" : "audio_pause");
+    await invoke("audio_load", { sourceId: track.sourceId, path: track.path, autoplay: player.isPlaying });
+    // Keep the explicit transport command as a compatibility fallback for
+    // older native command schemas and for a load completed while the store
+    // changed its play intent.
+    if (player.isPlaying) {
+      await invoke("audio_play");
+    }
     if (!useCacheStore().isCached(trackKey(track))) {
       void invoke("prefetch_track", { sourceId: track.sourceId, path: track.path }).catch(() => {});
     }
@@ -259,10 +265,18 @@ async function bootstrap(): Promise<void> {
         void invoke("audio_set_mute", { muted }).catch(() => {});
       },
     );
+
+    watch(
+      () => player.playbackRate,
+      (rate) => {
+        void invoke("audio_set_speed", { rate }).catch(() => {});
+      },
+    );
   });
 
   await invoke("audio_set_volume", { volume: player.volume }).catch(() => {});
   await invoke("audio_set_mute", { muted: player.muted }).catch(() => {});
+  await invoke("audio_set_speed", { rate: player.playbackRate }).catch(() => {});
   await syncTrack();
 
   syncBuffered();
@@ -273,7 +287,9 @@ async function bootstrap(): Promise<void> {
 export function currentTime(): number {
   if (!enginePlaying) return lastPositionMs / 1000;
   const elapsed = lastPositionAt > 0 ? (performance.now() - lastPositionAt) / 1000 : 0;
-  return lastPositionMs / 1000 + elapsed;
+  // The source advances `rate` seconds per wall second, so scale the gap since
+  // the last event (state ticks arrive at ~4 Hz) by the playback rate.
+  return lastPositionMs / 1000 + elapsed * usePlayerStore().playbackRate;
 }
 
 /** Seek to an absolute number of seconds. */

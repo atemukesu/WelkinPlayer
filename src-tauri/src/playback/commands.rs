@@ -11,12 +11,25 @@ use tauri::State;
 use crate::core::error::AppError;
 use crate::playback::engine::{AudioState, Command, Engine};
 
-/// Load a track (starts paused; follow with `audio_play`). Building the byte
+/// Load a track with an explicit initial playback intent. Building the byte
 /// source happens on the worker, so this returns as soon as the command is
 /// queued.
 #[tauri::command]
-pub fn audio_load(engine: State<Engine>, source_id: String, path: String) -> Result<(), AppError> {
-    engine.send(Command::Load { source_id, path })
+pub fn audio_load(
+    engine: State<Engine>,
+    source_id: String,
+    path: String,
+    autoplay: Option<bool>,
+) -> Result<(), AppError> {
+    log::info!(
+        "playback: audio_load queued source_id={source_id} path={path} autoplay={}",
+        autoplay.unwrap_or(false)
+    );
+    engine.send(Command::Load {
+        source_id,
+        path,
+        autoplay: autoplay.unwrap_or(false),
+    })
 }
 
 /// Resume playback.
@@ -34,6 +47,7 @@ pub fn audio_pause(engine: State<Engine>) -> Result<(), AppError> {
 /// Seek to an absolute position (seconds).
 #[tauri::command]
 pub fn audio_seek(engine: State<Engine>, position_secs: f64) -> Result<(), AppError> {
+    log::debug!("playback: audio_seek received {position_secs:.3}s");
     engine.send(Command::Seek { position_secs })
 }
 
@@ -47,6 +61,13 @@ pub fn audio_set_volume(engine: State<Engine>, volume: f64) {
 #[tauri::command]
 pub fn audio_set_mute(engine: State<Engine>, muted: bool) {
     engine.shared().set_muted(muted);
+}
+
+/// Set the playback-rate multiplier (1.0 = unchanged). Pitch is preserved by
+/// the engine's time-stretcher.
+#[tauri::command]
+pub fn audio_set_speed(engine: State<Engine>, rate: f64) -> Result<(), AppError> {
+    engine.send(Command::SetTempo { rate: rate as f32 })
 }
 
 /// Stop playback and clear the loaded track.

@@ -22,6 +22,7 @@ import { useDesktopLyricsStore } from "../stores/desktopLyrics";
 import { requestDesktopLyricPermission } from "../composables/useDesktopLyrics";
 import { coverPending, initial, percent } from "../lib/format";
 import { seekPercent } from "../lib/audio";
+import LayeredSelect from "./LayeredSelect.vue";
 
 const emit = defineEmits<{ open: []; queue: []; openArtist: [artist: string]; openAlbum: [album: string] }>();
 
@@ -45,6 +46,13 @@ let pointerCommitDone = false;
 const repeatTitle = computed(() => player.repeat === "one" ? t("controls.repeatOne") : player.repeat === "all" ? t("controls.repeatAll") : t("controls.repeatOff"));
 const shuffleTitle = computed(() => player.shuffle ? t("controls.shuffleOn") : t("controls.shuffleOff"));
 const desktopLyricsTitle = computed(() => desktopLyrics.settings.enabled ? t("settings.desktopLyrics.close") : t("settings.desktopLyrics.open"));
+
+/** Playback-speed picker. The store owns the value; this maps it to strings. */
+const speedOptions = ["0.5", "0.75", "1", "1.25", "1.5", "1.75", "2"].map((value) => ({ value, label: `${value}×` }));
+const speed = computed({
+  get: () => String(player.playbackRate),
+  set: (value: string) => player.setPlaybackRate(Number(value)),
+});
 
 /** Toggle the floating lyrics; on Android ask for the overlay grant first. */
 function toggleDesktopLyrics() {
@@ -188,6 +196,13 @@ function endSeek() {
         >
           <ListMusic :size="17" :stroke-width="1.8" />
         </button>
+        <LayeredSelect
+          v-model="speed"
+          :options="speedOptions"
+          :label="t('controls.speed')"
+          variant="text"
+          class="hidden md:block"
+        />
         <div class="hidden items-center gap-2 md:flex">
           <button
             type="button"
@@ -259,6 +274,13 @@ function endSeek() {
       <div class="flex items-center gap-3">
         <span class="font-mono text-[12px] tabular-nums text-muted">{{ player.elapsedTime }} / {{ player.totalTime }}</span>
         <div class="ml-auto flex items-center gap-2">
+          <LayeredSelect
+            v-model="speed"
+            :options="speedOptions"
+            :label="t('controls.speed')"
+            variant="text"
+            class="shrink-0"
+          />
           <button type="button" class="text-dim transition-colors hover:text-fg" :title="player.muted ? t('controls.unmute') : t('controls.mute')" :aria-label="player.muted ? t('controls.unmute') : t('controls.mute')" @click="player.toggleMute()">
             <VolumeX v-if="player.muted" :size="17" :stroke-width="1.8" />
             <Volume2 v-else :size="17" :stroke-width="1.8" />

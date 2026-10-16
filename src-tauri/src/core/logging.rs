@@ -19,7 +19,13 @@ struct StderrLogger;
 
 impl log::Log for StderrLogger {
     fn enabled(&self, metadata: &Metadata) -> bool {
-        metadata.level() <= Level::Info
+        // Full detail from our own crate; keep third-party crates at `Warn` so
+        // their debug chatter does not bury the playback diagnostics.
+        if metadata.target().starts_with("welkinplayer") {
+            metadata.level() <= Level::Debug
+        } else {
+            metadata.level() <= Level::Warn
+        }
     }
 
     fn log(&self, record: &Record) {
@@ -41,10 +47,10 @@ impl log::Log for StderrLogger {
 
 static LOGGER: StderrLogger = StderrLogger;
 
-/// Install the logger and cap the level at `Info`. Safe to call repeatedly.
+/// Install the logger and cap the level at `Debug`. Safe to call repeatedly.
 pub fn init() {
     if log::set_logger(&LOGGER).is_ok() {
-        log::set_max_level(LevelFilter::Info);
+        log::set_max_level(LevelFilter::Debug);
     }
 }
 

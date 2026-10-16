@@ -10,6 +10,11 @@ import { trackKey } from "../lib/sources";
 const VOLUME_STORAGE_KEY = "welkin-volume";
 const MUTED_STORAGE_KEY = "welkin-muted";
 const DEFAULT_VOLUME = 100;
+const RATE_STORAGE_KEY = "welkin-playback-rate";
+const DEFAULT_RATE = 1;
+/** Bounds offered by the UI; the engine clamps to its own stretcher range. */
+export const MIN_RATE = 0.5;
+export const MAX_RATE = 2;
 const SHUFFLE_STORAGE_KEY = "welkin-shuffle";
 const REPEAT_STORAGE_KEY = "welkin-repeat";
 export type RepeatMode = "off" | "all" | "one";
@@ -22,6 +27,14 @@ function readStoredVolume(): number {
   if (raw === null) return DEFAULT_VOLUME;
   const stored = Number(raw);
   return Number.isFinite(stored) && stored >= 0 && stored <= 100 ? stored : DEFAULT_VOLUME;
+}
+
+/** Restore the locally saved playback rate, falling back to normal speed. */
+function readStoredRate(): number {
+  const raw = localStorage.getItem(RATE_STORAGE_KEY);
+  if (raw === null) return DEFAULT_RATE;
+  const stored = Number(raw);
+  return Number.isFinite(stored) && stored >= MIN_RATE && stored <= MAX_RATE ? stored : DEFAULT_RATE;
 }
 
 export interface Track {
@@ -87,6 +100,7 @@ export const usePlayerStore = defineStore("player", () => {
   const duration = ref(0);
   const volume = ref(readStoredVolume());
   const muted = ref(localStorage.getItem(MUTED_STORAGE_KEY) === "1");
+  const playbackRate = ref(readStoredRate());
 
   // Persist the output volume/mute locally so each launch starts where the
   // previous one left off (mirrors the theme/accent localStorage pattern).
@@ -100,6 +114,14 @@ export const usePlayerStore = defineStore("player", () => {
     localStorage.setItem(VOLUME_STORAGE_KEY, String(clamped));
   });
   watch(muted, (value) => localStorage.setItem(MUTED_STORAGE_KEY, value ? "1" : "0"));
+  watch(playbackRate, (value) => {
+    const clamped = Number.isFinite(value) ? Math.min(MAX_RATE, Math.max(MIN_RATE, value)) : DEFAULT_RATE;
+    if (clamped !== value) {
+      playbackRate.value = clamped;
+      return;
+    }
+    localStorage.setItem(RATE_STORAGE_KEY, String(clamped));
+  });
   watch(shuffle, (value) => localStorage.setItem(SHUFFLE_STORAGE_KEY, value ? "1" : "0"));
   watch(repeat, (value) => localStorage.setItem(REPEAT_STORAGE_KEY, value));
 
@@ -356,6 +378,10 @@ export const usePlayerStore = defineStore("player", () => {
     volume.value = Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : volume.value;
   }
 
+  function setPlaybackRate(value: number) {
+    playbackRate.value = Number.isFinite(value) ? Math.min(MAX_RATE, Math.max(MIN_RATE, value)) : playbackRate.value;
+  }
+
   function toggleMute() {
     muted.value = !muted.value;
   }
@@ -409,6 +435,7 @@ export const usePlayerStore = defineStore("player", () => {
     duration,
     volume,
     muted,
+    playbackRate,
     currentIndex,
     hasTrack,
     elapsedTime,
@@ -429,6 +456,7 @@ export const usePlayerStore = defineStore("player", () => {
     setDuration,
     setBufferedProgress,
     setVolume,
+    setPlaybackRate,
     toggleMute,
     next,
     previous,

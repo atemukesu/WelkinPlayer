@@ -7,7 +7,10 @@
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ChevronDown } from "@lucide/vue";
 
-defineProps<{ options: { value: T; label: string }[]; label: string }>();
+/** Floor for the menu width, so a bare text trigger still gets a readable list. */
+const MIN_MENU_WIDTH = 96;
+
+defineProps<{ options: { value: T; label: string }[]; label: string; variant?: "box" | "text" }>();
 const model = defineModel<T>({ required: true });
 const open = ref(false);
 const root = ref<HTMLElement>();
@@ -23,7 +26,8 @@ function clampToViewport() {
   const margin = 8;
   const gap = 8;
   const rect = rootEl.getBoundingClientRect();
-  const width = Math.min(rect.width, window.innerWidth - margin * 2);
+  // Keep the menu usable even when the trigger is a bare text label.
+  const width = Math.min(Math.max(rect.width, MIN_MENU_WIDTH), window.innerWidth - margin * 2);
   // Apply the width before measuring so long labels wrap like they will on screen.
   menuEl.style.width = `${width}px`;
   const height = menuEl.offsetHeight;
@@ -87,10 +91,10 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="root" class="layered-select" @focusout="close">
+  <div ref="root" class="layered-select" :class="variant === 'text' ? 'layered-select--text' : ''" @focusout="close">
     <button type="button" class="layered-select__trigger" :aria-expanded="open" :aria-label="label" @click="open = !open">
       <span class="layered-select__label">{{ options.find((option) => option.value === model)?.label }}</span>
-      <ChevronDown class="layered-select__chevron" :class="open ? 'rotate-180' : ''" :size="16" :stroke-width="1.8" />
+      <ChevronDown v-if="variant !== 'text'" class="layered-select__chevron" :class="open ? 'rotate-180' : ''" :size="16" :stroke-width="1.8" />
     </button>
     <Teleport to="body">
       <Transition name="layered-menu">
@@ -112,6 +116,9 @@ onBeforeUnmount(() => {
 .layered-select { position: relative; min-width: 0; }
 .layered-select__trigger { display: flex; height: 2.5rem; width: 100%; align-items: center; gap: 0.5rem; justify-content: space-between; border: 1px solid var(--line); background: var(--bg); padding: 0 0.75rem; color: var(--fg); font-size: 0.875rem; text-align: left; }
 .layered-select__trigger:hover { border-color: var(--accent); }
+.layered-select--text { width: auto; }
+.layered-select--text .layered-select__trigger { height: auto; width: auto; border: 0; background: transparent; padding: 0; color: var(--muted); font-size: 0.8125rem; font-variant-numeric: tabular-nums; transition: color 180ms cubic-bezier(0.2, 0.8, 0.2, 1); }
+.layered-select--text .layered-select__trigger:hover { border-color: transparent; color: var(--accent); }
 .layered-select__label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .layered-select__chevron { flex: none; transition: transform 240ms cubic-bezier(0.2, 0.8, 0.2, 1); }
 .layered-select__menu { position: fixed; z-index: 90; isolation: isolate; }

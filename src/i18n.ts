@@ -719,6 +719,7 @@ const messages = {
       return: "返回",
       previous: "上一首",
       next: "下一首",
+      speed: "播放速度",
       play: "播放",
       pause: "暂停",
       mute: "静音",
@@ -734,6 +735,7 @@ const messages = {
     playback: {
       failed: "播放失败",
       unsupported: "无法播放：不支持的音频格式",
+      seekUnsupported: "当前音频流暂不支持跳转到此位置",
       network: "播放失败：网络错误",
     },
     wizard: {
@@ -1504,6 +1506,7 @@ const messages = {
       return: "Return",
       previous: "Previous",
       next: "Next",
+      speed: "Playback speed",
       play: "Play",
       pause: "Pause",
       mute: "Mute",
@@ -1519,6 +1522,7 @@ const messages = {
     playback: {
       failed: "Playback failed",
       unsupported: "Cannot play: unsupported audio format",
+      seekUnsupported: "This audio stream does not currently support seeking to this position",
       network: "Playback failed: network error",
     },
     wizard: {

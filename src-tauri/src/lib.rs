@@ -65,7 +65,10 @@ pub fn run() {
                 Ok(status) if status.available => {}
                 Ok(status) => log::warn!(
                     "install identifier unavailable at startup: {}",
-                    status.warning.as_deref().unwrap_or("unknown keychain error")
+                    status
+                        .warning
+                        .as_deref()
+                        .unwrap_or("unknown keychain error")
                 ),
                 Err(error) => log::warn!("failed to prepare install identifier: {error}"),
             }
@@ -212,6 +215,8 @@ pub fn run() {
             #[cfg(any(desktop, target_os = "android"))]
             playback::commands::audio_set_mute,
             #[cfg(any(desktop, target_os = "android"))]
+            playback::commands::audio_set_speed,
+            #[cfg(any(desktop, target_os = "android"))]
             playback::commands::audio_stop,
             #[cfg(any(desktop, target_os = "android"))]
             playback::commands::audio_state,
@@ -229,6 +234,14 @@ pub fn run() {
             platform::media_control::media_control_take_control,
             platform::tray::set_close_to_tray
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                #[cfg(any(desktop, target_os = "android"))]
+                if let Some(engine) = app.try_state::<playback::engine::Engine>() {
+                    engine.shutdown();
+                }
+            }
+        });
 }
