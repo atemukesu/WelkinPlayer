@@ -20,8 +20,8 @@ use std::time::UNIX_EPOCH;
 use tauri::AppHandle;
 
 use crate::commands::webdav::{enforce_url_policy, source_password};
-use crate::data::dav::{is_audio_file, RemoteEntry, WebDavClient};
 use crate::core::error::AppError;
+use crate::data::dav::{is_audio_file, RemoteEntry, WebDavClient};
 use crate::data::sources::{find_source, SourceConfig, LOCAL_KIND, WEBDAV_KIND};
 
 /// A resolved source transport.
@@ -145,10 +145,7 @@ pub fn build_backend(app: &AppHandle, source: &SourceConfig) -> Result<Backend, 
         LOCAL_KIND => {
             let root = source.root_path.clone().unwrap_or_default();
             if root.trim().is_empty() {
-                return Err(AppError::invalid_argument(
-                    "rootPath",
-                    "本地来源缺少目录",
-                ));
+                return Err(AppError::invalid_argument("rootPath", "本地来源缺少目录"));
             }
             let root = PathBuf::from(root);
             if !root.is_dir() {
@@ -188,12 +185,7 @@ pub fn safe_join(root: &Path, path: &str) -> Result<PathBuf, AppError> {
         match component {
             Component::Normal(part) => out.push(part),
             Component::CurDir => {}
-            _ => {
-                return Err(AppError::invalid_argument(
-                    "path",
-                    "路径超出了来源目录",
-                ))
-            }
+            _ => return Err(AppError::invalid_argument("path", "路径超出了来源目录")),
         }
     }
     Ok(out)

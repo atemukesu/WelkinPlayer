@@ -12,9 +12,9 @@ use tauri::AppHandle;
 #[cfg(desktop)]
 use tauri_plugin_dialog::DialogExt;
 
+use crate::core::error::AppError;
 use crate::data::backend::{backend_for, build_backend};
 use crate::data::dav::{Depth, RemoteEntry};
-use crate::core::error::AppError;
 
 /// Temporary object used to prove a source allows writes.
 const WRITE_TEST_PATH: &str = "welkin-write-test.tmp";

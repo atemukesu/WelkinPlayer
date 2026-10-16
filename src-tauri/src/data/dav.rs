@@ -791,7 +791,10 @@ mod tests {
     #[test]
     fn accepts_collection_root_without_trailing_slash() {
         let client = WebDavClient::new("https://host/webdav", "user", "pass").unwrap();
-        assert_eq!(client.resolve("/webdav").unwrap().as_str(), "https://host/webdav");
+        assert_eq!(
+            client.resolve("/webdav").unwrap().as_str(),
+            "https://host/webdav"
+        );
     }
 
     #[test]

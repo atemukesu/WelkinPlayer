@@ -147,7 +147,10 @@ fn developer_key() -> Result<VerifyingKey, AppError> {
         .decode(PUBLIC_KEY_B64)
         .or_else(|_| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(PUBLIC_KEY_B64))
         .map_err(|_| AppError::LicenseSigner)?;
-    let array: [u8; 32] = bytes.as_slice().try_into().map_err(|_| AppError::LicenseSigner)?;
+    let array: [u8; 32] = bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| AppError::LicenseSigner)?;
     VerifyingKey::from_bytes(&array).map_err(|_| AppError::LicenseSigner)
 }
 
@@ -176,8 +179,7 @@ fn verify_token(
     }
 
     let signature_bytes = decode_segment(signature_b64).ok_or(AppError::LicenseSigner)?;
-    let signature =
-        Signature::from_slice(&signature_bytes).map_err(|_| AppError::LicenseSigner)?;
+    let signature = Signature::from_slice(&signature_bytes).map_err(|_| AppError::LicenseSigner)?;
 
     let signing_input = format!("{header_b64}.{payload_b64}");
     public_key
@@ -218,7 +220,10 @@ fn current_device(app: &AppHandle) -> Result<Device, AppError> {
         status => {
             log::warn!(
                 "install identifier unavailable for license check: {}",
-                status.warning.as_deref().unwrap_or("unknown keychain error")
+                status
+                    .warning
+                    .as_deref()
+                    .unwrap_or("unknown keychain error")
             );
             return Err(AppError::LicenseDevice);
         }
@@ -405,8 +410,7 @@ mod tests {
             username: "Alice".to_string(),
             platform: "windows".to_string(),
         };
-        let error =
-            verify_token(&code, &key.verifying_key(), &other, 1_700_000_000).unwrap_err();
+        let error = verify_token(&code, &key.verifying_key(), &other, 1_700_000_000).unwrap_err();
         assert_eq!(error.code(), "LICENSE_DEVICE");
     }
 

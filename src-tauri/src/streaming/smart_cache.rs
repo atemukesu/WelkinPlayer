@@ -95,7 +95,9 @@ impl SmartCache {
     pub fn new(app: &AppHandle, limit_bytes: u64) -> Result<Arc<Self>, String> {
         let dir = resolve_cache_dir(app).join("smart");
         std::fs::create_dir_all(&dir).map_err(|error| format!("无法创建智能缓存目录：{error}"))?;
-        let client = Client::builder().build().map_err(|error| error.to_string())?;
+        let client = Client::builder()
+            .build()
+            .map_err(|error| error.to_string())?;
         let entries = load_index(&dir);
         // Remove orphaned files left by a crash mid-download (they are not in
         // the index and would otherwise never be cleaned).
@@ -455,7 +457,9 @@ impl SmartCache {
                     Some(size) => {
                         let mut cached = Self::automatic_total(&state);
                         while cached.saturating_add(size) > limit {
-                            let Some(victim) = Self::lowest_evictable(&state, want_freq) else { break };
+                            let Some(victim) = Self::lowest_evictable(&state, want_freq) else {
+                                break;
+                            };
                             Self::evict_entry(&mut state, &victim);
                             cached = Self::automatic_total(&state);
                         }
@@ -528,7 +532,9 @@ impl SmartCache {
         let mut buffer = vec![0u8; READ_CHUNK];
         let mut offset = offset;
         loop {
-            let read = reader.read(&mut buffer).map_err(|error| error.to_string())?;
+            let read = reader
+                .read(&mut buffer)
+                .map_err(|error| error.to_string())?;
             if read == 0 {
                 return Ok(());
             }
@@ -556,7 +562,10 @@ impl SmartCache {
                 entry.written = std::fs::metadata(&entry.file)
                     .map(|meta| meta.len())
                     .unwrap_or(entry.written);
-                let caught_up = entry.size.map(|size| entry.written >= size).unwrap_or(false);
+                let caught_up = entry
+                    .size
+                    .map(|size| entry.written >= size)
+                    .unwrap_or(false);
                 if let Err(error) = &result {
                     log::warn!("smart cache download failed for {key}: {error}");
                 } else if caught_up || entry.size.is_none() {
@@ -627,7 +636,9 @@ impl SmartCache {
     /// what stops the cache size from oscillating: a track that cannot fit is
     /// not fetched again just to be evicted again.
     fn evict_entry(state: &mut State, key: &str) {
-        let Some(entry) = state.entries.get_mut(key) else { return };
+        let Some(entry) = state.entries.get_mut(key) else {
+            return;
+        };
         if entry.pinned {
             return;
         }
@@ -649,7 +660,9 @@ impl SmartCache {
         let mut state = self.state.lock().unwrap();
         let mut total = Self::automatic_total(&state);
         while total > limit {
-            let Some(victim) = Self::lowest_evictable_all(&state) else { break };
+            let Some(victim) = Self::lowest_evictable_all(&state) else {
+                break;
+            };
             Self::evict_entry(&mut state, &victim);
             total = Self::automatic_total(&state);
         }

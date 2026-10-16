@@ -146,9 +146,13 @@ fn fetch_release_notes(current: &str, latest: &str) -> Result<Option<String>, Ap
 #[serde(tag = "event", content = "data")]
 pub enum DownloadEvent {
     #[serde(rename_all = "camelCase")]
-    Started { content_length: Option<u64> },
+    Started {
+        content_length: Option<u64>,
+    },
     #[serde(rename_all = "camelCase")]
-    Progress { chunk_length: usize },
+    Progress {
+        chunk_length: usize,
+    },
     Finished,
 }
 
@@ -187,10 +191,7 @@ pub mod desktop {
                 // sees everything they missed. Runs off the async runtime.
                 let current_version = update.current_version.clone();
                 let latest_version = update.version.clone();
-                let fallback = update
-                    .body
-                    .clone()
-                    .filter(|text| !text.trim().is_empty());
+                let fallback = update.body.clone().filter(|text| !text.trim().is_empty());
                 let notes = tauri::async_runtime::spawn_blocking(move || {
                     cumulative_notes(&current_version, &latest_version, fallback)
                 })
@@ -349,7 +350,9 @@ pub mod android {
             .map_err(AppError::from)?;
 
         let response = client
-            .get(format!("https://api.github.com/repos/{REPO}/releases/latest"))
+            .get(format!(
+                "https://api.github.com/repos/{REPO}/releases/latest"
+            ))
             .header("User-Agent", "WelkinPlayer")
             .header("Accept", "application/vnd.github+json")
             .send()

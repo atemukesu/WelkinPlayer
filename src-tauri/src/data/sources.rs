@@ -91,7 +91,5 @@ pub fn find_source(app: &AppHandle, id: &str) -> Result<SourceConfig, AppError> 
 /// The source that stores the synced profile / playback state, when configured.
 pub fn sync_source(app: &AppHandle) -> Option<SourceConfig> {
     let id = read_sync_id(app)?;
-    load_sources(app)
-        .into_iter()
-        .find(|source| source.id == id)
+    load_sources(app).into_iter().find(|source| source.id == id)
 }

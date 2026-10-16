@@ -15,8 +15,8 @@ use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 use tauri_plugin_store::StoreExt;
 
-use crate::data::backend::{sync_backend, Backend};
 use crate::core::error::AppError;
+use crate::data::backend::{sync_backend, Backend};
 
 const LOCAL_FILE: &str = "playback.json";
 const LOCAL_KEY: &str = "playback";
@@ -151,7 +151,12 @@ pub async fn save_playback(
         path,
         position: position.max(0.0),
         updated_at: now_ms(),
-        queue: queue.unwrap_or_else(|| previous.as_ref().map(|state| state.queue.clone()).unwrap_or_default()),
+        queue: queue.unwrap_or_else(|| {
+            previous
+                .as_ref()
+                .map(|state| state.queue.clone())
+                .unwrap_or_default()
+        }),
         queue_index: queue_index
             .or_else(|| previous.as_ref().map(|state| state.queue_index))
             .unwrap_or(0),

@@ -81,6 +81,7 @@ pub struct Shared {
     sample_rate: AtomicU32,
     duration_ms: AtomicU64,
     transport: AtomicU8,
+    worker_started: AtomicBool,
     muted: AtomicBool,
     /// Volume as `f32` bits, `0.0..=1.0`.
     volume: AtomicU32,
@@ -132,6 +133,7 @@ impl Shared {
             sample_rate: AtomicU32::new(44_100),
             duration_ms: AtomicU64::new(0),
             transport: AtomicU8::new(Transport::Idle as u8),
+            worker_started: AtomicBool::new(false),
             muted: AtomicBool::new(false),
             volume: AtomicU32::new(1.0f32.to_bits()),
             tempo: AtomicU32::new(1.0f32.to_bits()),
@@ -519,6 +521,7 @@ impl Engine {
 
 /// Start the engine (worker + event threads) and return its handle.
 pub fn start(app: AppHandle, cache: Arc<StreamCache>, smart: Arc<SmartCache>) -> Engine {
+    log::info!("playback: starting worker and event threads");
     let (tx, rx) = mpsc::channel();
     let shared = Arc::new(Shared::new());
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -526,13 +529,17 @@ pub fn start(app: AppHandle, cache: Arc<StreamCache>, smart: Arc<SmartCache>) ->
     let worker_shared = shared.clone();
     let worker_app = app.clone();
     let worker_shutdown = shutdown.clone();
-    std::thread::spawn(move || {
-        worker::run(worker_app, cache, smart, worker_shared, worker_shutdown, rx)
-    });
+    std::thread::Builder::new()
+        .name("welkin-playback-worker".to_string())
+        .spawn(move || worker::run(worker_app, cache, smart, worker_shared, worker_shutdown, rx))
+        .unwrap_or_else(|error| panic!("failed to start playback worker: {error}"));
 
     let events_shared = shared.clone();
     let events_shutdown = shutdown.clone();
-    std::thread::spawn(move || events::run(app, events_shared, events_shutdown));
+    std::thread::Builder::new()
+        .name("welkin-playback-events".to_string())
+        .spawn(move || events::run(app, events_shared, events_shutdown))
+        .unwrap_or_else(|error| panic!("failed to start playback events: {error}"));
 
     Engine {
         tx,
@@ -674,7 +681,14 @@ mod worker {
         reader: Box<dyn ReadSeek>,
         byte_len: Option<u64>,
     ) -> Result<Decoder<Box<dyn ReadSeek>>, AppError> {
-        let builder = Decoder::builder().with_data(reader).with_seekable(true);
+        // A growing remote cache has a Seek implementation, but its end
+        // position is not known yet. Marking it seekable makes Symphonia probe
+        // with SeekFrom::End and wait for the entire download before emitting
+        // the first sample. Only a source with a real byte length can safely
+        // use the random-access decoder path.
+        let builder = Decoder::builder()
+            .with_data(reader)
+            .with_seekable(byte_len.is_some());
         let builder = match byte_len {
             Some(len) => builder.with_byte_len(len),
             None => builder,
@@ -742,6 +756,7 @@ mod worker {
         rx: Receiver<Command>,
     ) {
         log::info!("playback: worker thread starting, opening output stream");
+        shared.worker_started.store(true, Ordering::Release);
         let Ok(stream) = OutputStreamBuilder::open_default_stream() else {
             log::error!("playback engine: no audio output device available");
             *shared

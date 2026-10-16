@@ -178,7 +178,10 @@ mod tests {
 
     #[test]
     fn generated_ids_are_unique() {
-        assert_ne!(generate_install_id().unwrap(), generate_install_id().unwrap());
+        assert_ne!(
+            generate_install_id().unwrap(),
+            generate_install_id().unwrap()
+        );
     }
 
     #[test]

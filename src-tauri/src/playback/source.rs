@@ -117,7 +117,10 @@ impl Read for CacheSource {
 
 impl Seek for CacheSource {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-        log::debug!("playback source: CacheSource seek request {pos:?} (offset {})", self.offset);
+        log::debug!(
+            "playback source: CacheSource seek request {pos:?} (offset {})",
+            self.offset
+        );
         let target = match pos {
             SeekFrom::Start(offset) => offset,
             SeekFrom::Current(delta) => (self.offset as i64 + delta).max(0) as u64,
@@ -127,7 +130,9 @@ impl Seek for CacheSource {
                     match self.cache.wait_total(&self.entry, Duration::from_secs(20)) {
                         TotalState::Known(total) => Some(total),
                         TotalState::Failed(status, message) => {
-                            log::warn!("cache download failed while sizing track ({status}): {message}");
+                            log::warn!(
+                                "cache download failed while sizing track ({status}): {message}"
+                            );
                             None
                         }
                         TotalState::Unknown => None,
@@ -150,8 +155,14 @@ impl Seek for CacheSource {
         // Rebase the downloader onto the new offset so bytes are fetched from
         // there, then reopen the blocking reader at the same position.
         log::debug!("playback source: CacheSource seek -> {target} (generation rebase)");
-        self.cache
-            .ensure_stream(&self.app, &self.source, &self.path, &self.entry, target, None);
+        self.cache.ensure_stream(
+            &self.app,
+            &self.source,
+            &self.path,
+            &self.entry,
+            target,
+            None,
+        );
         self.reader = self.cache.reader_from(&self.entry, target);
         self.offset = target;
         Ok(target)

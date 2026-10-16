@@ -196,21 +196,36 @@ pub fn write_tags(
         .tag_mut(tag_type)
         .ok_or_else(|| AppError::Other("该音频格式不支持写入标签".to_string()))?;
 
-    set_text(tag, &tags.title, |tag, value| tag.set_title(value), |tag| {
-        tag.remove_title()
-    });
-    set_text(tag, &tags.artist, |tag, value| tag.set_artist(value), |tag| {
-        tag.remove_artist()
-    });
-    set_text(tag, &tags.album, |tag, value| tag.set_album(value), |tag| {
-        tag.remove_album()
-    });
-    set_text(tag, &tags.genre, |tag, value| tag.set_genre(value), |tag| {
-        tag.remove_genre()
-    });
-    set_text(tag, &tags.comment, |tag, value| tag.set_comment(value), |tag| {
-        tag.remove_comment()
-    });
+    set_text(
+        tag,
+        &tags.title,
+        |tag, value| tag.set_title(value),
+        |tag| tag.remove_title(),
+    );
+    set_text(
+        tag,
+        &tags.artist,
+        |tag, value| tag.set_artist(value),
+        |tag| tag.remove_artist(),
+    );
+    set_text(
+        tag,
+        &tags.album,
+        |tag, value| tag.set_album(value),
+        |tag| tag.remove_album(),
+    );
+    set_text(
+        tag,
+        &tags.genre,
+        |tag, value| tag.set_genre(value),
+        |tag| tag.remove_genre(),
+    );
+    set_text(
+        tag,
+        &tags.comment,
+        |tag, value| tag.set_comment(value),
+        |tag| tag.remove_comment(),
+    );
 
     match tags.album_artist.as_deref().map(str::trim) {
         Some(text) if !text.is_empty() => {

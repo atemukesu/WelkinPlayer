@@ -219,7 +219,9 @@ pub fn set_smart_cache_limit(
     limit_mb: u64,
 ) -> Result<u64, crate::core::error::AppError> {
     write_smart_limit_mb(&app, limit_mb).map_err(crate::core::error::AppError::Store)?;
-    state.smart.set_limit_bytes(limit_mb.saturating_mul(1024 * 1024));
+    state
+        .smart
+        .set_limit_bytes(limit_mb.saturating_mul(1024 * 1024));
     Ok(limit_mb)
 }
 

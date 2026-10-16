@@ -45,6 +45,10 @@ pub const MAX_LEAD_SECONDS: u64 = 200;
 /// Fallback bitrate when the track duration is still unknown (~320 kbps).
 const DEFAULT_BYTES_PER_SECOND: f64 = 40_000.0;
 const READ_CHUNK: usize = 64 * 1024;
+/// Decoder startup must be able to consume a large FLAC metadata/picture
+/// block before the playback position exists. Otherwise the downloader waits
+/// for a playhead update while the decoder waits for more header bytes.
+const STARTUP_BYTES: u64 = 16 * 1024 * 1024;
 
 /// `settings.json` key holding the smart cache budget in mebibytes.
 pub const SMART_LIMIT_KEY: &str = "cache.smartLimitMb";
@@ -96,6 +100,10 @@ struct EntryState {
     /// Overrides the cache's lead window for this track (e.g. a short preload). Cleared
     /// once the track is actually playing.
     lead_override: Option<f64>,
+    startup: bool,
+    /// Furthest byte currently demanded by a reader. Decoder probing can read
+    /// past the startup window before playback has produced a playhead position.
+    requested_end: u64,
 }
 
 /// One cached track. Cheap to share across the request handler and downloader.
@@ -128,6 +136,8 @@ impl Entry {
                 generation: 0,
                 last_advanced: Instant::now(),
                 lead_override: None,
+                startup: false,
+                requested_end: 0,
             }),
             cv: Condvar::new(),
         }
@@ -162,7 +172,9 @@ impl StreamCache {
                 let _ = std::fs::remove_file(item.path());
             }
         }
-        let client = Client::builder().build().map_err(|error| error.to_string())?;
+        let client = Client::builder()
+            .build()
+            .map_err(|error| error.to_string())?;
         Ok(Self {
             dir,
             client,
@@ -255,6 +267,14 @@ impl StreamCache {
             let mut state = entry.state.lock().unwrap();
             // A real request clears the short preload override; a preload sets it.
             state.lead_override = lead;
+            if want_start == 0 && lead.is_none() {
+                state.startup = true;
+            }
+            // A rebase invalidates the old reader demand. The new reader will
+            // publish its demand as soon as it attempts to read.
+            if state.seg_start != want_start {
+                state.requested_end = want_start;
+            }
             entry.cv.notify_all();
             if state.complete && state.total.is_some_and(|total| want_start < total) {
                 log::debug!("stream cache: ensure_stream {want_start} already complete");
@@ -262,8 +282,8 @@ impl StreamCache {
             }
             // A downloader that stopped advancing is presumed hung; abandon it
             // (a new generation makes the stale thread bail) and fetch afresh.
-            let stalled = state.downloading
-                && state.last_advanced.elapsed() > Duration::from_secs(10);
+            let stalled =
+                state.downloading && state.last_advanced.elapsed() > Duration::from_secs(10);
             if stalled {
                 log::warn!(
                     "stream cache: downloader stalled for {:?}, restarting at {}",
@@ -349,6 +369,7 @@ impl StreamCache {
             }
             if position.is_finite() && position >= 0.0 {
                 state.position = position;
+                state.startup = false;
             }
             entry.cv.notify_all();
         }
@@ -550,6 +571,27 @@ impl Read for CacheReader {
                 available,
                 self.generation,
             );
+            // Decoder probing can happen before playback has produced a
+            // playhead position. Advertise the bytes actually requested by the
+            // decoder so startup does not deadlock at the fixed read-ahead
+            // boundary.
+            let requested_end = self
+                .offset
+                .saturating_add(READ_CHUNK as u64)
+                .min(self.end.map_or(u64::MAX, |end| end.saturating_add(1)));
+            drop(state);
+            let mut state = self.entry.state.lock().unwrap();
+            if state.generation != self.generation {
+                return Err(std::io::Error::other("stream replaced"));
+            }
+            state.requested_end = state.requested_end.max(requested_end);
+            self.entry.cv.notify_all();
+            // The downloader may have advanced while the lock was released to
+            // publish the demand. Re-check before sleeping so that notification
+            // cannot be lost across that hand-off.
+            if self.offset < state.seg_end || state.complete {
+                continue;
+            }
             let (guard, _) = self
                 .entry
                 .cv
@@ -613,7 +655,11 @@ pub(crate) fn response_total(response: &Response) -> Option<u64> {
             .to_str()
             .ok()?;
         let total = value.rsplit('/').next()?;
-        return if total == "*" { None } else { total.parse().ok() };
+        return if total == "*" {
+            None
+        } else {
+            total.parse().ok()
+        };
     }
     response.content_length()
 }
@@ -644,7 +690,9 @@ fn spawn_downloader(
         let mut state = entry.state.lock().unwrap();
         if state.generation == generation {
             if let Err((status, message)) = result {
-                log::warn!("stream cache: downloader gen={generation} failed [{status}]: {message}");
+                log::warn!(
+                    "stream cache: downloader gen={generation} failed [{status}]: {message}"
+                );
                 state.failed = Some((status, message));
             } else {
                 log::debug!(
@@ -683,7 +731,16 @@ fn run_downloader(
             let lead = (lead_seconds(&state, cache.lead_seconds()) * bytes_per_second) as u64;
             let position = (state.position * bytes_per_second) as u64;
             let desired = position.saturating_add(lead);
-            let target = state.total.map(|total| desired.min(total)).unwrap_or(desired);
+            let startup_target = if state.startup {
+                state.seg_start.saturating_add(STARTUP_BYTES)
+            } else {
+                0
+            };
+            let desired = desired.max(startup_target).max(state.requested_end);
+            let target = state
+                .total
+                .map(|total| desired.min(total))
+                .unwrap_or(desired);
             (state.seg_end, target, state.total, state.complete)
         };
 
@@ -703,11 +760,16 @@ fn run_downloader(
             if state.generation != generation {
                 return Ok(());
             }
-            let _ = entry.cv.wait_timeout(state, Duration::from_secs(5)).unwrap();
+            let _ = entry
+                .cv
+                .wait_timeout(state, Duration::from_secs(5))
+                .unwrap();
             continue;
         }
 
-        log::debug!("stream cache: downloader gen={generation} fetching from {cursor} toward {target}");
+        log::debug!(
+            "stream cache: downloader gen={generation} fetching from {cursor} toward {target}"
+        );
         let response = open_upstream(app, &cache.client, source, remote_path, cursor)?;
         let status = response.status();
         if let Some(total) = response_total(&response) {
@@ -740,14 +802,26 @@ fn run_downloader(
                     return Ok(());
                 }
                 let bytes_per_second = bytes_per_second(&state);
-                let desired = ((state.position * bytes_per_second) as u64)
-                    .saturating_add((lead_seconds(&state, cache.lead_seconds()) * bytes_per_second) as u64);
-                state.total.map(|total| desired.min(total)).unwrap_or(desired)
+                let desired = ((state.position * bytes_per_second) as u64).saturating_add(
+                    (lead_seconds(&state, cache.lead_seconds()) * bytes_per_second) as u64,
+                );
+                let startup_target = if state.startup {
+                    state.seg_start.saturating_add(STARTUP_BYTES)
+                } else {
+                    0
+                };
+                let desired = desired.max(startup_target).max(state.requested_end);
+                state
+                    .total
+                    .map(|total| desired.min(total))
+                    .unwrap_or(desired)
             };
             if cursor >= target {
                 break;
             }
-            let read = reader.read(&mut buffer).map_err(|error| (502, error.to_string()))?;
+            let read = reader
+                .read(&mut buffer)
+                .map_err(|error| (502, error.to_string()))?;
             if read == 0 {
                 let total = {
                     let state = entry.state.lock().unwrap();
@@ -818,7 +892,9 @@ pub fn read_smart_limit_mb(app: &AppHandle) -> u64 {
 
 /// Persist the smart cache budget (MiB).
 pub fn write_smart_limit_mb(app: &AppHandle, limit_mb: u64) -> Result<(), String> {
-    let store = app.store(SETTINGS_FILE).map_err(|error| error.to_string())?;
+    let store = app
+        .store(SETTINGS_FILE)
+        .map_err(|error| error.to_string())?;
     store.set(SMART_LIMIT_KEY, serde_json::json!(limit_mb));
     store.save().map_err(|error| error.to_string())?;
     Ok(())
@@ -858,7 +934,9 @@ pub fn read_lead_seconds(app: &AppHandle) -> u64 {
 /// Persist the read-ahead pre-buffer window (seconds), clamped to its bounds.
 pub fn write_lead_seconds(app: &AppHandle, seconds: u64) -> Result<u64, String> {
     let seconds = seconds.clamp(MIN_LEAD_SECONDS, MAX_LEAD_SECONDS);
-    let store = app.store(SETTINGS_FILE).map_err(|error| error.to_string())?;
+    let store = app
+        .store(SETTINGS_FILE)
+        .map_err(|error| error.to_string())?;
     store.set(LEAD_SECONDS_KEY, serde_json::json!(seconds));
     store.save().map_err(|error| error.to_string())?;
     Ok(seconds)
@@ -873,7 +951,9 @@ fn read_bool(app: &AppHandle, key: &str, fallback: bool) -> bool {
 }
 
 fn write_bool(app: &AppHandle, key: &str, value: bool) -> Result<(), String> {
-    let store = app.store(SETTINGS_FILE).map_err(|error| error.to_string())?;
+    let store = app
+        .store(SETTINGS_FILE)
+        .map_err(|error| error.to_string())?;
     store.set(key, serde_json::json!(value));
     store.save().map_err(|error| error.to_string())?;
     Ok(())

@@ -86,7 +86,11 @@ pub fn run() {
                             stream_state.cache.clone(),
                             stream_state.smart.clone(),
                         );
-                        app.manage(engine);
+                        if !app.manage(engine) {
+                            log::error!(
+                                "playback: Engine was already managed; the newly started worker was dropped"
+                            );
+                        }
                     }
                     app.manage(stream_state);
                 }

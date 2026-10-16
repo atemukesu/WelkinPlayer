@@ -167,7 +167,9 @@ pub async fn desktop_lyric_open(app: AppHandle) -> Result<DesktopLyricStatus, Ap
                 }
             })
             .build()
-            .map_err(|error| AppError::other(format!("create desktop lyric window failed: {error}")))?;
+            .map_err(|error| {
+                AppError::other(format!("create desktop lyric window failed: {error}"))
+            })?;
 
             // Tell the main window when the layer goes away (closed from its own
             // button, the window manager, ...) so the enable toggle stays in sync.
@@ -215,7 +217,10 @@ pub fn desktop_lyric_close(app: AppHandle) -> Result<(), AppError> {
 
 /// Push a full lyric snapshot to the renderer.
 #[tauri::command]
-pub fn desktop_lyric_load(app: AppHandle, payload: DesktopLyricLoadPayload) -> Result<(), AppError> {
+pub fn desktop_lyric_load(
+    app: AppHandle,
+    payload: DesktopLyricLoadPayload,
+) -> Result<(), AppError> {
     if let Ok(mut cached) = app.state::<DesktopLyricCache>().load.lock() {
         *cached = Some(payload.clone());
     }
@@ -233,7 +238,10 @@ pub fn desktop_lyric_load(app: AppHandle, payload: DesktopLyricLoadPayload) -> R
 
 /// Push the high-frequency playhead document to the renderer.
 #[tauri::command]
-pub fn desktop_lyric_tick(app: AppHandle, payload: DesktopLyricTickPayload) -> Result<(), AppError> {
+pub fn desktop_lyric_tick(
+    app: AppHandle,
+    payload: DesktopLyricTickPayload,
+) -> Result<(), AppError> {
     #[cfg(desktop)]
     if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
         let _ = window.emit("desktop-lyric:tick", &payload);
@@ -249,7 +257,10 @@ pub fn desktop_lyric_tick(app: AppHandle, payload: DesktopLyricTickPayload) -> R
 
 /// Push a live style change to the renderer (without reloading the lyrics).
 #[tauri::command]
-pub fn desktop_lyric_set_settings(app: AppHandle, settings: serde_json::Value) -> Result<(), AppError> {
+pub fn desktop_lyric_set_settings(
+    app: AppHandle,
+    settings: serde_json::Value,
+) -> Result<(), AppError> {
     if let Ok(mut cached) = app.state::<DesktopLyricCache>().settings.lock() {
         *cached = Some(settings.clone());
     }
@@ -260,7 +271,8 @@ pub fn desktop_lyric_set_settings(app: AppHandle, settings: serde_json::Value) -
     #[cfg(target_os = "android")]
     {
         let json = serde_json::to_string(&settings)?;
-        crate::platform::android::desktop_lyric_update("settings", &json).map_err(AppError::other)?;
+        crate::platform::android::desktop_lyric_update("settings", &json)
+            .map_err(AppError::other)?;
     }
     Ok(())
 }
@@ -278,7 +290,8 @@ pub fn desktop_lyric_status(app: AppHandle) -> Result<DesktopLyricStatus, AppErr
 #[tauri::command]
 pub fn desktop_lyric_take_control() -> Result<Option<String>, AppError> {
     #[cfg(target_os = "android")]
-    let control = crate::platform::android::desktop_lyric_take_control().map_err(AppError::other)?;
+    let control =
+        crate::platform::android::desktop_lyric_take_control().map_err(AppError::other)?;
     #[cfg(not(target_os = "android"))]
     let control: Option<String> = None;
     Ok(control)

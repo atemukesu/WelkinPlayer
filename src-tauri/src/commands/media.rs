@@ -20,9 +20,9 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_store::StoreExt;
 
+use crate::core::error::AppError;
 use crate::data::backend::{backend_for, Backend};
 use crate::data::dav::RemoteEntry;
-use crate::core::error::AppError;
 use crate::data::metadata::{self, ParsedMetadata, TrackMetadata};
 
 const SETTINGS_FILE: &str = "settings.json";
@@ -237,7 +237,10 @@ pub fn save_library_cache(
 ) -> Result<(), AppError> {
     let dir = resolve_cache_dir(&app);
     std::fs::create_dir_all(&dir)?;
-    std::fs::write(library_cache_file(&dir, &source_id), serde_json::to_vec(&entries)?)?;
+    std::fs::write(
+        library_cache_file(&dir, &source_id),
+        serde_json::to_vec(&entries)?,
+    )?;
     std::fs::write(library_hash_file(&dir, &source_id), listing_hash(&entries))?;
     Ok(())
 }
@@ -326,10 +329,7 @@ async fn fetch_complete_metadata(
 }
 
 /// Try increasing range sizes before downloading the complete track.
-async fn fetch_metadata(
-    backend: &Backend,
-    path: &str,
-) -> Result<Option<ParsedMetadata>, AppError> {
+async fn fetch_metadata(backend: &Backend, path: &str) -> Result<Option<ParsedMetadata>, AppError> {
     let mut last_error: Option<AppError> = None;
 
     for size in HEAD_RANGES {

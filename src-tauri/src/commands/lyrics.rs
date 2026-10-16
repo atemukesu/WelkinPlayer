@@ -19,8 +19,8 @@ use reqwest::{header, Client, Url};
 use tauri::AppHandle;
 
 use super::media::{asset_hash, lyric_path, resolve_cache_dir, write_lyric};
-use crate::data::backend::backend_for;
 use crate::core::error::AppError;
+use crate::data::backend::backend_for;
 
 /// A desktop browser UA; the music platforms reject the default agent.
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
@@ -44,8 +44,9 @@ fn http_client() -> Result<Client, AppError> {
 /// platforms and is passed through unchanged.
 #[tauri::command]
 pub async fn lyric_http_get(url: String, referer: Option<String>) -> Result<String, AppError> {
-    let parsed = Url::parse(&url)
-        .map_err(|error| AppError::invalid_argument("url", format!("无效的歌词接口地址：{error}")))?;
+    let parsed = Url::parse(&url).map_err(|error| {
+        AppError::invalid_argument("url", format!("无效的歌词接口地址：{error}"))
+    })?;
     if parsed.scheme() != "https" {
         return Err(AppError::invalid_argument("url", "歌词接口必须使用 https"));
     }

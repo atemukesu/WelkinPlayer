@@ -177,7 +177,9 @@ fn media_bridge_class<'local>(env: &mut jni::JNIEnv<'local>) -> Result<&'static 
     class_through_loader(env, MEDIA_BRIDGE_CLASS_NAME, &MEDIA_BRIDGE_CLASS)
 }
 
-fn folder_picker_class<'local>(env: &mut jni::JNIEnv<'local>) -> Result<&'static GlobalRef, String> {
+fn folder_picker_class<'local>(
+    env: &mut jni::JNIEnv<'local>,
+) -> Result<&'static GlobalRef, String> {
     class_through_loader(env, FOLDER_PICKER_CLASS_NAME, &FOLDER_PICKER_CLASS)
 }
 

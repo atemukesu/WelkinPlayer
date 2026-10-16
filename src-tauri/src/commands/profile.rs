@@ -15,8 +15,8 @@ use serde::Serialize;
 use tauri::AppHandle;
 use tauri_plugin_store::StoreExt;
 
-use crate::data::backend::{sync_backend, Backend};
 use crate::core::error::AppError;
+use crate::data::backend::{sync_backend, Backend};
 
 const LOCAL_FILE: &str = "profile.json";
 const LOCAL_KEY: &str = "profile";
@@ -210,5 +210,3 @@ pub async fn save_profile(app: AppHandle, content: String) -> Result<SaveProfile
         }
     }
 }
-
-

@@ -278,7 +278,8 @@ pub fn media_control_position(
     }
 
     #[cfg(target_os = "android")]
-    crate::platform::android::media_control_position(position_ms, playing).map_err(AppError::other)?;
+    crate::platform::android::media_control_position(position_ms, playing)
+        .map_err(AppError::other)?;
 
     let _ = &state;
     Ok(())
