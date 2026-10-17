@@ -19,6 +19,7 @@ import {
   SkipForward,
 } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import "@applemusic-like-lyrics/core/style.css";
 import AmllBackground from "../components/AmllBackground.vue";
@@ -180,7 +181,35 @@ watch(
   { immediate: true },
 );
 
-const cover = computed(() => player.currentTrack?.cover);
+/**
+ * AMLL's background renderer reads the album image with `fetch()`, which
+ * WebKitGTK refuses for the custom `asset:` scheme even though the same URL
+ * loads fine in an `<img>` via `convertFileSrc`. Hand it the cached cover as a
+ * same-origin data URL instead; the plain `<img>` thumbnails keep using the
+ * asset URL.
+ */
+const cover = ref<string | undefined>();
+let coverRequest = 0;
+watch(
+  () => {
+    const track = player.currentTrack;
+    return track?.path && track.sourceId ? `${track.sourceId}\u0000${track.path}\u0000${track.coverHash ?? ""}` : "";
+  },
+  async () => {
+    const track = player.currentTrack;
+    const request = ++coverRequest;
+    cover.value = undefined;
+    if (!track?.path || !track.sourceId) return;
+    try {
+      const dataUrl = await invoke<string | null>("get_cached_cover", { sourceId: track.sourceId, path: track.path });
+      if (request === coverRequest) cover.value = dataUrl ?? undefined;
+    } catch {
+      // The gradient falls back to the track colour when no cover is cached.
+    }
+  },
+  { immediate: true },
+);
+
 const repeatTitle = computed(() => player.repeat === "one" ? t("controls.repeatOne") : player.repeat === "all" ? t("controls.repeatAll") : t("controls.repeatOff"));
 const shuffleTitle = computed(() => player.shuffle ? t("controls.shuffleOn") : t("controls.shuffleOff"));
 

@@ -16,7 +16,7 @@
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
-#[cfg(desktop)]
+#[cfg(all(desktop, not(target_os = "linux")))]
 use tauri::webview::PageLoadEvent;
 #[cfg(desktop)]
 use tauri::Emitter;
@@ -106,12 +106,24 @@ pub struct DesktopLyricStatus {
 
 /// Current renderer status for this platform.
 fn status(app: &AppHandle) -> DesktopLyricStatus {
-    #[cfg(desktop)]
+    // The floating layer is a transparent, frameless window. CEF's windowed
+    // browser paints an opaque surface, so Linux (CEF) cannot host it; hiding
+    // the feature beats opening a solid box over the desktop.
+    #[cfg(all(desktop, not(target_os = "linux")))]
     return DesktopLyricStatus {
         supported: true,
         permission_granted: true,
         active: app.get_webview_window(WINDOW_LABEL).is_some(),
     };
+    #[cfg(target_os = "linux")]
+    {
+        let _ = app;
+        return DesktopLyricStatus {
+            supported: false,
+            permission_granted: false,
+            active: false,
+        };
+    }
     #[cfg(target_os = "android")]
     {
         let _ = app;
@@ -130,7 +142,14 @@ fn status(app: &AppHandle) -> DesktopLyricStatus {
 /// would deadlock the whole app.
 #[tauri::command]
 pub async fn desktop_lyric_open(app: AppHandle) -> Result<DesktopLyricStatus, AppError> {
-    #[cfg(desktop)]
+    #[cfg(target_os = "linux")]
+    {
+        let _ = &app;
+        return Err(AppError::other(
+            "Linux 的 CEF 后端不支持透明窗口，无法显示悬浮歌词",
+        ));
+    }
+    #[cfg(all(desktop, not(target_os = "linux")))]
     {
         if app.get_webview_window(WINDOW_LABEL).is_none() {
             let app_for_load = app.clone();
@@ -197,6 +216,7 @@ pub async fn desktop_lyric_open(app: AppHandle) -> Result<DesktopLyricStatus, Ap
             log::warn!("desktop lyric overlay skipped: overlay permission not granted");
         }
     }
+    #[cfg(not(target_os = "linux"))]
     Ok(status(&app))
 }
 
@@ -308,7 +328,7 @@ pub fn desktop_lyric_request_permission() -> Result<(), AppError> {
 }
 
 /// Park a freshly created window near the bottom-centre of the primary monitor.
-#[cfg(desktop)]
+#[cfg(all(desktop, not(target_os = "linux")))]
 fn place_default(window: &tauri::WebviewWindow) {
     let Ok(Some(monitor)) = window.current_monitor() else {
         return;

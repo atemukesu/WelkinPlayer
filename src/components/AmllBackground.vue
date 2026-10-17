@@ -88,7 +88,9 @@ onMounted(() => {
 
 watch(
   () => props.album,
-  (album) => { if (bg && album) void bg.setAlbum(album); },
+  // An empty string tells AMLL to fall back to its default gradient instead of
+  // keeping the previous track's cover.
+  (album) => { if (bg) void bg.setAlbum(album ?? ""); },
 );
 
 onBeforeUnmount(() => {

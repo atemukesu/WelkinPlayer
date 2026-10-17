@@ -17,13 +17,15 @@ name = "welkinplayer_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "3.0.0-alpha.4", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["protocol-asset", "tray-icon", "image-png", "macos-private-api"] }
-tauri-plugin-opener = "2"
-tauri-plugin-store = "2"
-tauri-plugin-dialog = "2"
+# The webview runtime is no longer a feature of `tauri`: since Tauri 3 the app
+# depends on a runtime crate directly and picks it at startup. Linux uses CEF
+# (see the target-specific dependencies below), every other target uses wry.
+tauri = { version = "3.0.0-alpha.5", features = ["protocol-asset", "tray-icon", "image-png"] }
+tauri-plugin-opener = "3.0.0-alpha.3"
+tauri-plugin-store = "3.0.0-alpha.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
@@ -63,6 +65,19 @@ keyring = { version = "3", features = ["apple-native"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+# Linux runs on the Chromium Embedded Framework instead of the system
+# WebKitGTK webview, so the app no longer links webkit2gtk at all. The CEF
+# binary distribution is downloaded by the `cef` crate on the first build and
+# bundled next to the app by the Tauri CLI.
+tauri-runtime-cef = { version = "3.0.0-alpha.6", features = ["devtools"] }
+# rfd's GTK backend pumps the default GLib main context on its own thread, which
+# aborts the CEF browser process after the dialog closes. The XDG portal backend
+# runs out of process over D-Bus instead.
+tauri-plugin-dialog = { version = "3.0.0-alpha.4", default-features = false, features = ["xdg-portal"] }
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+tauri-runtime-wry = { version = "3.0.0-alpha.5", features = ["devtools"] }
+tauri-plugin-dialog = "3.0.0-alpha.4"
 
 # System media controls on desktop: Windows SMTC, macOS Now Playing and Linux
 # MPRIS behind one API. Android implements its own native MediaSession, so the
@@ -71,7 +86,7 @@ keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
 souvlaki = "0.8"
 # Signed, per-platform updates published as GitHub release assets. Desktop only:
 # Android queries the GitHub Releases API and downloads the APK manually instead.
-tauri-plugin-updater = "2"
+tauri-plugin-updater = "3.0.0-alpha.3"
 
 # Audio decoding/rendering is shared by the desktop and Android targets: `cpal`
 # drives WASAPI / CoreAudio / ALSA on desktop and Oboe (AAudio / OpenSL ES) on

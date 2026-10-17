@@ -83,7 +83,23 @@ jobs:
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libdbus-1-dev
+          # Linux builds on the CEF (Chromium) runtime instead of WebKitGTK.
+          # GTK 4 comes from tauri-runtime-cef; the rest are Chromium's Linux
+          # runtime/build dependencies (the CEF distribution itself is
+          # downloaded by the `cef` crate on the first build).
+          sudo apt-get install -y \
+            libgtk-4-dev libx11-dev libxkbcommon-dev libxrandr-dev libxi-dev \
+            libxcursor-dev libxdamage-dev libxcomposite-dev libxfixes-dev \
+            libnss3-dev libasound2-dev libpulse-dev libcups2-dev \
+            libatk1.0-dev libatk-bridge2.0-dev libdrm-dev libgbm-dev \
+            libwayland-dev patchelf
+
+      - name: Cache CEF
+        if: matrix.platform == 'ubuntu-22.04'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/tauri-cef
+          key: cef-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile

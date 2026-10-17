@@ -15,7 +15,7 @@ mod playback;
 
 use tauri::Manager;
 
-/// Extra WebView2 browser arguments applied to every window.
+/// Extra browser arguments for the WebView2 runtime.
 ///
 /// Disables Chromium's own system media controls so only the `souvlaki` session
 /// remains. The background flags keep timers, rendering and audio alive when the
@@ -23,9 +23,31 @@ use tauri::Manager;
 /// (which is driven by ticks from the main window and animates on its own rAF)
 /// do not freeze. WebView2 requires every window sharing a data directory to use
 /// identical options, so the main window's `additionalBrowserArgs` in
-/// `tauri.conf.json` MUST stay byte-for-byte identical to this value.
-#[cfg(desktop)]
+/// `tauri.conf.json` MUST stay byte-for-byte identical to this value. Linux/Cef
+/// receives the equivalent switches in [`cef_runtime`] instead.
+#[cfg(all(desktop, not(target_os = "linux")))]
 pub(crate) const WEBVIEW_BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,HardwareMediaKeyHandling --autoplay-policy=no-user-gesture-required --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding";
+
+/// Chromium switches for the Linux CEF runtime.
+///
+/// CEF ignores wry's `additionalBrowserArgs`, so the WebView2 flags above that
+/// matter on Linux are repeated here: keep timers, rendering and audio running
+/// while the window is hidden to the tray, allow autoplay without a user
+/// gesture, and leave hardware media keys to `souvlaki`. `--no-first-run`
+/// skips Chromium's first-run EULA, without which a fresh profile exits with
+/// result code 28 on Linux.
+#[cfg(target_os = "linux")]
+fn cef_runtime() -> tauri_runtime_cef::Cef {
+    tauri_runtime_cef::Cef::default()
+        .command_line_arg("no-first-run", None::<String>)
+        .command_line_args([
+            ("autoplay-policy", Some("no-user-gesture-required")),
+            ("disable-background-timer-throttling", None::<&str>),
+            ("disable-backgrounding-occluded-windows", None::<&str>),
+            ("disable-renderer-backgrounding", None::<&str>),
+        ])
+        .disable_features(["HardwareMediaKeyHandling"])
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -38,7 +60,16 @@ pub fn run() {
     #[cfg(target_os = "android")]
     commands::webdav::set_keychain_init_error(platform::android::initialize_keychain());
 
-    tauri::Builder::default()
+    // Tauri 3 selects the webview runtime at startup. Linux ships Chromium via
+    // CEF (so it never links WebKitGTK); every other target keeps the system
+    // webview through wry.
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "linux")]
+    let builder = builder.runtime(cef_runtime());
+    #[cfg(not(target_os = "linux"))]
+    let builder = builder.runtime(tauri_runtime_wry::Wry::default());
+
+    builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::new().build())

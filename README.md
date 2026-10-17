@@ -4,7 +4,7 @@
 
 # Welkin
 
-基于 [Tauri 2](https://v2.tauri.app/) 的跨平台音乐播放器。通过 WebDAV 或本地文件夹读取音乐收藏，把资料、歌单与播放进度跨设备同步，并提供 AMLL 逐字歌词、桌面悬浮歌词与系统媒体控制。音频解码与播放全部在 Rust 后端完成，前端只负责界面与队列调度。
+基于 [Tauri 3](https://v3.tauri.app/) 的跨平台音乐播放器。通过 WebDAV 或本地文件夹读取音乐收藏，把资料、歌单与播放进度跨设备同步，并提供 AMLL 逐字歌词、桌面悬浮歌词（Linux 的 CEF 后端因不支持透明窗口而暂不可用）与系统媒体控制。音频解码与播放全部在 Rust 后端完成，前端只负责界面与队列调度。Linux 使用 CEF（Chromium）作为 WebView 后端，Windows / macOS / Android 使用系统 WebView。
 
 - 仓库：<https://github.com/atemukesu/WelkinPlayer>
 - 支持平台：Windows / macOS / Linux / Android
@@ -32,7 +32,7 @@
 
 | 层 | 技术 |
 | --- | --- |
-| 壳与后端 | Tauri 2（Rust） |
+| 壳与后端 | Tauri 3（Rust） |
 | 音频引擎 | [rodio](https://github.com/RustAudio/rodio) + [cpal](https://github.com/RustAudio/cpal) + [Symphonia](https://github.com/pdeljanov/Symphonia)（Rust 解码与输出） |
 | 前端 | Vue 3 + TypeScript + Vite |
 | 状态/i18n | Pinia、vue-i18n |
@@ -47,7 +47,7 @@
 - 平台依赖：
   - Windows：WebView2（Win11 自带）
   - macOS：Xcode Command Line Tools
-  - Linux：`libwebkit2gtk-4.1-dev`、`libappindicator3-dev`、`librsvg2-dev`、`patchelf`、`libdbus-1-dev`
+  - Linux：`libgtk-4-dev`、`libx11-dev`、`libxkbcommon-dev`、`libnss3-dev`、`libasound2-dev`、`libgbm-dev`、`patchelf`（首次构建会自动下载 CEF 运行时）
 - 构建 Android 额外需要：JDK 17、Android SDK、Android NDK（r26b）、Android 目标 Rust 组件
 
 ## 开发

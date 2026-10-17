@@ -93,13 +93,29 @@ export interface CachedTrack {
 }
 
 /**
- * Turn a cached cover thumbnail path into an asset-protocol URL the webview can
- * load directly. A version (the remote mtime) busts the browser cache when the
- * underlying file changes.
+ * URL for a local file the webview may load as a subresource.
+ *
+ * Production uses Tauri's `asset:` protocol. In dev the page is served from
+ * `http://localhost:1420`, and WebKitGTK 2.54 refuses to load `asset://`
+ * images from an http origin ("Domains, protocols and ports must match"), so
+ * the same file is routed through Vite's `/@fs` handler instead. This is the
+ * upstream workaround for tauri-apps/tauri#16201.
+ */
+function localFileUrl(path: string): string {
+  if (!import.meta.env.DEV) return convertFileSrc(path);
+  const normalized = path.replace(/\\/g, "/");
+  const encoded = encodeURI(normalized).replace(/[?#]/g, (character) => encodeURIComponent(character));
+  return `/@fs${encoded.startsWith("/") ? "" : "/"}${encoded}`;
+}
+
+/**
+ * Turn a cached cover thumbnail path into a URL the webview can load directly.
+ * A version (the remote mtime) busts the browser cache when the underlying file
+ * changes.
  */
 export function coverUrl(coverPath: string | null | undefined, version?: string | null): string | undefined {
   if (!coverPath) return undefined;
-  const url = convertFileSrc(coverPath);
+  const url = localFileUrl(coverPath);
   return version ? `${url}?v=${encodeURIComponent(version)}` : url;
 }
 

@@ -4,7 +4,7 @@
 
 # Welkin
 
-A cross-platform music player built with [Tauri 2](https://v2.tauri.app/). It reads your music collection over WebDAV or from local folders, syncs your profile, playlists and playback progress across devices, and provides AMLL word-by-word lyrics, a desktop lyrics overlay, and system media controls. Audio is decoded and played entirely in the Rust backend; the frontend only handles the UI and the play queue.
+A cross-platform music player built with [Tauri 3](https://v3.tauri.app/). It reads your music collection over WebDAV or from local folders, syncs your profile, playlists and playback progress across devices, and provides AMLL word-by-word lyrics, a desktop lyrics overlay (unavailable on Linux, where CEF cannot host transparent windows), and system media controls. Audio is decoded and played entirely in the Rust backend; the frontend only handles the UI and the play queue. Linux uses CEF (Chromium) as its webview runtime; Windows, macOS and Android use the system webview.
 
 - Repository: <https://github.com/atemukesu/WelkinPlayer>
 - Platforms: Windows / macOS / Linux / Android
@@ -32,7 +32,7 @@ A cross-platform music player built with [Tauri 2](https://v2.tauri.app/). It re
 
 | Layer | Technology |
 | --- | --- |
-| Shell & backend | Tauri 2 (Rust) |
+| Shell & backend | Tauri 3 (Rust) |
 | Audio engine | [rodio](https://github.com/RustAudio/rodio) + [cpal](https://github.com/RustAudio/cpal) + [Symphonia](https://github.com/pdeljanov/Symphonia) (Rust decoding and output) |
 | Frontend | Vue 3 + TypeScript + Vite |
 | State / i18n | Pinia, vue-i18n |
@@ -47,7 +47,7 @@ A cross-platform music player built with [Tauri 2](https://v2.tauri.app/). It re
 - Platform dependencies:
   - Windows: WebView2 (bundled with Windows 11)
   - macOS: Xcode Command Line Tools
-  - Linux: `libwebkit2gtk-4.1-dev`, `libappindicator3-dev`, `librsvg2-dev`, `patchelf`, `libdbus-1-dev`
+  - Linux: `libgtk-4-dev`, `libx11-dev`, `libxkbcommon-dev`, `libnss3-dev`, `libasound2-dev`, `libgbm-dev`, `patchelf` (the first build downloads the CEF runtime)
 - For Android builds: JDK 17, Android SDK, Android NDK (r26b), and the Android Rust targets
 
 ## Development
