@@ -142,7 +142,7 @@ fn fetch_release_notes(current: &str, latest: &str) -> Result<Option<String>, Ap
 ///
 /// The shape mirrors the official updater example so the frontend can key off
 /// `event.event` (`Started` / `Progress` / `Finished`).
-#[cfg(desktop)]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "event", content = "data")]
 pub enum DownloadEvent {
@@ -267,11 +267,15 @@ pub mod github_release {
         tag_name: String,
         body: Option<String>,
         published_at: Option<String>,
+        /// Only Android needs the asset list (to pick its ABI split APK); Linux
+        /// links the release page directly, so it is compiled out there.
+        #[cfg(target_os = "android")]
         #[serde(default)]
         assets: Vec<Asset>,
     }
 
     /// One downloadable file attached to a release.
+    #[cfg(target_os = "android")]
     #[derive(Debug, Deserialize)]
     struct Asset {
         name: String,
