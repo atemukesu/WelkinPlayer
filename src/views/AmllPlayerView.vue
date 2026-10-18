@@ -434,6 +434,7 @@ function onLyricSeek(timeMs: number) {
             :lines="amllLines"
             :current-time="positionMs"
             :playing="player.isPlaying"
+            :rate="player.playbackRate"
             :font-size="lyrics.amll.lineSize"
             :font-weight="lyrics.amll.fontWeight"
             :font-families="lyrics.amll.fontFamilies"
