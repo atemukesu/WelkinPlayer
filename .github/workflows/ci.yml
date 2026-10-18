@@ -1,0 +1,79 @@
+name: CI
+
+# Fast compile/bundle smoke test. Triggered manually (Actions -> CI -> Run
+# workflow) without publishing a tag.
+#
+# Unlike `release.yml` this does NOT sign bundles or upload a GitHub Release;
+# it only proves the Linux desktop build + AppImage/Deb bundling succeeds. Use
+# it for fast iteration on CI failures (e.g. missing system libraries) instead
+# of pushing throwaway tags. No automatic push/PR triggers, so it never burns
+# runner minutes on its own.
+on:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          # GTK 4 + Chromium (CEF) runtime/build deps. libayatana-appindicator3-dev
+          # provides the .pc file that `pkg-config` needs so the Tauri bundler's
+          # tray detection does not panic with "Can't detect any appindicator
+          # library"; librsvg2-dev is required by the AppImage bundler script.
+          sudo apt-get install -y \
+            libgtk-4-dev libx11-dev libxkbcommon-dev libxrandr-dev libxi-dev \
+            libxcursor-dev libxdamage-dev libxcomposite-dev libxfixes-dev \
+            libnss3-dev libasound2-dev libpulse-dev libcups2-dev \
+            libatk1.0-dev libatk-bridge2.0-dev libdrm-dev libgbm-dev \
+            libwayland-dev patchelf \
+            libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Cache CEF
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/tauri-cef
+          key: cef-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Linux builds on the CEF runtime, so the bundler must be the CEF-aware
+      # CLI (copies libcef.so / resources / locales). See release.yml for why.
+      - name: Use CEF-aware CLI on Linux
+        run: |
+          cli_prefix="$RUNNER_TEMP/tauri-cli-cef"
+          npm install --prefix "$cli_prefix" --no-save --no-package-lock \
+            @tauri-apps/cli-cef@3.0.0-alpha.6
+          rm -f node_modules/.bin/tauri
+          ln -s "$cli_prefix/node_modules/@tauri-apps/cli-cef/tauri.js" \
+            node_modules/.bin/tauri
+          pnpm tauri --version
+
+      - name: Sync version from package.json
+        run: pnpm version:sync
+
+      - name: Build desktop bundle (smoke test)
+        run: pnpm tauri build
