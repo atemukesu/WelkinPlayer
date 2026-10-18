@@ -15,7 +15,7 @@
 // never written to the repository.
 //
 // Usage: node scripts/prepare-release.mjs [tag] [options]
-//   tag                    e.g. v1.0.1 (prompted when omitted)
+//   tag                    e.g. v1.0.1 / v1.0.3-rc.1 (prompted when omitted)
 //   --dry-run              preview only; do not write files / commit / tag
 //   --no-commit            write changelog.md + bump version, but do not commit/tag
 //   --yes                  accept the AI changelog without the review prompt
@@ -98,7 +98,7 @@ function parseArgs(argv) {
 function usage() {
   console.log(`${bold("用法:")} node scripts/prepare-release.mjs [tag] [选项]
 
-  ${cyan("tag")}                    例如 v1.0.1（省略则交互输入）
+  ${cyan("tag")}                    例如 v1.0.1 / v1.0.3-rc.1（省略则交互输入）
   ${cyan("--dry-run")}              只预览，不写文件/不提交/不打 tag
   ${cyan("--no-commit")}            写 changelog.md 并升版本，但不提交、不打 tag
   ${cyan("--yes")}                  跳过审查，直接采用 AI 结果
@@ -222,7 +222,8 @@ async function main() {
     // 1. Resolve and validate the tag.
     let tag = options.positional[0];
     if (!tag) tag = (await rl.question(`${cyan("请输入本次发布的 tag")}（如 v1.0.1）：`)).trim();
-    if (!/^v\d+\.\d+\.\d+$/.test(tag)) fail(`tag 格式不合法：${tag}（应形如 v1.0.1）`);
+    if (!/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(tag))
+      fail(`tag 格式不合法：${tag}（应形如 v1.0.1 或 v1.0.3-rc.1）`);
     const version = tag.slice(1);
 
     // 2. Preflight.
