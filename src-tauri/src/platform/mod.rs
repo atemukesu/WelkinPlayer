@@ -6,5 +6,7 @@
 
 #[cfg(target_os = "android")]
 pub mod android;
+#[cfg(target_os = "linux")]
+pub mod linux;
 pub mod media_control;
 pub mod tray;

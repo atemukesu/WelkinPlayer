@@ -47,6 +47,16 @@ fn cef_runtime() -> tauri_runtime_cef::Cef {
             ("disable-renderer-backgrounding", None::<&str>),
         ])
         .disable_features(["HardwareMediaKeyHandling"])
+        // The desktop-lyric overlay is an off-screen browser: CEF paints it into
+        // a buffer we composite into a transparent GTK window instead of into a
+        // native view. CEF only creates windowless browsers when this
+        // process-wide setting is on, and advises against setting it when
+        // nothing renders off-screen, so it is always on here because the
+        // overlay may open at any time.
+        .with_settings(|settings| settings.windowless_rendering_enabled = 1)
+        // Native input and redraws for that overlay: an off-screen browser has
+        // no view of its own, so nothing else delivers them.
+        .on_window_event(crate::platform::linux::desktop_lyric::on_window_event)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

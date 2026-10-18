@@ -74,6 +74,12 @@ tauri-runtime-cef = { version = "3.0.0-alpha.6", features = ["devtools"] }
 # aborts the CEF browser process after the dialog closes. The XDG portal backend
 # runs out of process over D-Bus instead.
 tauri-plugin-dialog = { version = "3.0.0-alpha.4", default-features = false, features = ["xdg-portal"] }
+# The desktop-lyric overlay is a CEF off-screen browser: the runtime hands over
+# the painted BGRA frame and we composite it into the GTK4 window ourselves (see
+# `src/platform/linux/desktop_lyric.rs`). `Cef::on_window_event` speaks in this
+# crate's winit types, and the compositing uses GTK4's texture/snapshot API.
+winit = { version = "0.31.0-beta.3", package = "tauri-winit", default-features = false }
+gtk = { version = "0.11.5", package = "gtk4" }
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 tauri-runtime-wry = { version = "3.0.0-alpha.5", features = ["devtools"] }

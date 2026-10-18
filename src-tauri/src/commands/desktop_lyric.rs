@@ -16,7 +16,7 @@
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
-#[cfg(all(desktop, not(target_os = "linux")))]
+#[cfg(desktop)]
 use tauri::webview::PageLoadEvent;
 #[cfg(desktop)]
 use tauri::Emitter;
@@ -32,9 +32,10 @@ pub struct DesktopLyricCache {
     pub settings: Mutex<Option<serde_json::Value>>,
 }
 
-/// Label of the desktop floating window; shared with the frontend.
+/// Label of the desktop floating window; shared with the frontend and the
+/// Linux off-screen renderer.
 #[cfg(desktop)]
-const WINDOW_LABEL: &str = "desktop-lyrics";
+pub(crate) const WINDOW_LABEL: &str = "desktop-lyrics";
 
 /// Overlay markup, shared by the desktop window and the Android WebView.
 /// Bundled so Android needs no asset-server plumbing. (The desktop window loads
@@ -106,9 +107,9 @@ pub struct DesktopLyricStatus {
 
 /// Current renderer status for this platform.
 fn status(app: &AppHandle) -> DesktopLyricStatus {
-    // The floating layer is a transparent, frameless window. CEF's windowed
-    // browser paints an opaque surface, so Linux (CEF) cannot host it; hiding
-    // the feature beats opening a solid box over the desktop.
+    // The floating layer is a transparent, frameless window. On Linux that is a
+    // CEF off-screen browser composited into a transparent GTK window (see
+    // `platform::linux::desktop_lyric`), so the same feature is available.
     #[cfg(all(desktop, not(target_os = "linux")))]
     return DesktopLyricStatus {
         supported: true,
@@ -119,9 +120,9 @@ fn status(app: &AppHandle) -> DesktopLyricStatus {
     {
         let _ = app;
         return DesktopLyricStatus {
-            supported: false,
-            permission_granted: false,
-            active: false,
+            supported: true,
+            permission_granted: true,
+            active: app.get_webview_window(WINDOW_LABEL).is_some(),
         };
     }
     #[cfg(target_os = "android")]
@@ -144,10 +145,15 @@ fn status(app: &AppHandle) -> DesktopLyricStatus {
 pub async fn desktop_lyric_open(app: AppHandle) -> Result<DesktopLyricStatus, AppError> {
     #[cfg(target_os = "linux")]
     {
-        let _ = &app;
-        return Err(AppError::other(
-            "Linux 的 CEF 后端不支持透明窗口，无法显示悬浮歌词",
-        ));
+        let app_for_load = app.clone();
+        let window = crate::platform::linux::desktop_lyric::open(&app, move |window, payload| {
+            if payload.event() != PageLoadEvent::Finished {
+                return;
+            }
+            push_cached(&app_for_load, &window);
+        })
+        .map_err(AppError::other)?;
+        app_for_close_handler(&app, &window);
     }
     #[cfg(all(desktop, not(target_os = "linux")))]
     {
@@ -173,17 +179,7 @@ pub async fn desktop_lyric_open(app: AppHandle) -> Result<DesktopLyricStatus, Ap
                 if payload.event() != PageLoadEvent::Finished {
                     return;
                 }
-                let Some(cache) = app_for_load.try_state::<DesktopLyricCache>() else {
-                    return;
-                };
-                let load = cache.load.lock().ok().and_then(|guard| guard.clone());
-                let settings = cache.settings.lock().ok().and_then(|guard| guard.clone());
-                if let Some(load) = load {
-                    let _ = window.emit("desktop-lyric:load", &load);
-                }
-                if let Some(settings) = settings {
-                    let _ = window.emit("desktop-lyric:settings", &settings);
-                }
+                push_cached(&app_for_load, &window);
             })
             .build()
             .map_err(|error| {
@@ -192,14 +188,7 @@ pub async fn desktop_lyric_open(app: AppHandle) -> Result<DesktopLyricStatus, Ap
 
             // Tell the main window when the layer goes away (closed from its own
             // button, the window manager, ...) so the enable toggle stays in sync.
-            let app_for_close = app.clone();
-            window.on_window_event(move |event| {
-                if matches!(event, tauri::WindowEvent::Destroyed) {
-                    if let Some(main) = app_for_close.get_webview_window("main") {
-                        let _ = main.emit("desktop-lyric:closed", ());
-                    }
-                }
-            });
+            app_for_close_handler(&app, &window);
 
             place_default(&window);
         }
@@ -216,8 +205,38 @@ pub async fn desktop_lyric_open(app: AppHandle) -> Result<DesktopLyricStatus, Ap
             log::warn!("desktop lyric overlay skipped: overlay permission not granted");
         }
     }
-    #[cfg(not(target_os = "linux"))]
     Ok(status(&app))
+}
+
+/// Replays the documents the frontend pushed before the overlay had loaded;
+/// events emitted earlier would be lost.
+#[cfg(all(desktop, not(target_os = "android")))]
+fn push_cached(app: &AppHandle, window: &tauri::WebviewWindow) {
+    let Some(cache) = app.try_state::<DesktopLyricCache>() else {
+        return;
+    };
+    let load = cache.load.lock().ok().and_then(|guard| guard.clone());
+    let settings = cache.settings.lock().ok().and_then(|guard| guard.clone());
+    if let Some(load) = load {
+        let _ = window.emit("desktop-lyric:load", &load);
+    }
+    if let Some(settings) = settings {
+        let _ = window.emit("desktop-lyric:settings", &settings);
+    }
+}
+
+/// Tells the main window when the overlay is destroyed, so the enable toggle
+/// stays in sync with a close coming from the window manager or its own button.
+#[cfg(desktop)]
+fn app_for_close_handler(app: &AppHandle, window: &tauri::WebviewWindow) {
+    let app = app.clone();
+    window.on_window_event(move |event| {
+        if matches!(event, tauri::WindowEvent::Destroyed) {
+            if let Some(main) = app.get_webview_window("main") {
+                let _ = main.emit("desktop-lyric:closed", ());
+            }
+        }
+    });
 }
 
 /// Tear the floating renderer down.

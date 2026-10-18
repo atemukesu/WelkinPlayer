@@ -21,6 +21,11 @@
     }).join(", ");
   }
 
+  // Smallest window height that can still hold the overlay's padding and one
+  // line of lyrics. Heights below this are measurement noise, never a size the
+  // user chose, so they are neither restored nor persisted.
+  var MIN_BASE_HEIGHT = 72;
+
   var state = {
     settings: null,
     lines: [],
@@ -416,7 +421,7 @@
   // extra lines, so the text never drifts.
   function applyStageOffset() {
     if (!win) return;
-    if (state.baseHeight == null && window.innerHeight) state.baseHeight = window.innerHeight;
+    if (state.baseHeight == null && window.innerHeight >= MIN_BASE_HEIGHT) state.baseHeight = window.innerHeight;
     if (state.baseHeight == null) return;
     var base = state.currentBaseElement ? state.currentBaseElement.getBoundingClientRect().height : 0;
     if (base <= 0) return;
@@ -434,7 +439,7 @@
       var rowGap = parseFloat(getComputedStyle(blockElement).rowGap) || 0;
       extra = Math.round(state.currentExtraElement.getBoundingClientRect().height + rowGap);
     }
-    if (state.baseHeight == null && window.innerHeight) state.baseHeight = window.innerHeight;
+    if (state.baseHeight == null && window.innerHeight >= MIN_BASE_HEIGHT) state.baseHeight = window.innerHeight;
     applyStageOffset();
     state.extraHeight = extra;
     if (!win || typeof win.setSize !== "function" || state.baseHeight == null) return;
@@ -543,11 +548,15 @@
     body.classList.add("desktop");
     var geometry = readGeometry();
     if (geometry && Number.isFinite(geometry.x) && Number.isFinite(geometry.y)) {
-      if (Number.isFinite(geometry.height)) state.baseHeight = geometry.height;
+      // A remembered height is only usable when it could actually hold the
+      // overlay. A too-small value (the empty-overlay baseline measured before
+      // the page had laid out) would restore a sliver of a window and squash
+      // everything inside it, so it is dropped and the default height wins.
+      if (Number.isFinite(geometry.height) && geometry.height >= MIN_BASE_HEIGHT) state.baseHeight = geometry.height;
       if (typeof win.setPosition === "function") {
         try { var LogicalPosition = tauri.window.LogicalPosition; win.setPosition(LogicalPosition ? new LogicalPosition(geometry.x, geometry.y) : { x: geometry.x, y: geometry.y }).catch(function () {}); } catch (error) {}
       }
-      if (geometry.width && geometry.height && typeof win.setSize === "function") {
+      if (geometry.width && geometry.height >= MIN_BASE_HEIGHT && typeof win.setSize === "function") {
         try { var LogicalSize = tauri.window.LogicalSize; win.setSize(LogicalSize ? new LogicalSize(geometry.width, geometry.height) : { width: geometry.width, height: geometry.height }).catch(function () {}); } catch (error) {}
       }
     }
@@ -590,6 +599,10 @@
         var pos = values[0], size = values[1], scale = values[2] || 1;
         if (!pos || !size) return;
         var height = state.baseHeight != null ? state.baseHeight : size.height / scale;
+        // Never persist a height the overlay cannot fit in: it would come back
+        // on the next launch as a squashed window.
+        if (!(height >= MIN_BASE_HEIGHT)) height = size.height / scale;
+        if (!(height >= MIN_BASE_HEIGHT)) return;
         try { localStorage.setItem("welkin-desktop-lyric-geometry", JSON.stringify({ x: pos.x / scale, y: pos.y / scale, width: size.width / scale, height: height })); } catch (error) {}
       });
     };
@@ -603,7 +616,11 @@
     if (typeof win.onResized === "function") win.onResized(function () {
       requestAnimationFrame(function () {
         var logical = window.innerHeight;
-        state.baseHeight = state.extraHeight ? logical - state.extraHeight : logical;
+        // A resize caused by our own auto-grow can report an intermediate
+        // height; keeping it as the baseline would ratchet the window smaller
+        // on every line change.
+        var base = state.extraHeight ? logical - state.extraHeight : logical;
+        if (base >= MIN_BASE_HEIGHT) state.baseHeight = base;
         applyStageOffset();
         saveGeometry();
         refreshWinPos();
