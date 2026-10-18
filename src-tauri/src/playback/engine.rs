@@ -194,7 +194,7 @@ impl Shared {
         // Play/Pause cannot turn an empty or failed engine into a loaded one.
         let _ = self
             .transport
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |state| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |state| {
                 if state == Transport::Playing as u8 || state == Transport::Paused as u8 {
                     Some(if paused {
                         Transport::Paused as u8

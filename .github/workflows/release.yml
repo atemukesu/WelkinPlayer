@@ -104,8 +104,33 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      # Linux builds on the CEF runtime, so the deb/AppImage bundler must be the
+      # CEF-aware CLI (it copies libcef.so / resources / locales next to the
+      # binary). The published @tauri-apps/cli does not do this, which makes
+      # `tauri build` fail at bundling with "No such file or directory (os error 2)".
+      # Only Linux needs it; macOS/Windows use the generic CLI + wry runtime.
+      - name: Use CEF-aware CLI on Linux
+        if: matrix.platform == 'ubuntu-24.04'
+        run: |
+          npm install --no-save --no-package-lock @tauri-apps/cli-cef@3.0.0-alpha.6
+          rm -f node_modules/.bin/tauri
+          ln -s ../@tauri-apps/cli-cef/tauri.js node_modules/.bin/tauri
+          node_modules/.bin/tauri --version
+
       - name: Sync version from package.json
         run: pnpm version:sync
+
+      # WiX (MSI) only accepts numeric versions (major.minor.patch, optionally a
+      # numeric 4th field). A letter pre-release like `-rc` makes it fail with
+      # "optional pre-release identifier ... must be numeric-only". Strip any
+      # non-numeric pre-release/build suffix from the version for Windows builds
+      # only, so the MSI bundles cleanly. This rewrites package.json in place for
+      # the build; it is never committed.
+      - name: Sanitize version for MSI (Windows only)
+        if: matrix.platform == 'windows-latest'
+        run: |
+          node -e "const fs=require('fs');const p='package.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));const base=j.version.split(/[-+]/)[0];j.version=base;fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n');console.log('version ->',base);"
+          pnpm version:sync
 
       - name: Build desktop bundles
         env:
