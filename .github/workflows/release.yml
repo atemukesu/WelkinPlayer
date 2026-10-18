@@ -44,7 +44,7 @@ jobs:
             bundle: "src-tauri/target/x86_64-apple-darwin/release/bundle"
             os: macos
             key: darwin-x86_64
-          - platform: ubuntu-22.04
+          - platform: ubuntu-24.04
             args: ""
             bundle: "src-tauri/target/release/bundle"
             os: linux
@@ -80,7 +80,7 @@ jobs:
           workspaces: src-tauri
 
       - name: Install Linux dependencies
-        if: matrix.platform == 'ubuntu-22.04'
+        if: matrix.platform == 'ubuntu-24.04'
         run: |
           sudo apt-get update
           # Linux builds on the CEF (Chromium) runtime instead of WebKitGTK.
@@ -95,7 +95,7 @@ jobs:
             libwayland-dev patchelf
 
       - name: Cache CEF
-        if: matrix.platform == 'ubuntu-22.04'
+        if: matrix.platform == 'ubuntu-24.04'
         uses: actions/cache@v4
         with:
           path: ~/.cache/tauri-cef
