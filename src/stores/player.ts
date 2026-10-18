@@ -303,10 +303,12 @@ export const usePlayerStore = defineStore("player", () => {
 
   /**
    * Rebuild the play queue from persisted keys once the library is available.
-   * Keys that no longer resolve to a track are dropped; the current index is
-   * clamped into range. Returns false when nothing could be restored.
+   * Keys that no longer resolve to a track are dropped. The stored index can
+   * point at a different track once entries disappear, so it is only used as a
+   * fallback: the current track's own key anchors the position when present.
+   * Returns false when nothing could be restored.
    */
-  function restoreQueue(keys: string[], index: number): boolean {
+  function restoreQueue(keys: string[], index: number, currentKey?: string): boolean {
     if (keys.length === 0) return false;
     const byKey = new Map<string, Track>();
     for (const track of tracks.value) {
@@ -319,7 +321,10 @@ export const usePlayerStore = defineStore("player", () => {
     if (restored.length === 0) return false;
     queue.value = restored;
     baseQueue.value = [...restored];
-    queueIndex.value = index >= 0 && index < restored.length ? index : 0;
+    const anchor = currentKey ? restored.findIndex((track) => trackKey(track) === currentKey) : -1;
+    queueIndex.value = anchor >= 0
+      ? anchor
+      : index >= 0 && index < restored.length ? index : 0;
     currentTrack.value = restored[queueIndex.value];
     return true;
   }

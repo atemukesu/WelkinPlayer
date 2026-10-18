@@ -111,6 +111,9 @@ pub struct Shared {
     waveform_sequence: AtomicU64,
     spectrum: [AtomicU32; SPECTRUM_SIZE],
     spectrum_sequence: AtomicU64,
+    /// Requested seek target (seconds as `f64` bits) while a seek is in flight.
+    /// The event thread reports this instead of the decoder's stale playhead.
+    seek_preview: Mutex<Option<f64>>,
 }
 
 /// One constant-tempo run of playback. `out` is an interleaved output-sample
@@ -161,7 +164,25 @@ impl Shared {
             waveform_sequence: AtomicU64::new(0),
             spectrum: std::array::from_fn(|_| AtomicU32::new(0)),
             spectrum_sequence: AtomicU64::new(0),
+            seek_preview: Mutex::new(None),
         }
+    }
+
+    /// Report a seek target while the decoder is still being repositioned, so
+    /// state events do not keep publishing the previous playhead.
+    fn announce_seek(&self, target_secs: f64) {
+        *self
+            .seek_preview
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(target_secs);
+    }
+
+    /// Drop the seek preview once the decoder actually sits at the target.
+    fn clear_seek_preview(&self) {
+        *self
+            .seek_preview
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = None;
     }
 
     /// Requested playback state: a track is loaded and not paused.
@@ -240,6 +261,15 @@ impl Shared {
 
     /// Position snapshot in milliseconds, derived from the played output.
     fn position_ms(&self) -> f64 {
+        // While a seek is being applied, report where the user asked to go
+        // rather than the decoder's not-yet-updated playhead.
+        if let Some(target) = *self
+            .seek_preview
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+        {
+            return target * 1000.0;
+        }
         self.position_secs() * 1000.0
     }
 
@@ -652,6 +682,9 @@ mod events {
     /// Push periodic state snapshots and one-shot ended/error events.
     pub fn run(app: AppHandle, shared: Arc<Shared>, shutdown: Arc<AtomicBool>) {
         let mut last_ended_generation = u64::MAX;
+        // Whether the current generation has been observed playing (not ended)
+        // at least once, so its end event can fire.
+        let mut ended_armed = false;
         let mut last_underruns = 0u64;
         let mut state_ticks = 0u64;
         let mut last_waveform_sequence = 0u64;
@@ -733,8 +766,20 @@ mod events {
             }
 
             let generation = shared.generation.load(Ordering::Relaxed);
-            if state.ended && generation != last_ended_generation {
+            // A load bumps the generation before it clears `ended`, so a sample
+            // taken in between still carries the previous track's `ended` flag
+            // under the new generation. Requiring a generation to be seen alive
+            // (ended == false) before its end can fire makes the emit exactly
+            // once per playback session, instead of advancing two tracks.
+            if generation != last_ended_generation {
                 last_ended_generation = generation;
+                ended_armed = false;
+            }
+            if !state.ended {
+                ended_armed = true;
+            }
+            if state.ended && ended_armed {
+                ended_armed = false;
                 let _ = app.emit("audio:ended", ());
             }
         }
@@ -1027,6 +1072,7 @@ mod worker {
             // publishing the previous track's position, snapping the progress
             // bar back after the frontend already cleared it.
             self.shared.reset_position(0.0, self.shared.tempo());
+            self.shared.clear_seek_preview();
             self.shared.duration_ms.store(0, Ordering::Relaxed);
             self.shared.set_ended(false);
             let open_started = std::time::Instant::now();
@@ -1137,9 +1183,27 @@ mod worker {
             } else {
                 0.0
             };
+            // Never seek past the end of the resource. A stored resume point
+            // from a longer track (or a click on a stale slider value) would
+            // otherwise land beyond EOF, where the decoder can block reading
+            // bytes that will never arrive and wedge the worker thread.
+            let known_duration = self.shared.duration_ms.load(Ordering::Relaxed) as f64 / 1000.0;
+            let target = if known_duration > 0.0 && target >= known_duration {
+                (known_duration - 0.05).max(0.0)
+            } else {
+                target
+            };
             let was_paused = self.shared.is_paused();
             log::debug!("playback: seek start target={target:.3}s was_paused={was_paused}");
             self.shared.set_paused(true);
+            // While a seek is in flight the decoder is still positioned at the
+            // old playhead, and a remote seek can take seconds (bytes must be
+            // fetched, and the demuxer binary-searches the file). Publishing
+            // that stale position makes the UI snap the slider back and then
+            // jump forward again once the seek lands. Report the requested
+            // position instead, without disturbing the real progress counters
+            // (so a failed seek has nothing to undo).
+            self.shared.announce_seek(target);
             let seek_started = std::time::Instant::now();
             let seek_result = current.decoder.try_seek(Duration::from_secs_f64(target));
             log::debug!(
@@ -1182,6 +1246,7 @@ mod worker {
                                     code: "SEEK_UNSUPPORTED".to_string(),
                                     message: "当前音频流不支持此位置的快速定位".to_string(),
                                 });
+                                self.shared.clear_seek_preview();
                                 self.shared.set_paused(was_paused);
                                 return;
                             }
@@ -1206,6 +1271,7 @@ mod worker {
                     }
                     Err(rebuild_error) => {
                         log::warn!("playback seek rebuild failed: {rebuild_error}");
+                        self.shared.clear_seek_preview();
                         self.shared.set_paused(was_paused);
                         return;
                     }
@@ -1232,6 +1298,7 @@ mod worker {
             self.ring.done.store(false, Ordering::Relaxed);
             self.shared.reset_position(target, tempo);
             self.shared.set_ended(false);
+            self.shared.clear_seek_preview();
             self.append_source(generation, channels as u16, rate as u32, consumer);
             log::debug!(
                 "playback: seek appended source gen={generation} channels={channels} rate={rate}",
@@ -1285,6 +1352,7 @@ mod worker {
             self.shared.duration_ms.store(0, Ordering::Relaxed);
             self.shared.set_ended(false);
             self.shared.reset_position(0.0, self.shared.tempo());
+            self.shared.clear_seek_preview();
             *self
                 .shared
                 .location
@@ -1486,6 +1554,7 @@ mod worker {
                 .store(Transport::Failed as u8, Ordering::Relaxed);
             // An error is not a natural end and must not auto-advance a queue.
             self.shared.set_ended(false);
+            self.shared.clear_seek_preview();
             self.shared.duration_ms.store(0, Ordering::Relaxed);
             self.shared.set_paused(true);
             *self

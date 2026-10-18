@@ -4,10 +4,10 @@
 -->
 
 <script setup lang="ts">
-import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch, watchEffect } from "vue";
+import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch, watchEffect } from "vue";
 import { useI18n } from "vue-i18n";
 import { describeError, invoke } from "./api";
-import { initAudio, seekTo } from "./lib/audio";
+import { initAudio, resumeAt } from "./lib/audio";
 import { accents } from "./lib/app";
 import type { Accent, Theme, View } from "./lib/app";
 import { albumKey, primaryArtist } from "./lib/grouping";
@@ -111,6 +111,8 @@ let lastPositionSavedAt = 0;
 let userTookOver = false;
 /** Signature of the resume point already applied, to avoid redundant re-seeks. */
 let resumeSignature = "";
+/** Track key already resumed; later progress writes must not re-trigger it. */
+let resumedKey = "";
 /** Local-only safety-net cadence (ms) for periodic progress writes while playing. */
 const POSITION_SAVE_INTERVAL_MS = 30_000;
 
@@ -159,15 +161,21 @@ watch(
     if (userTookOver || !playback.ready || player.tracks.length === 0 || player.isPlaying) return;
     const stored = playback.path;
     if (!stored) return;
+    // Once this track has been resumed, further position updates come from our
+    // own progress saving (or a duplicate copy of the same state); re-applying
+    // them would seek back a second time. A zero position is not a resume, so it
+    // may still be replaced by the authoritative copy that arrives later.
+    if (stored === resumedKey) return;
     const track = findTrackByKey(stored);
     if (!track) return;
     const signature = `${stored}|${Math.round(playback.position)}`;
     if (signature === resumeSignature) return;
     resumeSignature = signature;
+    if (playback.position > 0) resumedKey = stored;
     restoringPlayback = true;
     // Prefer the saved play queue so the exact playlist/context resumes; fall
     // back to just the track when no queue was stored (older state).
-    if (!(playback.queue.length > 0 && player.restoreQueue(playback.queue, playback.queueIndex))) {
+    if (!(playback.queue.length > 0 && player.restoreQueue(playback.queue, playback.queueIndex, stored))) {
       player.currentTrack = track;
     } else {
       const index = player.queue.findIndex((item) => trackKey(item) === stored);
@@ -178,7 +186,12 @@ watch(
     }
     player.isPlaying = false;
     const position = playback.position;
-    if (position > 0) void nextTick(() => seekTo(position));
+    // The saved position belongs to the saved track. Applying it immediately
+    // used the previous track's duration, and an out-of-range seek could wedge
+    // the decoder at EOF (the queue index had shifted to a shorter track).
+    // Hand it to `audio.ts`, which applies it once the load reports the real
+    // duration and clamps it into range.
+    resumeAt(position);
     window.setTimeout(() => { restoringPlayback = false; }, 1200);
   },
 );

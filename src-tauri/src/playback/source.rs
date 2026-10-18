@@ -82,7 +82,23 @@ pub fn open_track(
     cache.touch(&key);
     cache.ensure_stream(app, &source, path, &entry, 0, None);
     let reader = cache.reader_from(&entry, 0);
-    let len = cache.cached_total(&entry);
+    // The total arrives with the first upstream response header. Without a byte
+    // length the decoder is built non-seekable (Symphonia then falls back to
+    // forward-only seeking, and that decision is never revisited), which is why
+    // jumping far ahead used to fail while seeking near the playhead worked.
+    // Wait briefly for the headers so the very first decoder can seek.
+    let len = cache.cached_total(&entry).or_else(|| {
+        let started = std::time::Instant::now();
+        let total = match cache.wait_total(&entry, Duration::from_millis(1500)) {
+            TotalState::Known(total) => Some(total),
+            _ => None,
+        };
+        log::debug!(
+            "playback source: waiting for resource size took {:?} -> {total:?}",
+            started.elapsed()
+        );
+        total
+    });
     Ok((
         Box::new(CacheSource {
             app: app.clone(),
@@ -153,8 +169,9 @@ impl Seek for CacheSource {
             }
         };
         // Rebase the downloader onto the new offset so bytes are fetched from
-        // there, then reopen the blocking reader at the same position.
-        log::debug!("playback source: CacheSource seek -> {target} (generation rebase)");
+        // there, then reopen the blocking reader at the same position. When the
+        // offset is already covered the cache keeps the existing connection.
+        log::debug!("playback source: CacheSource seek -> {target}");
         self.cache.ensure_stream(
             &self.app,
             &self.source,

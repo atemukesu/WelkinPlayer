@@ -45,6 +45,12 @@ pub const MAX_LEAD_SECONDS: u64 = 200;
 /// Fallback bitrate when the track duration is still unknown (~320 kbps).
 const DEFAULT_BYTES_PER_SECOND: f64 = 40_000.0;
 const READ_CHUNK: usize = 64 * 1024;
+/// Bytes fetched on the first range request after a seek rebase. Format
+/// demuxers locate a seek target with a binary search (FLAC probes a dozen
+/// offsets); each probe outside the cached segment costs a fresh HTTP request,
+/// which dominates seek latency on a remote source. A wider window turns most
+/// probes into local reads.
+const SEEK_PROBE_BYTES: u64 = 2 * 1024 * 1024;
 /// Decoder startup must be able to consume a large FLAC metadata/picture
 /// block before the playback position exists. Otherwise the downloader waits
 /// for a playhead update while the decoder waits for more header bytes.
@@ -312,6 +318,25 @@ impl StreamCache {
                     state.downloading = true;
                     state.failed = None;
                     state.last_advanced = Instant::now();
+                } else if state.downloading
+                    && want_start > state.seg_end
+                    && want_start - state.seg_end <= SEEK_PROBE_BYTES
+                {
+                    // A demuxer's seek refinement walks forward in small steps,
+                    // each just past the current segment end. Rebasing here would
+                    // abort the connection and issue a fresh request per probe
+                    // (making a remote seek take seconds). Continue the same
+                    // segment and demand the bytes up to the probe instead.
+                    log::debug!(
+                        "stream cache: extend segment to {want_start} (from [{}, {}])",
+                        state.seg_start,
+                        state.seg_end,
+                    );
+                    state.requested_end = state
+                        .requested_end
+                        .max(want_start.saturating_add(SEEK_PROBE_BYTES));
+                    entry.cv.notify_all();
+                    return;
                 } else {
                     let bytes_per_second = bytes_per_second(&state);
                     log::debug!(
@@ -321,6 +346,9 @@ impl StreamCache {
                     );
                     state.seg_start = want_start;
                     state.seg_end = want_start;
+                    // Give the demuxer's seek probing a head start so its binary
+                    // search does not issue one HTTP request per probe.
+                    state.requested_end = want_start.saturating_add(SEEK_PROBE_BYTES);
                     state.position = want_start as f64 / bytes_per_second;
                     state.generation = state.generation.wrapping_add(1);
                     state.complete = false;
@@ -539,6 +567,16 @@ impl Read for CacheReader {
             if let Some((_, message)) = &state.failed {
                 return Err(std::io::Error::other(message.clone()));
             }
+            // Past the end of the resource there are no more bytes. Report EOF
+            // even when the cached segment does not start at offset 0: a seek
+            // rebases `seg_start` forward and leaves a hole below it, so
+            // `complete` can never become true, yet the trailing bytes *are*
+            // fully cached. Without this a decoder reading the final packet
+            // (or verifying the stream end) blocks forever at EOF and wedges
+            // the one playback worker thread.
+            if state.total.is_some_and(|total| self.offset >= total) {
+                return Ok(0);
+            }
             let available = state.seg_end;
             if self.offset < available {
                 let mut want = (available - self.offset).min(buf.len() as u64);
@@ -562,6 +600,18 @@ impl Read for CacheReader {
                 return Ok(read);
             }
             if state.complete {
+                return Ok(0);
+            }
+            // No downloader is running for this generation, so no further bytes
+            // will ever arrive: treat it as end of stream instead of waiting
+            // forever (the downloader only exits at completion, failure, or a
+            // rebase, all of which are handled above).
+            if !state.downloading {
+                log::debug!(
+                    "stream cache: reader at offset {} hit end of stream (no downloader, gen {})",
+                    self.offset,
+                    self.generation,
+                );
                 return Ok(0);
             }
             // No data yet: wait for the downloader to advance or fail.

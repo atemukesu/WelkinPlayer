@@ -95,15 +95,65 @@ function playbackLog(message: string, details?: unknown): void {
   void invoke("log_message", { level: "info", message: line }).catch(() => {});
 }
 
+/**
+ * Restored playhead waiting for the load to report the real duration. Seeking
+ * before that used the previous track's duration, which could land past the end
+ * of a shorter track and wedge the decoder at EOF.
+ */
+let pendingResumeSecs = 0;
+/**
+ * Position requested by the latest seek, held until the engine reports a nearby
+ * playhead. While set, stale `audio:state` snapshots do not move the slider.
+ */
+let pendingSeekSecs: number | null = null;
+/** When the pending seek was issued, so a failed seek cannot pin the UI. */
+let pendingSeekAt = 0;
+/** Give up holding the requested position if the engine never gets there. */
+const PENDING_SEEK_TIMEOUT_MS = 12_000;
+
+/**
+ * Queue a restored playhead. It is applied by {@link onState} once the engine
+ * reports a duration, clamped into the track's bounds.
+ */
+export function resumeAt(seconds: number) {
+  pendingResumeSecs = Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
+}
+
 function onState(payload: AudioStatePayload) {
   const player = usePlayerStore();
   const duration = payload.durationMs / 1000;
   const position = Math.max(0, duration > 0 ? Math.min(payload.positionMs / 1000, duration) : payload.positionMs / 1000);
+  // While a seek is being applied the engine reports the requested position
+  // itself (`Shared::announce_seek`), so a stale playhead should never reach
+  // here. Keep a short-lived guard anyway: if the engine never confirms the
+  // target (a failed seek, or an engine restart), drop the hold so the UI is
+  // not pinned forever.
+  if (pendingSeekSecs !== null) {
+    const tolerance = Math.max(0.75, duration * 0.01);
+    const arrived = Math.abs(position - pendingSeekSecs) <= tolerance;
+    const expired = performance.now() - pendingSeekAt > PENDING_SEEK_TIMEOUT_MS;
+    if (arrived || expired) {
+      pendingSeekSecs = null;
+    } else {
+      enginePlaying = payload.playing;
+      if (duration > 0) player.setDuration(duration);
+      reportStreamProgress(pendingSeekSecs, duration);
+      lastPositionAt = performance.now();
+      return;
+    }
+  }
   lastPositionMs = position * 1000;
   lastPositionAt = performance.now();
   enginePlaying = payload.playing;
   player.setPosition(position);
   if (duration > 0) player.setDuration(duration);
+  if (pendingResumeSecs > 0 && duration > 0) {
+    // The saved position belongs to a known track length; clamp so a stale
+    // resume point can never seek past the end of a shorter track.
+    const target = Math.min(pendingResumeSecs, Math.max(0, duration - 1));
+    pendingResumeSecs = 0;
+    if (target > 0.5) seekTo(target);
+  }
   reportStreamProgress(position, duration);
   maybePrefetchNext(position, duration);
 }
@@ -134,6 +184,7 @@ function reportStreamProgress(position: number, duration: number, force = false)
 
 function onError(payload: AudioErrorPayload) {
   playbackLog("engine error", { code: payload.code, message: payload.message });
+  pendingSeekSecs = null;
   pushToast("error", t(ERROR_KEYS[payload.code] ?? "playback.failed"));
   usePlayerStore().setPlaying(false);
 }
@@ -146,6 +197,8 @@ async function syncTrack() {
   spectrumData.value = null;
   lastStreamReportKey = null;
   lastStreamReportAt = 0;
+  // A load replaces the decoder; a seek still in flight can never land.
+  pendingSeekSecs = null;
   if (!track?.path) {
     playbackLog("syncTrack: no track, stopping engine");
     await invoke("audio_stop").catch(() => {});
@@ -313,12 +366,20 @@ export function currentTime(): number {
 /** Seek to an absolute number of seconds. */
 export function seekTo(seconds: number) {
   if (!Number.isFinite(seconds) || seconds < 0) return;
-  playbackLog("seekTo: sending audio_seek", { seconds, duration: usePlayerStore().duration });
-  lastPositionMs = seconds * 1000;
+  // Keep the request inside the track: seeking past the end used to hand the
+  // decoder an offset it could never reach, blocking it on bytes that never
+  // arrive. The backend clamps as well, but the UI should not show a playhead
+  // beyond the duration either.
+  const duration = usePlayerStore().duration;
+  const target = duration > 0 ? Math.min(seconds, duration) : seconds;
+  playbackLog("seekTo: sending audio_seek", { seconds: target, duration });
+  pendingSeekSecs = target;
+  lastPositionMs = target * 1000;
   lastPositionAt = performance.now();
-  usePlayerStore().setPosition(seconds);
-  reportStreamProgress(seconds, usePlayerStore().duration, true);
-  void invoke("audio_seek", { positionSecs: seconds }).catch(() => {});
+  pendingSeekAt = lastPositionAt;
+  usePlayerStore().setPosition(target);
+  reportStreamProgress(target, duration, true);
+  void invoke("audio_seek", { positionSecs: target }).catch(() => {});
 }
 
 /** Seek to a percentage (0-100) of the current track. */
@@ -328,7 +389,10 @@ export function seekPercent(value: number, commit = true) {
   const seconds = (Math.min(100, Math.max(0, value)) / 100) * player.duration;
   if (!commit) {
     // Keep the slider and time label responsive while dragging. Do not enqueue
-    // a native decoder seek for every pointer movement.
+    // a native decoder seek for every pointer movement. Clear any pending-seek
+    // hold so a drag that is abandoned (or restarted) can still be overridden
+    // by subsequent engine state.
+    pendingSeekSecs = null;
     playbackLog("seekPercent: input preview (no seek sent)", { value, seconds });
     lastPositionMs = seconds * 1000;
     lastPositionAt = performance.now();
