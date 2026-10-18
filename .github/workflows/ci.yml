@@ -1,4 +1,4 @@
-name: CI
+name: Test Linux
 
 # Fast compile/bundle smoke test. Triggered manually (Actions -> CI -> Run
 # workflow) without publishing a tag.
@@ -49,7 +49,8 @@ jobs:
             libnss3-dev libasound2-dev libpulse-dev libcups2-dev \
             libatk1.0-dev libatk-bridge2.0-dev libdrm-dev libgbm-dev \
             libwayland-dev patchelf \
-            libayatana-appindicator3-dev librsvg2-dev
+            libayatana-appindicator3-dev librsvg2-dev \
+            libfuse2
 
       - name: Cache CEF
         uses: actions/cache@v4

@@ -24,7 +24,6 @@ name: Release
 on:
   push:
     tags: ["v*"]
-  workflow_dispatch:
 
 jobs:
   desktop:
@@ -93,7 +92,8 @@ jobs:
             libnss3-dev libasound2-dev libpulse-dev libcups2-dev \
             libatk1.0-dev libatk-bridge2.0-dev libdrm-dev libgbm-dev \
             libwayland-dev patchelf \
-            libayatana-appindicator3-dev librsvg2-dev
+            libayatana-appindicator3-dev librsvg2-dev \
+            libfuse2
 
       - name: Cache CEF
         if: matrix.platform == 'ubuntu-24.04'
