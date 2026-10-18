@@ -78,4 +78,8 @@ jobs:
 
       - name: Build desktop bundle (smoke test)
         # Linux ships deb/rpm only; skip the brittle AppImage (linuxdeploy) path.
+        # The updater artifacts still need signing, so pass the private key like
+        # the release job does (the repo secret is readable on manual dispatch).
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: pnpm tauri build --bundles deb,rpm
