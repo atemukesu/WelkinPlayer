@@ -22,7 +22,7 @@ impl log::Log for StderrLogger {
         // Full detail from our own crate; keep third-party crates at `Warn` so
         // their debug chatter does not bury the playback diagnostics.
         if metadata.target().starts_with("welkinplayer") {
-            metadata.level() <= Level::Debug
+            metadata.level() <= Level::Info
         } else {
             metadata.level() <= Level::Warn
         }
@@ -50,7 +50,7 @@ static LOGGER: StderrLogger = StderrLogger;
 /// Install the logger and cap the level at `Debug`. Safe to call repeatedly.
 pub fn init() {
     if log::set_logger(&LOGGER).is_ok() {
-        log::set_max_level(LevelFilter::Debug);
+        log::set_max_level(LevelFilter::Info);
     }
 }
 

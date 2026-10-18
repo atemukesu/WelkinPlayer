@@ -92,7 +92,8 @@ jobs:
             libxcursor-dev libxdamage-dev libxcomposite-dev libxfixes-dev \
             libnss3-dev libasound2-dev libpulse-dev libcups2-dev \
             libatk1.0-dev libatk-bridge2.0-dev libdrm-dev libgbm-dev \
-            libwayland-dev patchelf
+            libwayland-dev patchelf \
+            libayatana-appindicator3-1
 
       - name: Cache CEF
         if: matrix.platform == 'ubuntu-24.04'
