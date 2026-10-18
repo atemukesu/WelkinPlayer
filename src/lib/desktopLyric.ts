@@ -69,6 +69,12 @@ export function isAndroid(): boolean {
   return typeof navigator !== "undefined" && /android/i.test(navigator.userAgent);
 }
 
+/** True on the Linux desktop build, which opens the release page instead of
+ * auto-installing (no in-app package installer). */
+export function isLinux(): boolean {
+  return typeof navigator !== "undefined" && /linux/i.test(navigator.userAgent);
+}
+
 /** True on the desktop window managers (everything but Android/iOS). */
 export function isDesktop(): boolean {
   return isTauri() && !isAndroid() && !/iphone|ipad|ipod/i.test(navigator.userAgent);

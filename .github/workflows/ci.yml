@@ -77,4 +77,5 @@ jobs:
         run: pnpm version:sync
 
       - name: Build desktop bundle (smoke test)
-        run: pnpm tauri build
+        # Linux ships deb/rpm only; skip the brittle AppImage (linuxdeploy) path.
+        run: pnpm tauri build --bundles deb,rpm

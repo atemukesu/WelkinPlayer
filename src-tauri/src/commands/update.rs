@@ -3,17 +3,17 @@
 
 //! In-app updates.
 //!
-//! Desktop uses Tauri's official updater: the release workflow signs every
-//! installer with the developer key and publishes a `latest.json` manifest as a
-//! GitHub release asset, so the backend verifies each download against the
+//! macOS and Windows use Tauri's official updater: the release workflow signs
+//! every installer with the developer key and publishes a `latest.json` manifest
+//! as a GitHub release asset, so the backend verifies each download against the
 //! embedded public key before installing it.
 //!
-//! Android is deliberately different. Installing an APK from inside the app
-//! needs the install-packages permission and a user-facing package installer,
-//! so instead the newest GitHub release is queried directly and the webview
-//! offers the `.apk` asset as a normal browser download the user installs
-//! themselves. Both paths return the same [`UpdateInfo`] so the settings screen
-//! can render the release notes identically.
+//! Android and Linux are deliberately different. Installing from inside the app
+//! needs a platform package installer (an APK on Android, a system package
+//! manager on Linux), so instead the newest GitHub release is queried directly
+//! and the webview offers the release page as a normal browser link the user
+//! installs themselves. Both paths return the same [`UpdateInfo`] so the
+//! settings screen can render the release notes identically.
 
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
@@ -37,7 +37,8 @@ pub struct UpdateInfo {
     pub notes: Option<String>,
     /// Publish date (RFC 3339 on Android, the updater's format on desktop).
     pub date: Option<String>,
-    /// Direct download URL for platforms that install outside the app (Android).
+    /// Direct URL to install from outside the app: the `.apk` asset on Android,
+    /// the release page on Linux. `None` on macOS/Windows (they auto-install).
     pub download_url: Option<String>,
 }
 
@@ -156,8 +157,8 @@ pub enum DownloadEvent {
     Finished,
 }
 
-/// Desktop update backend, backed by `tauri-plugin-updater`.
-#[cfg(desktop)]
+/// macOS/Windows update backend, backed by `tauri-plugin-updater`.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub mod desktop {
     use std::sync::Mutex;
 
@@ -250,9 +251,10 @@ pub mod desktop {
     }
 }
 
-/// Android update backend, backed by the GitHub Releases API.
-#[cfg(target_os = "android")]
-pub mod android {
+/// GitHub Releases-backed update backend for platforms that open the release
+/// page instead of installing in-app (Android APKs, Linux packages).
+#[cfg(any(target_os = "android", target_os = "linux"))]
+pub mod github_release {
     use serde::Deserialize;
     use tauri::AppHandle;
 
@@ -279,6 +281,7 @@ pub mod android {
     /// ABI token used in release asset names for the architecture this build
     /// runs on. The installed APK was built for the device, so its compile-time
     /// arch identifies the matching split APK.
+    #[cfg(target_os = "android")]
     fn abi_token() -> &'static str {
         match std::env::consts::ARCH {
             "aarch64" => "arm64-v8a",
@@ -310,16 +313,25 @@ pub mod android {
             return Ok(UpdateInfo::up_to_date(current));
         }
 
-        // The release ships one split APK per ABI (`Welkin-<tag>-<abi>.apk`), so
-        // pick the one for this device; fall back to any APK (e.g. a universal
-        // build) when there is no exact ABI match.
-        let abi_suffix = format!("-{}.apk", abi_token());
-        let download_url = release
-            .assets
-            .iter()
-            .filter(|asset| asset.name.to_ascii_lowercase().ends_with(".apk"))
-            .min_by_key(|asset| u8::from(!asset.name.to_ascii_lowercase().ends_with(&abi_suffix)))
-            .map(|asset| asset.browser_download_url.clone());
+        // Android ships one split APK per ABI (`Welkin-<tag>-<abi>.apk`), so pick
+        // the one for this device; fall back to any APK (e.g. a universal build)
+        // when there is no exact ABI match. Linux has no in-app installer, so it
+        // links the release page and lets the user pick the deb/rpm themselves.
+        #[cfg(target_os = "android")]
+        let download_url = {
+            let abi_suffix = format!("-{}.apk", abi_token());
+            release
+                .assets
+                .iter()
+                .filter(|asset| asset.name.to_ascii_lowercase().ends_with(".apk"))
+                .min_by_key(|asset| u8::from(!asset.name.to_ascii_lowercase().ends_with(&abi_suffix)))
+                .map(|asset| asset.browser_download_url.clone())
+        };
+        #[cfg(target_os = "linux")]
+        let download_url = Some(format!(
+            "https://github.com/{REPO}/releases/tag/{}",
+            release.tag_name
+        ));
 
         // Merge every skipped version's notes, not just the newest one.
         let fallback = release.body.filter(|text| !text.trim().is_empty());
@@ -364,8 +376,8 @@ pub mod android {
     }
 }
 
-/// Check for an update on desktop.
-#[cfg(desktop)]
+/// Check for an update on macOS/Windows (in-app auto-install).
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[tauri::command]
 pub async fn check_update(
     app: AppHandle,
@@ -375,7 +387,7 @@ pub async fn check_update(
 }
 
 /// Download and install the pending desktop update, reporting progress.
-#[cfg(desktop)]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[tauri::command]
 pub async fn install_update(
     app: AppHandle,
@@ -385,9 +397,10 @@ pub async fn install_update(
     desktop::install(&app, &pending, on_event).await
 }
 
-/// Check for an update on Android.
-#[cfg(target_os = "android")]
+/// Check for an update on Android and Linux: returns the latest GitHub release
+/// so the webview can open the release page and let the user install manually.
+#[cfg(any(target_os = "android", target_os = "linux"))]
 #[tauri::command]
 pub async fn check_update(app: AppHandle) -> Result<UpdateInfo, AppError> {
-    android::check(&app).await
+    github_release::check(&app).await
 }

@@ -142,10 +142,14 @@ jobs:
           node -e "const fs=require('fs');const p='package.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));const base=j.version.split(/[-+]/)[0];j.version=base;fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n');console.log('version ->',base);"
           pnpm version:sync
 
+      # Linux ships deb/rpm only; the AppImage path relies on the legacy
+      # linuxdeploy toolchain that is brittle on ubuntu-24.04 (and the app's
+      # Linux updates open the GitHub Release page rather than auto-installing,
+      # so an AppImage is not needed). macOS/Windows keep every bundle.
       - name: Build desktop bundles
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-        run: pnpm tauri build ${{ matrix.args }}
+        run: pnpm tauri build ${{ matrix.platform == 'ubuntu-24.04' && '--bundles deb,rpm' || matrix.args }}
 
       - name: Stage bundles
         run: node scripts/stage-bundles.mjs --bundle "${{ matrix.bundle }}" --out "dist/${{ matrix.key }}" --os "${{ matrix.os }}" --key "${{ matrix.key }}"

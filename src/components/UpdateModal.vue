@@ -11,14 +11,16 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { formatBytes, formatSpeed } from "../lib/format";
 import { renderReleaseNotes } from "../lib/markdown";
 import { pushToast } from "../lib/toast";
-import { isAndroid } from "../lib/desktopLyric";
+import { isAndroid, isLinux } from "../lib/desktopLyric";
 import { useUpdateStore } from "../stores/update";
 
 const emit = defineEmits<{ friendlyError: [error: unknown] }>();
 const { t } = useI18n();
 const update = useUpdateStore();
-/** Android downloads the APK through the browser instead of installing in-app. */
+/** Android downloads the APK and Linux opens the release page through the
+ * browser instead of installing in-app; other desktop platforms auto-install. */
 const android = isAndroid();
+const linux = isLinux();
 
 /** Rounded download progress percentage, 0 while the size is unknown. */
 const percent = computed(() => Math.round((update.progress ?? 0) * 100));
@@ -38,9 +40,10 @@ const releaseDate = computed(() => {
 /** Release notes (Markdown) rendered for the dialog. */
 const notesHtml = computed(() => renderReleaseNotes(update.info?.notes ?? ""));
 
-/** "Update now": install in-app on desktop, or open the APK link on Android. */
+/** "Update now": install in-app on macOS/Windows, or open the download link on
+ * Android (APK) and Linux (release page). */
 async function updateNow() {
-  if (android) {
+  if (android || linux) {
     const url = update.info?.downloadUrl;
     if (!url) {
       pushToast("error", t("settings.update.noDownload"));

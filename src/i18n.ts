@@ -339,7 +339,7 @@ const messages = {
       },
       update: {
         title: "软件更新",
-        desc: "从 GitHub Release 检查新版本。桌面端在应用内下载并安装，安卓端会打开安装包下载链接。",
+        desc: "从 GitHub Release 检查新版本。macOS/Windows 在应用内下载并安装，安卓与 Linux 会打开安装包或发布页下载链接。",
         current: "当前版本",
         check: "检查更新",
         checking: "检查中…",
@@ -1131,7 +1131,7 @@ const messages = {
       },
       update: {
         title: "Software update",
-        desc: "Check GitHub Releases for a newer build. Desktop downloads and installs in-app; Android opens the installer download link.",
+        desc: "Check GitHub Releases for a newer build. macOS/Windows download and install in-app; Android and Linux open the installer or release page link.",
         current: "Current version",
         check: "Check for updates",
         checking: "Checking…",
