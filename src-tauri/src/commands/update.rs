@@ -282,11 +282,11 @@ pub mod github_release {
         browser_download_url: String,
     }
 
-    /// ABI token used in release asset names for the architecture this build
-    /// runs on. The installed APK was built for the device, so its compile-time
-    /// arch identifies the matching split APK.
+    /// Canonical Play-Store ABI for the architecture this build runs on. The
+    /// installed APK was built for the device, so its compile-time arch
+    /// identifies the matching split APK.
     #[cfg(target_os = "android")]
-    fn abi_token() -> &'static str {
+    fn device_abi() -> &'static str {
         match std::env::consts::ARCH {
             "aarch64" => "arm64-v8a",
             "arm" => "armeabi-v7a",
@@ -294,6 +294,42 @@ pub mod github_release {
             "x86_64" => "x86_64",
             other => other,
         }
+    }
+
+    /// Normalize a raw ABI token (which may be a short form such as `arm64` /
+    /// `arm`, or a long form such as `arm64-v8a`) into one of the canonical
+    /// Play-Store ABIs. Anything unrecognized is treated as `universal`.
+    #[cfg(target_os = "android")]
+    fn canonical_abi(raw: &str) -> &'static str {
+        match raw.to_ascii_lowercase().as_str() {
+            "arm64-v8a" | "arm64" => "arm64-v8a",
+            "armeabi-v7a" | "armeabi" | "arm" => "armeabi-v7a",
+            "x86_64" => "x86_64",
+            "x86" => "x86",
+            _ => "universal",
+        }
+    }
+
+    /// Resolve the canonical ABI of an APK asset name. The ABI sits between the
+    /// (possibly pre-release) versioned tag and `.apk`, e.g.
+    /// `Welkin-v1.0.3-rc.2-arm64.apk` or `Welkin-v1.0.3-rc.2-arm64-v8a.apk`.
+    #[cfg(target_os = "android")]
+    fn asset_abi(name: &str) -> &'static str {
+        let lower = name.to_ascii_lowercase();
+        // Try the two-part canonical ABIs first (they contain a dash, so a plain
+        // suffix scan distinguishes `x86_64` from `x86`).
+        for abi in ["arm64-v8a", "armeabi-v7a", "x86_64", "x86", "universal"] {
+            if lower.ends_with(&format!("-{abi}.apk")) {
+                return canonical_abi(abi);
+            }
+        }
+        // Otherwise read the token right before `.apk` (handles short forms).
+        if let Some(stem) = lower.strip_suffix(".apk") {
+            if let Some(token) = stem.rsplit('-').next() {
+                return canonical_abi(token);
+            }
+        }
+        "universal"
     }
 
     /// Ask GitHub for the newest release and compare it with the running build.
@@ -318,17 +354,24 @@ pub mod github_release {
         }
 
         // Android ships one split APK per ABI (`Welkin-<tag>-<abi>.apk`), so pick
-        // the one for this device; fall back to any APK (e.g. a universal build)
-        // when there is no exact ABI match. Linux has no in-app installer, so it
-        // links the release page and lets the user pick the deb/rpm themselves.
+        // the one for this device; fall back to the universal build, then to any
+        // other APK, when there is no exact ABI match. Linux has no in-app
+        // installer, so it links the release page and lets the user pick the
+        // deb/rpm themselves.
         #[cfg(target_os = "android")]
         let download_url = {
-            let abi_suffix = format!("-{}.apk", abi_token());
+            let target = device_abi();
             release
                 .assets
                 .iter()
                 .filter(|asset| asset.name.to_ascii_lowercase().ends_with(".apk"))
-                .min_by_key(|asset| u8::from(!asset.name.to_ascii_lowercase().ends_with(&abi_suffix)))
+                .min_by_key(|asset| {
+                    match asset_abi(&asset.name) {
+                        abi if abi == target => 0,
+                        "universal" => 1,
+                        _ => 2,
+                    }
+                })
                 .map(|asset| asset.browser_download_url.clone())
         };
         #[cfg(target_os = "linux")]

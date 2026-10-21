@@ -33,6 +33,21 @@ if (!tag) {
   process.exit(1);
 }
 
+/**
+ * Parse a release tag into a version, tolerating a leading `v` and a SemVer
+ * pre-release/build suffix (e.g. `v1.0.3-rc.2`). Returns the bare version or
+ * `null` when the tag is not a version at all.
+ */
+function parseVersion(tag) {
+  const match = /^v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$/.exec(tag.trim());
+  return match ? match[1] : null;
+}
+
+const version = parseVersion(tag);
+if (!version) {
+  console.warn(`[notes] warning: tag "${tag}" is not a recognizable version; download hints still apply.`);
+}
+
 /** Every uploaded file, by base name (signatures and the manifest excluded). */
 function collect(dir) {
   if (!existsSync(dir)) return [];
@@ -58,8 +73,8 @@ function classify(name) {
   if (lower.endsWith(".rpm")) return { group: "Linux", rank: 1, hint: "Fedora / RHEL / openSUSE 等" };
   if (lower.endsWith(".apk")) {
     const abi = androidAbi(name);
-    const rank = abi === "arm64-v8a" ? 0 : abi === "universal" ? 3 : abi === "armeabi-v7a" ? 1 : 2;
-    return { group: "Android", rank, hint: androidHint(abi) };
+    const info = ANDROID_ABIS[abi];
+    return { group: "Android", rank: info.rank, hint: info.hint };
   }
   return null;
 }
@@ -70,18 +85,47 @@ function macHint(name) {
   return "macOS 安装映像";
 }
 
-function androidAbi(name) {
-  for (const abi of ["arm64-v8a", "armeabi-v7a", "x86_64", "x86", "universal"]) {
-    if (name.includes(abi)) return abi;
-  }
+/** Canonical Android ABIs with their sort rank and human description. */
+const ANDROID_ABIS = {
+  "arm64-v8a": { rank: 0, hint: "绝大多数现代 64 位手机与平板" },
+  "armeabi-v7a": { rank: 1, hint: "较旧的 32 位设备" },
+  "x86_64": { rank: 2, hint: "模拟器或少数 x86 设备" },
+  "x86": { rank: 2, hint: "模拟器或少数 x86 设备" },
+  "universal": { rank: 3, hint: "通用包，兼容多数设备但体积更大" },
+};
+
+/**
+ * Map a raw ABI token (possibly a short form such as `arm`/`arm64`, or a
+ * long form such as `arm64-v8a`) to one of the canonical ABIs above.
+ */
+function canonicalAbi(raw) {
+  const token = String(raw).toLowerCase();
+  if (token === "arm64-v8a" || token === "arm64") return "arm64-v8a";
+  if (token === "armeabi-v7a" || token === "armeabi" || token === "arm") return "armeabi-v7a";
+  if (token === "x86_64") return "x86_64";
+  if (token === "x86") return "x86";
   return "universal";
 }
 
-function androidHint(abi) {
-  if (abi === "arm64-v8a") return "绝大多数现代 64 位手机与平板";
-  if (abi === "armeabi-v7a") return "较旧的 32 位设备";
-  if (abi === "x86_64" || abi === "x86") return "模拟器或少数 x86 设备";
-  return "通用包，兼容多数设备但体积更大";
+/**
+ * Resolve the canonical Android ABI of an APK asset name.
+ *
+ * The ABI sits between the versioned tag and `.apk` (e.g.
+ * `Welkin-v1.0.3-rc.2-arm64.apk` or `Welkin-v1.0.3-rc.2-arm64-v8a.apk`), so we
+ * read the token right before `.apk` first and fall back to a substring scan.
+ */
+function androidAbi(name) {
+  const lower = name.toLowerCase();
+  const end = lower.match(/-([a-z0-9_+-]+)\.apk$/);
+  if (end) return canonicalAbi(end[1]);
+  for (const long of ["arm64-v8a", "armeabi-v7a"]) {
+    if (lower.includes(long)) return long;
+  }
+  if (lower.includes("aarch64") || /\barm64\b/.test(lower)) return "arm64-v8a";
+  if (lower.includes("armeabi") || /\barmv7\b/.test(lower) || /\barm\b/.test(lower)) return "armeabi-v7a";
+  if (lower.includes("x86_64")) return "x86_64";
+  if (lower.includes("x86")) return "x86";
+  return "universal";
 }
 
 const order = ["Windows", "macOS", "Linux", "Android"];
@@ -127,4 +171,4 @@ if (changelog) sections.push(changelog, "");
 sections.push("---", "", ...guide);
 
 writeFileSync(out, `${sections.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd()}\n`);
-console.log(`[notes] wrote ${out} (${rows.length} asset(s) listed) for ${tag}`);
+console.log(`[notes] wrote ${out} (${rows.length} asset(s) listed) for ${version ?? tag}`);
