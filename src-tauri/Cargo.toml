@@ -116,14 +116,14 @@ rustfft = "6"
 rtrb = "0.3"
 
 # Android has no keyring backend of its own. `android-keyring` installs a
-# Keystore-backed credential builder over the plain `keyring` crate.
-# `jni`/`ndk-context` are used to publish the Android context that
-# android-keyring (via ndk-context) expects, which tao 0.35 no longer does.
+# Keystore-backed credential builder over the plain `keyring` crate, and `jni`
+# backs this crate's own bridge calls. `ndk-context` is deliberately absent:
+# tao publishes that slot itself (from `Rust.onCreate`) and publishing it twice
+# aborts, so `src/platform/android.rs` caches the handles it needs instead.
 [target.'cfg(target_os = "android")'.dependencies]
 keyring = "3"
-android-keyring = "0.2"
+android-keyring = { version = "0.2", default-features = false }
 jni = "0.21"
-ndk-context = "0.1"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

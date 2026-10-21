@@ -93,7 +93,6 @@ dependencies = [
  "base64 0.22.1",
  "jni 0.21.1",
  "keyring",
- "ndk-context",
  "thiserror 2.0.20",
  "tracing",
 ]
@@ -7704,7 +7703,6 @@ dependencies = [
  "keyring",
  "lofty",
  "log",
- "ndk-context",
  "percent-encoding",
  "quick-xml 0.37.5",
  "reqwest 0.12.28",

@@ -1,12 +1,17 @@
 // Copyright 2026 Atemukesu
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! Publishes the Android JNI context that `ndk-context` consumers depend on.
+//! Exposes the Android JNI handles the native bridges need.
 //!
-//! tao 0.35 no longer initializes the `ndk-context` crate, but `android-keyring`
-//! (through `ndk-context`) panics when that context is missing. We capture the
-//! `JavaVM` in `JNI_OnLoad` and resolve the process-wide `Application`, so the
-//! context is ready by the time the Tauri entry point runs on a worker thread.
+//! # Why this does not touch `ndk-context`
+//!
+//! tao publishes the process-wide context with
+//! `ndk_context::initialize_android_context` exactly once, from `Rust.onCreate`,
+//! and that call runs before `onFirstActivityCreate` starts the Rust entry point.
+//! `ndk_context` stores the context in a single slot and asserts the slot was
+//! empty, so publishing it a second time aborts the process ("assertion failed:
+//! previous.is_none()"). This module therefore only caches the handles it needs
+//! for its own JNI calls and leaves `ndk-context` to tao.
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -41,6 +46,14 @@ static DESKTOP_LYRIC_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// The VM obtained in `JNI_OnLoad`; stays valid for the process lifetime.
 static JAVA_VM: OnceLock<JavaVM> = OnceLock::new();
 
+/// The process-wide `Application`, cached because `ndk-context` is owned by tao.
+///
+/// Resolved once from `ActivityThread.currentApplication()` and kept as a global
+/// reference for the process lifetime, since every bridge call needs a
+/// `Context` and a plain local reference would be invalid after the resolving
+/// thread returns.
+static APPLICATION: OnceLock<GlobalRef> = OnceLock::new();
+
 /// Captures the `JavaVM` as soon as the native library is loaded.
 ///
 /// # Safety
@@ -60,10 +73,16 @@ pub extern "system" fn JNI_OnLoad(
     jni::sys::JNI_VERSION_1_6
 }
 
-/// Publishes the JVM and Application object to `ndk-context`.
+/// Caches the `JavaVM` and `Application` handles used by the bridge calls.
 ///
-/// Must run before anything reads `ndk_context::android_context()`.
+/// Must run before anything calls the bridges. tao already published the
+/// `ndk-context` slot by this point, so this only fills this module's own caches
+/// and never re-publishes it.
 pub fn initialize() -> Result<(), String> {
+    if APPLICATION.get().is_some() {
+        return Ok(());
+    }
+
     let java_vm = JAVA_VM
         .get()
         .ok_or_else(|| "JNI_OnLoad has not run yet".to_string())?;
@@ -89,21 +108,30 @@ pub fn initialize() -> Result<(), String> {
         return Err("ActivityThread.currentApplication() returned null".to_string());
     }
 
-    // ndk-context stores bare pointers and never frees them, so the global
-    // reference must outlive this call; leaking it deliberately keeps it valid.
+    // The static keeps the global reference alive for the process lifetime, so
+    // every bridge call can borrow it from any thread.
     let application = env
         .new_global_ref(application)
         .map_err(|error| format!("failed to create a global reference: {error}"))?;
-
-    unsafe {
-        ndk_context::initialize_android_context(
-            java_vm.get_java_vm_pointer().cast(),
-            application.as_obj().as_raw().cast(),
-        );
-    }
-    std::mem::forget(application);
+    let _ = APPLICATION.set(application);
 
     Ok(())
+}
+
+/// Borrows the cached `Application` handle for one JNI call.
+///
+/// The cached global reference outlives every call, so the handle can be reused
+/// directly: no new local reference is created, which matters because the Tauri
+/// entry point stays attached to the JVM for the process lifetime and local
+/// references created there are only released on detach.
+///
+/// Returns `Err` instead of panicking when [`initialize`] has not run, so a
+/// missing context surfaces as a command error rather than an abort.
+fn application<'local>() -> Result<JObject<'local>, String> {
+    let application = APPLICATION
+        .get()
+        .ok_or_else(|| "Android application context is not initialized".to_string())?;
+    Ok(unsafe { JObject::from_raw(application.as_obj().as_raw()) })
 }
 
 /// The overlay exists on every supported Android version.
@@ -143,8 +171,7 @@ fn class_through_loader<'local>(
     if let Some(class) = cell.get() {
         return Ok(class);
     }
-    let context_raw = ndk_context::android_context().context();
-    let context = unsafe { JObject::from_raw(context_raw as jni::sys::jobject) };
+    let context = application()?;
     let loader = env
         .call_method(&context, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])
         .map_err(|error| error.to_string())?
@@ -194,8 +221,7 @@ fn overlay_permission() -> Result<bool, String> {
     // thread (the Android main thread) the attach guard does not detach, so the
     // stale exception would poison every later call; clear it defensively.
     let _ = env.exception_clear();
-    let context_raw = ndk_context::android_context().context();
-    let context = unsafe { JObject::from_raw(context_raw as jni::sys::jobject) };
+    let context = application()?;
 
     let class = bridge_class(&mut env)?;
     env.call_static_method(
@@ -221,8 +247,7 @@ pub fn desktop_lyric_open_settings() -> Result<(), String> {
     // thread (the Android main thread) the attach guard does not detach, so the
     // stale exception would poison every later call; clear it defensively.
     let _ = env.exception_clear();
-    let context_raw = ndk_context::android_context().context();
-    let context = unsafe { JObject::from_raw(context_raw as jni::sys::jobject) };
+    let context = application()?;
 
     let class = bridge_class(&mut env)?;
     env.call_static_method(
@@ -247,8 +272,7 @@ pub fn desktop_lyric_start(html: &str, js: &str) -> Result<(), String> {
     // thread (the Android main thread) the attach guard does not detach, so the
     // stale exception would poison every later call; clear it defensively.
     let _ = env.exception_clear();
-    let context_raw = ndk_context::android_context().context();
-    let context = unsafe { JObject::from_raw(context_raw as jni::sys::jobject) };
+    let context = application()?;
     let html = JObject::from(env.new_string(html).map_err(|error| error.to_string())?);
     let js = JObject::from(env.new_string(js).map_err(|error| error.to_string())?);
 
@@ -280,8 +304,7 @@ pub fn desktop_lyric_stop() -> Result<(), String> {
     // thread (the Android main thread) the attach guard does not detach, so the
     // stale exception would poison every later call; clear it defensively.
     let _ = env.exception_clear();
-    let context_raw = ndk_context::android_context().context();
-    let context = unsafe { JObject::from_raw(context_raw as jni::sys::jobject) };
+    let context = application()?;
 
     let class = bridge_class(&mut env)?;
     env.call_static_method(
@@ -361,8 +384,7 @@ pub fn media_control_start() -> Result<(), String> {
     // thread (the Android main thread) the attach guard does not detach, so the
     // stale exception would poison every later call; clear it defensively.
     let _ = env.exception_clear();
-    let context_raw = ndk_context::android_context().context();
-    let context = unsafe { JObject::from_raw(context_raw as jni::sys::jobject) };
+    let context = application()?;
     let class = media_bridge_class(&mut env)?;
     env.call_static_method(
         class,
@@ -441,8 +463,7 @@ pub fn media_control_stop() -> Result<(), String> {
     // thread (the Android main thread) the attach guard does not detach, so the
     // stale exception would poison every later call; clear it defensively.
     let _ = env.exception_clear();
-    let context_raw = ndk_context::android_context().context();
-    let context = unsafe { JObject::from_raw(context_raw as jni::sys::jobject) };
+    let context = application()?;
     let class = media_bridge_class(&mut env)?;
     env.call_static_method(
         class,
@@ -594,7 +615,6 @@ fn query_network() -> Result<crate::core::network::NetworkStatus, String> {
     let java_vm = JAVA_VM
         .get()
         .ok_or_else(|| "JNI_OnLoad has not run yet".to_string())?;
-    let context_raw = ndk_context::android_context().context();
     let mut env = java_vm
         .attach_current_thread()
         .map_err(|error| error.to_string())?;
@@ -602,7 +622,7 @@ fn query_network() -> Result<crate::core::network::NetworkStatus, String> {
     // thread (the Android main thread) the attach guard does not detach, so the
     // stale exception would poison every later call; clear it defensively.
     let _ = env.exception_clear();
-    let context = unsafe { JObject::from_raw(context_raw as jni::sys::jobject) };
+    let context = application()?;
 
     let service = env
         .new_string("connectivity")
@@ -676,10 +696,35 @@ pub fn initialize_keychain() -> Option<String> {
         return Some(format!("Android JNI 上下文不可用：{error}"));
     }
 
-    if let Err(error) = android_keyring::set_android_keyring_credential_builder() {
+    if let Err(error) = install_keychain_builder() {
         log::error!("failed to initialize android-keyring credential store: {error}");
         return Some(format!("android-keyring 初始化失败：{error}"));
     }
 
     None
+}
+
+/// Install android-keyring's Keystore-backed credential builder.
+///
+/// The builder is built from this module's cached `Application` instead of
+/// `android_keyring::set_android_keyring_credential_builder`, which reads the
+/// `ndk-context` slot directly: keeping every JNI handle in one place means the
+/// keychain never depends on who published that slot.
+fn install_keychain_builder() -> Result<(), String> {
+    let java_vm = JAVA_VM
+        .get()
+        .ok_or_else(|| "JNI_OnLoad has not run yet".to_string())?;
+    let mut env = java_vm
+        .attach_current_thread()
+        .map_err(|error| format!("failed to attach to the JVM: {error}"))?;
+    let _ = env.exception_clear();
+
+    let context = application()?;
+    let context = android_keyring::shared_preferences::Context::new(&env, context)
+        .map_err(|error| format!("failed to wrap the application context: {error}"))?;
+    let builder = android_keyring::credential::AndroidBuilder::new(&env, context)
+        .map_err(|error| format!("failed to build the Keystore credential builder: {error}"))?;
+    keyring::set_default_credential_builder(Box::new(builder));
+
+    Ok(())
 }
