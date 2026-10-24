@@ -7,6 +7,7 @@
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "pnpm build",
+    "beforeBundleCommand": "node scripts/patch-cef-angle-stubs.mjs",
     "frontendDist": "../dist"
   },
   "app": {

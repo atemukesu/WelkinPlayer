@@ -35,11 +35,12 @@ const REQUIRED = [
 const EXPECTED = [
   "chrome_100_percent.pak",
   "chrome_200_percent.pak",
-  "libEGL.so",
-  "libGLESv2.so",
   "libvk_swiftshader.so",
   "vk_swiftshader_icd.json",
   "chrome-sandbox",
+  // `libEGL.so` / `libGLESv2.so` are deliberately absent: CEF >= 152 links ANGLE
+  // into `libcef.so` and no longer ships them. scripts/patch-cef-angle-stubs.mjs
+  // creates inert placeholders only so the bundler stops failing on the copy.
 ];
 
 const bundle = arg("bundle");

@@ -150,6 +150,8 @@ jobs:
       # linuxdeploy toolchain that is brittle on ubuntu-24.04 (and the app's
       # Linux updates open the GitHub Release page rather than auto-installing,
       # so an AppImage is not needed). macOS/Windows keep every bundle.
+      # `build.beforeBundleCommand` runs scripts/patch-cef-angle-stubs.mjs here
+      # to satisfy the bundler's stale ANGLE file list (tauri-apps/tauri#16338).
       - name: Build desktop bundles
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
