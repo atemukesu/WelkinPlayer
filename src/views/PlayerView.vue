@@ -74,7 +74,11 @@ const controlsVisible = ref(true);
 const isFullscreen = ref(false);
 let controlsTimer = 0;
 
+let lastBump = 0;
 function bumpControls() {
+  const now = performance.now();
+  if (now - lastBump < 100) return;
+  lastBump = now;
   controlsVisible.value = true;
   window.clearTimeout(controlsTimer);
   controlsTimer = window.setTimeout(() => { controlsVisible.value = false; }, 1000);
@@ -165,33 +169,45 @@ function syncLyrics() {
   updateWordProgress(positionMs);
 }
 
-function updateWordProgress(positionMs: number) {
-  const container = lyricsScroll.value;
-  if (!container || activeSet.value.size === 0) return;
+// Cache active word elements + their (line, wordIndex) so we don't re-query
+// the DOM every frame. Invalidated when the active set changes.
+type CachedWord = { el: HTMLElement; rt: HTMLElement | null; line: any; wordIndex: number };
+let cachedWords: CachedWord[] | null = null;
+let cachedActiveSetKey = "";
+
+function rebuildWordCache(container: HTMLElement) {
+  const words: CachedWord[] = [];
   container.querySelectorAll<HTMLElement>('[data-lyric-active="true"]').forEach((element) => {
     const line = lyrics.lines[Number(element.dataset.lyricIndex)];
     if (!line) return;
     element.querySelectorAll<HTMLElement>(".lyric-word").forEach((word, wordIndex) => {
-      const progress = `${lyrics.wordProgress(line, wordIndex, positionMs) * 100}%`;
-      word.style.setProperty("--word-progress", progress);
-      // The reading is a sibling of the base word and `--word-progress` does not
-      // inherit, so write the same sweep onto it explicitly to keep them in step.
-      word
-        .closest("ruby")
-        ?.querySelector<HTMLElement>("rt")
-        ?.style.setProperty("--word-progress", progress);
+      words.push({ el: word, rt: word.closest("ruby")?.querySelector<HTMLElement>("rt") ?? null, line, wordIndex });
     });
   });
+  cachedWords = words;
+  cachedActiveSetKey = Array.from(activeSet.value).join(",");
+}
+
+function updateWordProgress(positionMs: number) {
+  const container = lyricsScroll.value;
+  if (!container || activeSet.value.size === 0) return;
+  const key = Array.from(activeSet.value).join(",");
+  if (key !== cachedActiveSetKey || !cachedWords) rebuildWordCache(container);
+  for (const w of cachedWords!) {
+    const progress = `${lyrics.wordProgress(w.line, w.wordIndex, positionMs) * 100}%`;
+    w.el.style.setProperty("--word-progress", progress);
+    w.rt?.style.setProperty("--word-progress", progress);
+  }
 }
 
 function loop() {
   const now = performance.now();
+  const positionMs = currentTime() * 1000;
   if (now - lastLyricsSync >= 33) {
     lastLyricsSync = now;
-    const positionMs = currentTime() * 1000;
     lyrics.sync(positionMs / 1000);
   }
-  updateWordProgress(currentTime() * 1000);
+  updateWordProgress(positionMs);
   frame = requestAnimationFrame(loop);
 }
 
@@ -415,6 +431,8 @@ watch(manualScroll, (manual) => {
 watch(
   activeSet,
   () => {
+    cachedWords = null;
+    cachedActiveSetKey = "";
     updateWordProgress(currentTime() * 1000);
     // A new line joining the block (or an old one leaving) moves the anchor.
     if (!manualScroll.value) scrollOffset.value = activeLineOffset();
@@ -600,6 +618,10 @@ watch(
   opacity: 0.72;
   transition: opacity var(--lyric-duration) var(--lyric-ease);
   margin-bottom: var(--line-spacing, 16px);
+  /* Skip layout/paint for off-screen lines; intrinsic size keeps scroll stable. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 48px;
+  contain: layout paint style;
 }
 
 .lyric-line.is-active {
