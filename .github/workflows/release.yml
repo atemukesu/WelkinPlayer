@@ -105,10 +105,14 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
-      # Linux builds on the CEF runtime, so the deb/AppImage bundler must be the
-      # CEF-aware CLI (it copies libcef.so / resources / locales next to the
-      # binary). The published @tauri-apps/cli does not do this, which makes
-      # `tauri build` fail at bundling with "No such file or directory (os error 2)".
+      # Linux builds on the CEF runtime, so the bundler must be the CEF-aware
+      # CLI: it detects `tauri-runtime-cef` in src-tauri/Cargo.toml and copies
+      # libcef.so / resources / locales next to the binary. The published
+      # @tauri-apps/cli cannot do this, and neither can cli-cef <= 3.0.0-alpha.26:
+      # those only recognise a `cef` cargo feature, so the runtime dependency
+      # used here goes undetected and the bundle silently ships no CEF.
+      # alpha.27 is the first release that detects the runtime from the manifest
+      # (`Runtime::detect` / `Manifest::uses_dependency`).
       # Only Linux needs it; macOS/Windows use the generic CLI + wry runtime.
       - name: Use CEF-aware CLI on Linux
         if: matrix.platform == 'ubuntu-24.04'
@@ -119,7 +123,7 @@ jobs:
           # only link the resulting bin into the project.
           cli_prefix="$RUNNER_TEMP/tauri-cli-cef"
           npm install --prefix "$cli_prefix" --no-save --no-package-lock \
-            @tauri-apps/cli-cef@3.0.0-alpha.6
+            @tauri-apps/cli-cef@3.0.0-alpha.27
           rm -f node_modules/.bin/tauri
           ln -s "$cli_prefix/node_modules/@tauri-apps/cli-cef/tauri.js" \
             node_modules/.bin/tauri
@@ -150,6 +154,14 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: pnpm tauri build ${{ matrix.platform == 'ubuntu-24.04' && '--bundles deb,rpm' || matrix.args }}
+
+      # `tauri build` succeeds even when the bundler does not detect the CEF
+      # runtime; it then emits a ~12 MB package holding only the executable.
+      # That installs cleanly and only fails at launch with a missing
+      # `libcef.so`, so fail the release here instead of shipping it.
+      - name: Verify CEF runtime is bundled (Linux only)
+        if: matrix.platform == 'ubuntu-24.04'
+        run: node scripts/verify-cef-bundle.mjs --bundle "${{ matrix.bundle }}"
 
       - name: Stage bundles
         run: node scripts/stage-bundles.mjs --bundle "${{ matrix.bundle }}" --out "dist/${{ matrix.key }}" --os "${{ matrix.os }}" --key "${{ matrix.key }}"

@@ -62,12 +62,14 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # Linux builds on the CEF runtime, so the bundler must be the CEF-aware
-      # CLI (copies libcef.so / resources / locales). See release.yml for why.
+      # CLI (copies libcef.so / resources / locales). See release.yml for why
+      # this must be >= 3.0.0-alpha.27: older cli-cef builds only detect a `cef`
+      # cargo feature, not the `tauri-runtime-cef` dependency used here.
       - name: Use CEF-aware CLI on Linux
         run: |
           cli_prefix="$RUNNER_TEMP/tauri-cli-cef"
           npm install --prefix "$cli_prefix" --no-save --no-package-lock \
-            @tauri-apps/cli-cef@3.0.0-alpha.6
+            @tauri-apps/cli-cef@3.0.0-alpha.27
           rm -f node_modules/.bin/tauri
           ln -s "$cli_prefix/node_modules/@tauri-apps/cli-cef/tauri.js" \
             node_modules/.bin/tauri
@@ -83,3 +85,8 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: pnpm tauri build --bundles deb,rpm
+
+      # Catches the silent-regression mode where the CEF runtime is not detected
+      # and the bundle turns into a ~12 MB package with no `libcef.so`.
+      - name: Verify CEF runtime is bundled
+        run: node scripts/verify-cef-bundle.mjs --bundle src-tauri/target/release/bundle
