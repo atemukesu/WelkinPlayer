@@ -62,6 +62,7 @@ import FavoritesView from "./views/FavoritesView.vue";
 import StatsView from "./views/StatsView.vue";
 import GroupedLibraryView from "./views/GroupedLibraryView.vue";
 import SourcesView from "./views/SourcesView.vue";
+import SourceBrowserView from "./views/SourceBrowserView.vue";
 import PlaylistsView from "./views/PlaylistsView.vue";
 import PlaylistEditorView from "./views/PlaylistEditorView.vue";
 import LyricsEditorView from "./views/LyricsEditorView.vue";
@@ -85,7 +86,7 @@ const windowBehavior = useWindowBehaviorStore();
 const update = useUpdateStore();
 const { loadingLibrary, refreshing, friendlyError, loadCachedLibrary, loadRemoteLibrary, refreshLibrary, downloadTrackMetadata } = useLibrary();
 const view = ref<View>(getViewFromHash());
-const baseView = ref<View>(view.value === "player" || view.value === "track-info" ? "library" : view.value);
+const baseView = ref<View>(view.value === "source-browser" ? "source-browser" : (view.value === "player" || view.value === "track-info" ? "sources" : view.value));
 const theme = ref<Theme>(localStorage.getItem("welkin-theme") === "dark" ? "dark" : "light");
 const accent = ref<Accent>(readAccent());
 const sidebarCollapsed = ref(localStorage.getItem("welkin-sidebar-collapsed") === "1");
@@ -95,6 +96,7 @@ const playlistFilter = ref<string | null>(null);
 const artistFilter = ref<string | null>(null);
 const albumFilter = ref<string | null>(null);
 const sourceFilter = ref<string | null>(null);
+const browseSourceId = ref<string | null>(null);
 const sourceConfigReturn = ref<View>("sources");
 const editingPlaylist = ref<string | null>(null);
 const editingLyricsTrack = ref<Track | null>(null);
@@ -117,7 +119,12 @@ let resumedKey = "";
 /** Local-only safety-net cadence (ms) for periodic progress writes while playing. */
 const POSITION_SAVE_INTERVAL_MS = 30_000;
 
+// The full-screen player and track-info are overlays that sit on top of whatever
+// page was open, so they must not change `baseView`; everything else (including
+// the folder browser) becomes the underlying page when opened.
 watch(view, (next) => { if (next !== "player" && next !== "track-info") baseView.value = next; });
+// While the folder browser is open it is the underlying page, so its navigation
+// state does not change; only a move to a different top-level view resets it.
 
 // Reload the library shortly after a source is added, removed or reconfigured,
 // so configuring a source in Settings takes effect without a manual refresh.
@@ -247,13 +254,14 @@ watch([() => player.queue, () => player.queueIndex], () => {
 });
 
 function readAccent(): Accent { const value = localStorage.getItem("welkin-accent"); return (accents.some((item) => item.id === value) ? value : "amber") as Accent; }
-function getViewFromHash(): View { const route = window.location.hash.slice(1); return route === "settings" || route === "sponsor" || route === "player" || route === "tracks" || route === "favorites" || route === "stats" || route === "artists" || route === "albums" || route === "sources" || route === "source-config" || route === "playlists" || route === "playlist-new" || route === "lyrics-edit" || route === "track-edit" || route === "track-info" ? route : "library"; }
+function getViewFromHash(): View { const route = window.location.hash.slice(1); return route === "settings" || route === "sponsor" || route === "player" || route === "tracks" || route === "favorites" || route === "stats" || route === "artists" || route === "albums" || route === "sources" || route === "source-config" || route === "source-browser" || route === "playlists" || route === "playlist-new" || route === "lyrics-edit" || route === "track-edit" || route === "track-info" ? route : "library"; }
 function setView(nextView: View) { view.value = nextView; window.location.hash = nextView === "library" ? "" : nextView; }
 function clearCollectionFilters() { playlistFilter.value = null; artistFilter.value = null; albumFilter.value = null; sourceFilter.value = null; }
 function navigate(nextView: View) { clearCollectionFilters(); setView(nextView); }
 function syncViewFromHash() { view.value = getViewFromHash(); }
 function openUserPlaylist(id: string) { clearCollectionFilters(); playlistFilter.value = id; setView("tracks"); }
-function openSource(id: string) { clearCollectionFilters(); sourceFilter.value = id; setView("tracks"); }
+/** Open a source in the file-manager browser instead of the flat track list. */
+function browseSource(id: string) { clearCollectionFilters(); browseSourceId.value = id; setView("source-browser"); }
 function openSourceConfig(from: View) { sourceConfigReturn.value = from; setView("source-config"); }
 function closeSourceConfig() { setView(sourceConfigReturn.value); }
 function openGroup(kind: "artists" | "albums", key: string) { playlistFilter.value = null; artistFilter.value = kind === "artists" ? key : null; albumFilter.value = kind === "albums" ? key : null; sourceFilter.value = null; setView("tracks"); }
@@ -356,7 +364,8 @@ onUnmounted(() => { savePlaybackPosition(true); stopDesktopLyrics(); stopMediaCo
         <Transition name="page" mode="out-in">
           <LibraryView v-if="baseView === 'library'" key="library" :loading="loadingLibrary" :downloading-track-id="downloadingTrackId" @settings="navigate('settings')" @navigate="navigate" @open-playlist="openUserPlaylist" @download-metadata="downloadMetadata" @edit-lyrics="editLyrics" @edit-info="editInfo" @show-info="showTrackInfo" />
           <TracksView v-else-if="baseView === 'tracks'" key="tracks" @open-artist="openArtist" @open-album="openAlbum" :playlist-id="playlistFilter" :artist="artistFilter" :album="albumFilter" :source-id="sourceFilter" :loading="loadingLibrary" :refreshing="refreshing" :downloading-track-id="downloadingTrackId" @refresh="refreshLibrary" @edit="editPlaylist" @download-metadata="downloadMetadata" @edit-lyrics="editLyrics" @edit-info="editInfo" @show-info="showTrackInfo" />
-          <SourcesView v-else-if="baseView === 'sources'" key="sources" :loading="loadingLibrary" @open="openSource" @manage="openSourceConfig('sources')" />
+          <SourcesView v-else-if="baseView === 'sources' && view !== 'source-browser'" key="sources" :loading="loadingLibrary" @open="browseSource" @manage="openSourceConfig('sources')" />
+          <SourceBrowserView v-else-if="baseView === 'source-browser' && browseSourceId" key="source-browser" :source-id="browseSourceId" :loading="loadingLibrary" :downloading-track-id="downloadingTrackId" @back="navigate('sources')" @download-metadata="downloadMetadata" @edit-lyrics="editLyrics" @edit-info="editInfo" @show-info="showTrackInfo" @open-artist="openArtist" @open-album="openAlbum" />
           <SourceConfigView v-else-if="baseView === 'source-config'" key="source-config" @back="closeSourceConfig" />
           <GroupedLibraryView v-else-if="baseView === 'artists' || baseView === 'albums'" :key="baseView" :kind="baseView === 'artists' ? 'artists' : 'albums'" :loading="loadingLibrary" @open="onOpenGroup" />
           <FavoritesView v-else-if="baseView === 'favorites'" key="favorites" @open-artist="openArtist" @open-album="openAlbum" :loading="loadingLibrary" :downloading-track-id="downloadingTrackId" @download-metadata="downloadMetadata" @edit-lyrics="editLyrics" @edit-info="editInfo" @show-info="showTrackInfo" />

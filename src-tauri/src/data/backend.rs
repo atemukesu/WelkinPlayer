@@ -21,7 +21,7 @@ use tauri::AppHandle;
 
 use crate::commands::webdav::{enforce_url_policy, source_password};
 use crate::core::error::AppError;
-use crate::data::dav::{is_audio_file, RemoteEntry, WebDavClient};
+use crate::data::dav::{is_audio_file, Depth, RemoteEntry, WebDavClient};
 use crate::data::sources::{find_source, SourceConfig, LOCAL_KIND, WEBDAV_KIND};
 
 /// A resolved source transport.
@@ -122,6 +122,46 @@ impl Backend {
         match self {
             Backend::Webdav(client) => client.list_audio_files("").await,
             Backend::Local { root } => list_local_audio(root),
+        }
+    }
+
+    /// List a single directory: its immediate subdirectories and audio files.
+    ///
+    /// Unlike [`Backend::list_audio`], this does not recurse — it returns exactly
+    /// the children of `path` so the UI can present a file-manager style browser
+    /// where the user drills down folder by folder. Folders sort before files.
+    pub async fn list_directory(&self, path: &str) -> Result<Vec<RemoteEntry>, AppError> {
+        match self {
+            Backend::Webdav(client) => {
+                let xml = client.propfind(path, Depth::One).await?;
+                let mut entries = client.parse_multistatus(&xml)?;
+                // PROPFIND Depth=1 includes the directory itself; drop it so the
+                // UI only shows its children.
+                let base = path.trim_matches('/').to_string();
+                entries.retain(|entry| entry.local_path.trim_matches('/') != base);
+                // A file-manager browser only cares about folders and playable
+                // audio; ignore artwork, playlists and other loose files.
+                entries.retain(|entry| entry.is_dir || is_audio_file(&entry.name));
+                entries.sort_by(|left, right| {
+                    right
+                        .is_dir
+                        .cmp(&left.is_dir)
+                        .then_with(|| left.local_path.cmp(&right.local_path))
+                });
+                Ok(entries)
+            }
+            Backend::Local { root } => list_local_directory(root, path),
+        }
+    }
+
+    /// Recursively list every audio file under `path` ("" for the whole source).
+    ///
+    /// Used when the user plays a folder from the file-manager browser: the queue
+    /// is built from all audio under the chosen directory, not just the one row.
+    pub async fn list_audio_under(&self, path: &str) -> Result<Vec<RemoteEntry>, AppError> {
+        match self {
+            Backend::Webdav(client) => client.list_audio_files(path).await,
+            Backend::Local { root } => list_local_audio_under(root, path),
         }
     }
 }
@@ -259,6 +299,153 @@ fn list_local_audio(root: &Path) -> Result<Vec<RemoteEntry>, AppError> {
             let relative = path
                 .strip_prefix(root)
                 .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let metadata = entry.metadata().ok();
+            let size = metadata.as_ref().map(|meta| meta.len());
+            let modified = metadata
+                .as_ref()
+                .and_then(|meta| meta.modified().ok())
+                .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                .map(|duration| duration.as_secs().to_string());
+            files.push(RemoteEntry {
+                name: name.clone(),
+                path: relative.clone(),
+                local_path: relative,
+                is_dir: false,
+                size,
+                modified,
+                content_type: content_type_for(&name),
+            });
+        }
+    }
+
+    files.sort_by(|a, b| a.local_path.cmp(&b.local_path));
+    Ok(files)
+}
+
+/// List the immediate children of a directory: subfolders and audio files.
+///
+/// Used by the file-manager browser, where each level is shown one directory at
+/// a time. A missing or unreadable directory (common under Android scoped
+/// storage) yields an empty listing rather than aborting the whole browse.
+fn list_local_directory(root: &Path, path: &str) -> Result<Vec<RemoteEntry>, AppError> {
+    let target = safe_join(root, path)?;
+    let read = match std::fs::read_dir(&target) {
+        Ok(read) => read,
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                || error.kind() == std::io::ErrorKind::PermissionDenied =>
+        {
+            return Ok(Vec::new());
+        }
+        Err(error) => return Err(AppError::Io(error)),
+    };
+
+    let mut entries: Vec<RemoteEntry> = Vec::new();
+    for entry in read.flatten() {
+        let entry_path = entry.path();
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(_) => continue,
+        };
+        if file_type.is_dir() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let relative = entry_path
+                .strip_prefix(root)
+                .unwrap_or(&entry_path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            entries.push(RemoteEntry {
+                name,
+                path: relative.clone(),
+                local_path: relative,
+                is_dir: true,
+                size: None,
+                modified: None,
+                content_type: None,
+            });
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !is_audio_file(&name) {
+            continue;
+        }
+        let relative = entry_path
+            .strip_prefix(root)
+            .unwrap_or(&entry_path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let metadata = entry.metadata().ok();
+        let size = metadata.as_ref().map(|meta| meta.len());
+        let modified = metadata
+            .as_ref()
+            .and_then(|meta| meta.modified().ok())
+            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_secs().to_string());
+        entries.push(RemoteEntry {
+            name: name.clone(),
+            path: relative.clone(),
+            local_path: relative,
+            is_dir: false,
+            size,
+            modified,
+            content_type: content_type_for(&name),
+        });
+    }
+
+    entries.sort_by(|left, right| {
+        right
+            .is_dir
+            .cmp(&left.is_dir)
+            .then_with(|| left.local_path.cmp(&right.local_path))
+    });
+    Ok(entries)
+}
+
+/// Recursively collect audio files beneath `path` ("" for the whole source).
+///
+/// Mirrors [`list_local_audio`] but starts from an arbitrary subdirectory so a
+/// folder's play-all queue can be built without re-walking from the root.
+fn list_local_audio_under(root: &Path, path: &str) -> Result<Vec<RemoteEntry>, AppError> {
+    let start = safe_join(root, path)?;
+    let mut stack = vec![start];
+    let mut files = Vec::new();
+
+    while let Some(directory) = stack.pop() {
+        let read = match std::fs::read_dir(&directory) {
+            Ok(read) => read,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    || error.kind() == std::io::ErrorKind::PermissionDenied =>
+            {
+                continue;
+            }
+            Err(error) => return Err(AppError::Io(error)),
+        };
+        for entry in read.flatten() {
+            let entry_path = entry.path();
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(_) => continue,
+            };
+            if file_type.is_dir() {
+                stack.push(entry_path);
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !is_audio_file(&name) {
+                continue;
+            }
+            let relative = entry_path
+                .strip_prefix(root)
+                .unwrap_or(&entry_path)
                 .to_string_lossy()
                 .replace('\\', "/");
             let metadata = entry.metadata().ok();

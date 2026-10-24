@@ -125,6 +125,45 @@ pub async fn list_source_audio(
     Ok(files)
 }
 
+/// List the immediate children of one directory inside a source.
+///
+/// Powers the file-manager browser: returns the folders and audio files directly
+/// under `path` (empty string for the source root). Non-audio files are skipped
+/// so the listing mirrors what would be playable.
+#[tauri::command]
+pub async fn list_source_directory(
+    app: AppHandle,
+    source_id: String,
+    path: String,
+) -> Result<Vec<RemoteEntry>, AppError> {
+    let backend = backend_for(&app, &source_id)?;
+    let entries = backend.list_directory(&path).await?;
+    log::info!(
+        "listed {} entries under '{path}' in source {source_id}",
+        entries.len()
+    );
+    Ok(entries)
+}
+
+/// Recursively list every audio file under a directory inside a source.
+///
+/// Used when playing a folder from the file-manager browser: the queue is built
+/// from all audio beneath `path`, not just the row that was clicked.
+#[tauri::command]
+pub async fn list_source_audio_under(
+    app: AppHandle,
+    source_id: String,
+    path: String,
+) -> Result<Vec<RemoteEntry>, AppError> {
+    let backend = backend_for(&app, &source_id)?;
+    let files = backend.list_audio_under(&path).await?;
+    log::info!(
+        "listed {} audio files under '{path}' in source {source_id}",
+        files.len()
+    );
+    Ok(files)
+}
+
 /// Verify a source is reachable and readable. Returns a display string.
 #[tauri::command]
 pub async fn test_source_connection(app: AppHandle, source_id: String) -> Result<String, AppError> {

@@ -5,7 +5,7 @@
 
 <script setup lang="ts">
 import { computed } from "vue";
-import { HardDrive, Server, Settings2 } from "@lucide/vue";
+import { FolderTree, HardDrive, Server, Settings2 } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { usePlayerStore } from "../stores/player";
 import { useSourcesStore } from "../stores/sources";
@@ -66,6 +66,7 @@ function kindLabel(kind: SourceKind): string {
           <p class="truncate text-sm font-bold">{{ sources.label(row.source) }}</p>
           <p class="mt-1 font-mono text-[11px] uppercase tracking-[0.15em] text-dim">{{ kindLabel(row.source.kind) }} · {{ t("library.tracks", { count: row.count }) }}</p>
         </div>
+        <span class="shrink-0 text-dim transition-colors group-hover:text-accent"><FolderTree :size="16" :stroke-width="2" /></span>
         <span v-if="row.isSync" class="shrink-0 border border-accent px-2 py-1 font-mono text-[10px] uppercase tracking-[0.2em] text-accent">{{ t("sources.syncBadge") }}</span>
       </button>
     </div>

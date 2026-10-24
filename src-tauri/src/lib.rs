@@ -193,6 +193,8 @@ pub fn run() {
             commands::sources::local_file_access_granted,
             commands::sources::request_local_file_access,
             commands::sources::list_source_audio,
+            commands::sources::list_source_directory,
+            commands::sources::list_source_audio_under,
             commands::sources::test_source_connection,
             commands::sources::test_source_write,
             commands::sponsor::get_install_id,

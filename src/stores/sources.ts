@@ -10,6 +10,7 @@ import { describeError, invoke } from "../api";
 import { createId } from "../lib/profile";
 import { isCloudSource, sourceLabel } from "../lib/sources";
 import type { SongSource, SourceKind } from "../lib/sources";
+import type { RemoteEntry } from "../lib/remote";
 
 const SETTINGS_FILE = "settings.json";
 const SOURCES_KEY = "sources";
@@ -246,6 +247,16 @@ export const useSourcesStore = defineStore("sources", () => {
     await invoke("request_local_file_access").catch(() => {});
   }
 
+  /** List the immediate children (folders + audio files) of a source directory. */
+  async function listDirectory(sourceId: string, path: string): Promise<RemoteEntry[]> {
+    return invoke<RemoteEntry[]>("list_source_directory", { sourceId, path });
+  }
+
+  /** Recursively list every audio file under a source directory. */
+  async function listAudioUnder(sourceId: string, path: string): Promise<RemoteEntry[]> {
+    return invoke<RemoteEntry[]>("list_source_audio_under", { sourceId, path });
+  }
+
   return {
     sources,
     syncId,
@@ -278,6 +289,8 @@ export const useSourcesStore = defineStore("sources", () => {
     pickFolder,
     checkFileAccess,
     requestFileAccess,
+    listDirectory,
+    listAudioUnder,
     label,
   };
 });
