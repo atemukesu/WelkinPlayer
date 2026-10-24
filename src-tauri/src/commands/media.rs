@@ -337,10 +337,15 @@ async fn fetch_metadata(backend: &Backend, path: &str) -> Result<Option<ParsedMe
             Ok(bytes) if !bytes.is_empty() => match metadata::parse(&bytes) {
                 Ok(parsed) => {
                     let metadata = &parsed.metadata;
+                    // Duration comes from the container head (e.g. WAV `fmt`), so it
+                    // is present even when the tag blocks live further in the file.
+                    // It must NOT count as "useful", otherwise a ranged read that
+                    // only reached the audio header would stop escalating and we'd
+                    // return empty tags instead of widening the Range / reading the
+                    // whole file (see the trailing ID3/RiffInfo in large WAVs).
                     let useful = metadata.title.is_some()
                         || metadata.artist.is_some()
                         || metadata.album.is_some()
-                        || metadata.duration_secs.is_some()
                         || parsed.cover.is_some();
                     if useful {
                         log::debug!("read metadata for {path} from {size} bytes");
