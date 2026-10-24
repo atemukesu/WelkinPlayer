@@ -269,6 +269,10 @@ pub fn run() {
             #[cfg(any(desktop, target_os = "android"))]
             playback::commands::audio_set_speed,
             #[cfg(any(desktop, target_os = "android"))]
+            playback::commands::audio_device_info,
+            #[cfg(any(desktop, target_os = "android"))]
+            playback::commands::audio_set_quality,
+            #[cfg(any(desktop, target_os = "android"))]
             playback::commands::audio_stop,
             #[cfg(any(desktop, target_os = "android"))]
             playback::commands::audio_state,

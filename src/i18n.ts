@@ -716,6 +716,15 @@ const messages = {
       yes: "是",
       no: "否",
     },
+    audioQuality: {
+      title: "音质",
+      current: "当前采样率",
+      auto: "跟随设备（推荐）",
+      active: "使用中",
+      unsupported: "可能不支持",
+      deviceMax: "设备最高采样率：{max}",
+      tooHigh: "所选采样率不在设备报告的范围内，系统会把它重采样，可能增加功耗与失真，且不会带来更好的音质。",
+    },
     controls: {
       queue: "队列",
       more: "更多操作",
@@ -1510,6 +1519,15 @@ const messages = {
       cached: "Assets cached",
       yes: "Yes",
       no: "No",
+    },
+    audioQuality: {
+      title: "Audio quality",
+      current: "Current sample rate",
+      auto: "Follow device (Recommended)",
+      active: "In use",
+      unsupported: "May be unsupported",
+      deviceMax: "Device max sample rate: {max}",
+      tooHigh: "The chosen rate is not among those the device reports. The system will resample it, which can add power draw and distortion without any real quality gain.",
     },
     controls: {
       queue: "Queue",

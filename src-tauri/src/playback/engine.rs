@@ -21,6 +21,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use rodio::cpal::traits::{DeviceTrait, HostTrait};
 use rodio::{Decoder, OutputStream, OutputStreamBuilder, Source};
 use rtrb::{Consumer, Producer, RingBuffer};
 use serde::Serialize;
@@ -78,6 +79,115 @@ pub struct AudioState {
     pub position_ms: f64,
     pub duration_ms: f64,
     pub ended: bool,
+    /// The loaded file's native sample rate (0 when nothing is loaded).
+    pub sample_rate: u32,
+    /// The rate the engine actually processes at: `min(file, device)`.
+    pub work_rate: u32,
+    /// The rate the output stream is currently opened at. This is what the
+    /// quality picker controls, and it is valid even when nothing is loaded.
+    pub output_rate: u32,
+}
+
+/// Output device capabilities, for the audio-quality picker.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceInfo {
+    /// Rate the output stream is currently opened at.
+    pub current_rate: u32,
+    /// Real music rates the device can take (deduplicated, ascending).
+    pub supported_rates: Vec<u32>,
+    /// Highest rate on offer: the largest of `supported_rates` (0 when nothing
+    /// could be probed). Software endpoints are bounded first, so this is a real
+    /// music rate rather than a plugin's `384000` fiction.
+    pub max_rate: u32,
+    /// The user's stored preference: 0 means "follow the device/file".
+    pub preferred_rate: u32,
+}
+
+/// The sample rates worth offering in the quality picker: the standard music
+/// and HD rates. cpal enumerates plenty more (8 kHz … 64 kHz on Android), but
+/// nothing musical ever plays at those, so they are left out.
+const STANDARD_RATES: [u32; 6] = [44_100, 48_000, 88_200, 96_000, 176_400, 192_000];
+
+/// Raw min/max sample-rate ranges advertised by the default output device.
+/// Real hardware reports a sane range (or discrete rates on Android), while the
+/// Linux ALSA/PipeWire/Pulse *plugin* devices claim an absurd `1 … 384000`
+/// (Pulse: `1 … 768000`) for every channel and format. Read-only; safe to call
+/// from any thread.
+pub fn device_ranges() -> Vec<(u32, u32)> {
+    let mut ranges = Vec::new();
+    if let Some(device) = rodio::cpal::default_host().default_output_device() {
+        if let Ok(configs) = device.supported_output_configs() {
+            for config in configs {
+                ranges.push((config.min_sample_rate().0, config.max_sample_rate().0));
+            }
+        }
+    }
+    ranges
+}
+
+/// Whether the endpoint is a software mixer rather than real hardware. The
+/// Linux plugin devices are indistinguishable from hardware through cpal, but
+/// their `1 … 384000` claim is a giveaway; their real ceiling is unknowable
+/// here, so we must not derive a "device maximum" from them.
+fn is_software_endpoint(ranges: &[(u32, u32)]) -> bool {
+    ranges.iter().any(|(low, high)| *low <= 100 && *high >= 384_000)
+}
+
+/// Probe the default output device for the rates it supports. Read-only and
+/// safe to call from any thread; `current_rate` is filled by the caller from
+/// the engine's live stream.
+pub fn device_info() -> DeviceInfo {
+    let ranges = device_ranges();
+    // A software endpoint's range is a lie, so bound the list to the endpoint's
+    // own preferred rate (never below 48 kHz, so 48 kHz files can still play
+    // natively). Real hardware is trusted as reported.
+    let ceiling = if is_software_endpoint(&ranges) {
+        let preferred = rodio::cpal::default_host()
+            .default_output_device()
+            .and_then(|device| device.default_output_config().ok())
+            .map(|config| config.sample_rate().0)
+            .unwrap_or(48_000);
+        preferred.max(48_000)
+    } else {
+        u32::MAX
+    };
+    let supported_rates: Vec<u32> = STANDARD_RATES
+        .into_iter()
+        .filter(|rate| *rate <= ceiling)
+        .filter(|rate| ranges.iter().any(|(low, high)| low <= rate && rate <= high))
+        .collect();
+    let max_rate = supported_rates.last().copied().unwrap_or(0);
+    DeviceInfo {
+        current_rate: 0,
+        supported_rates,
+        max_rate,
+        preferred_rate: 0,
+    }
+}
+
+/// The rate to open the output stream at before a track is loaded (and as the
+/// fallback when auto mode has no better answer). cpal's ALSA default is
+/// hard-coded to prefer 44.1 kHz whenever the range allows it, which is why
+/// "follow device" would otherwise land on 44.1 kHz on a 48 kHz system. Prefer
+/// 48 kHz — the modern hardware standard — then 44.1 kHz, then the highest on
+/// offer, then cpal's own default as a last resort.
+fn preferred_device_rate() -> u32 {
+    let supported = device_info().supported_rates;
+    if supported.contains(&48_000) {
+        return 48_000;
+    }
+    if supported.contains(&44_100) {
+        return 44_100;
+    }
+    if let Some(rate) = supported.last() {
+        return *rate;
+    }
+    rodio::cpal::default_host()
+        .default_output_device()
+        .and_then(|device| device.default_output_config().ok())
+        .map(|config| config.sample_rate().0)
+        .unwrap_or(48_000)
 }
 
 /// Lock-light state shared between the worker and the command/event threads.
@@ -90,6 +200,12 @@ pub struct Shared {
     underruns: AtomicU64,
     channels: AtomicU32,
     sample_rate: AtomicU32,
+    /// The loaded file's native rate, before the work-rate cap. 0 when idle.
+    native_rate: AtomicU32,
+    /// The rate the output stream is currently opened at, for the quality UI.
+    device_rate: AtomicU32,
+    /// User's preferred output rate; 0 = follow the device stream rate.
+    preferred_rate: AtomicU32,
     duration_ms: AtomicU64,
     transport: AtomicU8,
     worker_started: AtomicBool,
@@ -151,6 +267,9 @@ impl Shared {
             underruns: AtomicU64::new(0),
             channels: AtomicU32::new(2),
             sample_rate: AtomicU32::new(44_100),
+            native_rate: AtomicU32::new(0),
+            device_rate: AtomicU32::new(0),
+            preferred_rate: AtomicU32::new(0),
             duration_ms: AtomicU64::new(0),
             transport: AtomicU8::new(Transport::Idle as u8),
             worker_started: AtomicBool::new(false),
@@ -188,6 +307,16 @@ impl Shared {
     /// Requested playback state: a track is loaded and not paused.
     pub fn is_paused(&self) -> bool {
         self.transport.load(Ordering::Relaxed) != Transport::Playing as u8
+    }
+
+    /// Live output stream rate, for the quality UI.
+    pub fn device_rate(&self) -> u32 {
+        self.device_rate.load(Ordering::Relaxed)
+    }
+
+    /// User's stored output-rate preference (0 = follow the device).
+    pub fn preferred_rate(&self) -> u32 {
+        self.preferred_rate.load(Ordering::Relaxed)
     }
 
     pub fn set_paused(&self, paused: bool) {
@@ -415,6 +544,9 @@ impl Shared {
             position_ms: self.position_ms(),
             duration_ms: self.duration_ms.load(Ordering::Relaxed) as f64,
             ended,
+            sample_rate: self.native_rate.load(Ordering::Relaxed),
+            work_rate: self.sample_rate.load(Ordering::Relaxed),
+            output_rate: self.device_rate.load(Ordering::Relaxed),
         }
     }
 }
@@ -607,6 +739,12 @@ pub enum Command {
     },
     SetTempo {
         rate: f32,
+    },
+    /// User-selected output quality: `0` follows the device's default stream
+    /// rate, any other value asks for that exact rate. Reopens the output
+    /// stream and resyncs the current track without dropping playback.
+    SetQuality {
+        rate: u32,
     },
     Play,
     Pause,
@@ -824,9 +962,16 @@ mod worker {
             let mut current = Current {
                 decoder,
                 pending: Vec::new(),
+                native: Vec::new(),
+                resampler: None,
                 source_done: false,
                 stretch: build_stretch(rate, channels, 0.25).unwrap(),
                 applied_tempo: 0.25,
+                direct: false,
+                draining: false,
+                drain_flushed: false,
+                drain_tail: Vec::new(),
+                drain_pos: 0,
                 out_made: 0,
                 scratch: Vec::new(),
                 tail: Vec::new(),
@@ -875,15 +1020,98 @@ mod worker {
             .map_err(|error| AppError::other(error.to_string()))
     }
 
+    /// Linear-interpolating sample-rate converter, run on the worker thread.
+    ///
+    /// This is deliberately the same arithmetic rodio's `UniformSourceIterator`
+    /// uses in the realtime callback, but moved off the audio thread and fed
+    /// from the engine's own buffers. It keeps inter-channel phase (all channels
+    /// advance together) and is stateful across `process` calls, so a decoded
+    /// chunk stream converts incrementally. Used only to bring a file *down* to
+    /// the device rate; equal rates bypass it entirely.
+    struct Resampler {
+        /// Input frames consumed per output frame (`from / to`).
+        step: f64,
+        /// Fractional read position within `buf`, in frames.
+        pos: f64,
+        /// Leftover input frames (interleaved), carried across calls.
+        buf: Vec<f32>,
+        channels: usize,
+    }
+
+    impl Resampler {
+        fn new(from: u32, to: u32, channels: usize) -> Self {
+            Self {
+                step: from as f64 / to as f64,
+                pos: 0.0,
+                buf: Vec::new(),
+                channels,
+            }
+        }
+
+        /// Append `input` (interleaved frames) and emit converted frames to `dst`.
+        fn process(&mut self, input: &[f32], dst: &mut Vec<f32>) {
+            let ch = self.channels;
+            self.buf.extend_from_slice(input);
+            let frames = self.buf.len() / ch;
+            if frames < 2 {
+                return;
+            }
+            let last = (frames - 1) as f64;
+            while self.pos < last {
+                let i = self.pos.floor() as usize;
+                let frac = (self.pos - i as f64) as f32;
+                for c in 0..ch {
+                    let a = self.buf[i * ch + c];
+                    let b = self.buf[(i + 1) * ch + c];
+                    dst.push(a + (b - a) * frac);
+                }
+                self.pos += self.step;
+            }
+            // Drop frames that can never be read again, keeping the frame the
+            // next `pos` interpolates from. `pos` stays relative to the new
+            // buffer, so the absolute read position is unchanged.
+            let keep = (self.pos.floor() as usize).min(frames - 1);
+            if keep > 0 {
+                self.buf.drain(0..keep * ch);
+                self.pos -= keep as f64;
+            }
+        }
+
+        /// Drop all carried state, e.g. after a seek repositions the decoder.
+        fn reset(&mut self) {
+            self.buf.clear();
+            self.pos = 0.0;
+        }
+    }
+
     struct Current {
         decoder: Decoder<Box<dyn ReadSeek>>,
-        /// Decoded source samples not yet handed to the stretcher.
+        /// Samples at the work rate, not yet handed to the stretcher (or the
+        /// ring, at 1.0x). This is what every downstream stage consumes.
         pending: Vec<f32>,
+        /// Native-rate staging buffer, used only while `resampler` is set.
+        native: Vec<f32>,
+        /// Converts the file's rate to the work rate on the worker thread, so
+        /// neither the realtime callback nor WSOLA ever sees the file's native
+        /// high rate. `None` when the device already runs at the file's rate.
+        resampler: Option<Resampler>,
         source_done: bool,
         /// Pitch-preserving time-stretcher applied inline before the ring.
         stretch: wsola::TimeStretch,
         /// Tempo most recently applied to `stretch`.
         applied_tempo: f32,
+        /// True while at exactly 1.0x: the ring is fed straight from `pending`
+        /// and WSOLA is skipped (it is a costly identity transform there).
+        direct: bool,
+        /// Set while handing playback from the stretcher back to the direct
+        /// 1.0x feed: the stretcher is emptied first so no decoded audio is
+        /// dropped. Stays set across `pump` calls if the ring fills mid-drain.
+        draining: bool,
+        /// Whether the drain has already emitted the stretcher's overlap tail.
+        drain_flushed: bool,
+        /// Drain output not yet accepted by the ring.
+        drain_tail: Vec<f32>,
+        drain_pos: usize,
         /// Interleaved output samples produced so far (anchors tempo segments).
         out_made: u64,
         /// Reused buffer for pulling stretched samples.
@@ -909,6 +1137,71 @@ mod worker {
         Ok(stretch)
     }
 
+    /// Open an output stream, optionally pinned to a requested sample rate.
+    ///
+    /// `rate == 0` means "follow the device": open at the device's preferred
+    /// rate (48 kHz-first), *not* cpal's `open_default_stream()`, which is
+    /// hard-coded to 44.1 kHz on the Linux plugin endpoints. A non-zero rate
+    /// asks for that exact rate; if the device refuses it we fall back to the
+    /// preferred rate so a bad preference can never leave the engine without
+    /// output.
+    fn open_stream(rate: u32) -> Result<OutputStream, String> {
+        let target = if rate == 0 { preferred_device_rate() } else { rate };
+        let device = rodio::cpal::default_host()
+            .default_output_device()
+            .ok_or_else(|| "no output device".to_string())?;
+        let stream = OutputStreamBuilder::default()
+            .with_device(device.clone())
+            .with_sample_rate(target)
+            .open_stream();
+        match stream {
+            Ok(stream) => Ok(stream),
+            Err(error) => {
+                log::warn!(
+                    "playback engine: {target} Hz output rejected ({error}), falling back to device default"
+                );
+                Ok::<_, String>(
+                    OutputStreamBuilder::default()
+                        .with_device(device)
+                        .open_stream()
+                        .map_err(|fallback| fallback.to_string())?,
+                )
+            }
+        }
+    }
+
+    /// In "follow device" mode, open the output stream at the file's own rate
+    /// when the device can take it, so the file plays bit-perfect: a 96 kHz FLAC
+    /// truly runs at 96 kHz, and a 48 kHz file is never forced down to a
+    /// 44.1 kHz default. Returns the rate the stream ended up at, and leaves the
+    /// current stream untouched when the file's rate is not on offer. This uses
+    /// the same corrected list the picker shows, so a Linux plugin endpoint
+    /// (which claims `1 … 384000`) cannot drag the work rate up to the file's
+    /// high rate and make WSOLA stutter.
+    fn adopt_file_rate(device_rate: &mut u32, stream: &mut OutputStream, shared: &Shared, file_rate: u32) -> u32 {
+        if file_rate == 0 || file_rate == *device_rate {
+            return *device_rate;
+        }
+        if !device_info().supported_rates.contains(&file_rate) {
+            log::debug!("playback: device does not offer {file_rate} Hz, keeping {device_rate} Hz");
+            return *device_rate;
+        }
+        match open_stream(file_rate) {
+            Ok(replacement) => {
+                let actual = replacement.config().sample_rate();
+                *stream = replacement;
+                *device_rate = actual;
+                shared.device_rate.store(actual, Ordering::Relaxed);
+                log::info!("playback: opened output at {actual} Hz to match the file");
+                actual
+            }
+            Err(error) => {
+                log::warn!("playback: could not open {file_rate} Hz output ({error}); keeping {device_rate} Hz");
+                *device_rate
+            }
+        }
+    }
+
     struct Worker {
         app: AppHandle,
         cache: Arc<StreamCache>,
@@ -918,6 +1211,10 @@ mod worker {
         shutdown: Arc<AtomicBool>,
         /// Kept alive for the worker's lifetime; sources are added to its mixer.
         stream: OutputStream,
+        /// Device output rate, in samples per second. The work rate never
+        /// exceeds it: a 96 kHz file plays on a 48 kHz device at 48 kHz, with
+        /// WSOLA and the ring all running at 48 kHz.
+        device_rate: u32,
         current: Option<Current>,
         pending_tempo: Option<f32>,
         /// Throttles the worker-loop heartbeat.
@@ -934,7 +1231,14 @@ mod worker {
     ) {
         log::info!("playback: worker thread starting, opening output stream");
         shared.worker_started.store(true, Ordering::Release);
-        let Ok(stream) = OutputStreamBuilder::open_default_stream() else {
+        // Open at the device's preferred rate rather than cpal's 44.1 kHz
+        // default, so "follow device" reflects 48 kHz hardware correctly.
+        let initial_rate = preferred_device_rate();
+        let stream = open_stream(initial_rate).or_else(|error| {
+            log::warn!("playback engine: opening {initial_rate} Hz output failed ({error}); using device default");
+            OutputStreamBuilder::open_default_stream().map_err(|fallback| fallback.to_string())
+        });
+        let Ok(stream) = stream else {
             log::error!("playback engine: no audio output device available");
             *shared
                 .failure
@@ -946,6 +1250,9 @@ mod worker {
             return;
         };
         log::info!("playback: output stream opened, worker started");
+        let config = stream.config();
+        let device_rate = config.sample_rate();
+        log::info!("playback: device output {device_rate} Hz (work rate caps at this)");
 
         let mut worker = Worker {
             app,
@@ -955,14 +1262,78 @@ mod worker {
             shutdown,
             ring: Ring::new(1).0,
             stream,
+            device_rate,
             current: None,
             pending_tempo: None,
             last_trace: std::time::Instant::now(),
         };
+        worker.publish_device_rates(0);
         worker.loop_forever(rx);
     }
 
     impl Worker {
+        /// Publish the live stream rate, the device's advertised maximum, and
+        /// the user's preference, so the quality UI can warn about over-asking.
+        fn publish_device_rates(&self, preferred: u32) {
+            self.shared.device_rate.store(self.device_rate, Ordering::Relaxed);
+            self.shared.preferred_rate.store(preferred, Ordering::Relaxed);
+        }
+
+        /// Apply a new output-quality preference: reopen the output stream at
+        /// the requested rate (0 = device default) and resync the current track.
+        fn set_quality(&mut self, rate: u32) {
+            if rate == self.shared.preferred_rate.load(Ordering::Relaxed) {
+                return;
+            }
+            log::info!("playback: quality change requested -> {rate} Hz (0 = device default)");
+            let was_paused = self.shared.is_paused();
+            let location = self
+                .shared
+                .location
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone();
+            let position = self.shared.position_secs();
+
+            let stream = match open_stream(rate) {
+                Ok(stream) => stream,
+                Err(error) => {
+                    log::error!("playback engine: reopening output stream failed: {error}");
+                    *self
+                        .shared
+                        .failure
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner()) = Some(ErrorInfo {
+                        code: "AUDIO_DEVICE".to_string(),
+                        message: "无法切换音频输出设备参数".to_string(),
+                    });
+                    return;
+                }
+            };
+            let actual = stream.config().sample_rate();
+            // Report the rate we actually got, which may differ from the ask if
+            // the device rejected it and we fell back to its default.
+            self.stream = stream;
+            self.device_rate = actual;
+            self.publish_device_rates(rate);
+            log::info!("playback: output stream reopened at {actual} Hz (asked {rate})");
+
+            // The old mixer's sources are invalidated by the generation bump;
+            // rebuild the current track against the new stream.
+            self.bump_generation();
+            self.ring = Ring::new(1).0;
+            self.ring.done.store(true, Ordering::Release);
+            self.current = None;
+            let Some((source_id, path)) = location else {
+                return;
+            };
+            self.load(&source_id, &path, !was_paused);
+            if position > 0.0 {
+                self.seek(position);
+                self.shared.set_paused(was_paused);
+            }
+        }
+
         fn loop_forever(&mut self, rx: Receiver<Command>) {
             while !self.shutdown.load(Ordering::Acquire) {
                 // Drain every queued command first so seeks/pause stay snappy.
@@ -1022,6 +1393,11 @@ mod worker {
                     // Coalesce slider events drained in the same worker turn;
                     // only the newest value needs a WSOLA/ring transition.
                     self.pending_tempo = Some(rate)
+                }
+
+                Command::SetQuality { rate } => {
+                    log::debug!("playback: cmd SetQuality {rate}");
+                    self.set_quality(rate)
                 }
 
                 Command::Play => {
@@ -1102,11 +1478,20 @@ mod worker {
 
             let channels = decoder.channels().max(1);
             let rate = decoder.sample_rate().max(1);
+            // In "follow device" mode the stream follows the *file*: if the
+            // device advertises this file's rate we reopen at it (bit-perfect),
+            // otherwise the device default stands and high rates are folded down
+            // here on the worker. An explicit preference (chosen rate) already
+            // owns the stream, so its setting is respected as-is.
+            if self.shared.preferred_rate() == 0 {
+                adopt_file_rate(&mut self.device_rate, &mut self.stream, &self.shared, rate);
+            }
+            let work_rate = rate.min(self.device_rate.max(1)).max(1);
             let duration_ms = decoder
                 .total_duration()
                 .map(|value| value.as_millis() as u64)
                 .unwrap_or(0);
-            let capacity = output_samples(rate, channels, BUFFER_MILLIS);
+            let capacity = output_samples(work_rate, channels, BUFFER_MILLIS);
 
             let generation = self.bump_generation();
             let (ring, consumer) = Ring::new(capacity);
@@ -1115,7 +1500,8 @@ mod worker {
             self.shared
                 .channels
                 .store(channels as u32, Ordering::Relaxed);
-            self.shared.sample_rate.store(rate, Ordering::Relaxed);
+            self.shared.sample_rate.store(work_rate, Ordering::Relaxed);
+            self.shared.native_rate.store(rate, Ordering::Relaxed);
             self.shared
                 .duration_ms
                 .store(duration_ms, Ordering::Relaxed);
@@ -1137,20 +1523,28 @@ mod worker {
                 .transport
                 .store(Transport::Paused as u8, Ordering::Relaxed);
 
-            let stretch = match build_stretch(rate, channels, tempo) {
+            let stretch = match build_stretch(work_rate, channels, tempo) {
                 Ok(stretch) => stretch,
                 Err(error) => {
                     self.fail(error.code(), &error.to_string());
                     return;
                 }
             };
-            self.append_source(generation, channels, rate, consumer);
+            self.append_source(generation, channels, work_rate, consumer);
             self.current = Some(Current {
                 decoder,
                 pending: Vec::with_capacity(DECODE_CHUNK),
+                native: Vec::new(),
+                resampler: (work_rate != rate)
+                    .then(|| Resampler::new(rate, work_rate, channels as usize)),
                 source_done: false,
                 stretch,
                 applied_tempo: tempo,
+                direct: tempo == 1.0,
+                draining: false,
+                drain_flushed: false,
+                drain_tail: Vec::new(),
+                drain_pos: 0,
                 out_made: 0,
                 scratch: Vec::with_capacity(STRETCH_REFILL),
                 tail: Vec::new(),
@@ -1163,7 +1557,7 @@ mod worker {
             self.prefill();
             self.shared.set_paused(!autoplay);
             log::debug!(
-                "playback: load ready {source_id}::{path} channels={channels} rate={rate} duration_ms={duration_ms} ring_len={} ring_done={}",
+                "playback: load ready {source_id}::{path} channels={channels} rate={rate} work_rate={work_rate} duration_ms={duration_ms} ring_len={} ring_done={}",
                 self.ring.len(),
                 self.ring.is_done(),
             );
@@ -1278,6 +1672,10 @@ mod worker {
                 }
             }
             current.pending.clear();
+            current.native.clear();
+            if let Some(resampler) = current.resampler.as_mut() {
+                resampler.reset();
+            }
             current.source_done = false;
             current.out_made = 0;
             current.flushed = false;
@@ -1287,6 +1685,11 @@ mod worker {
             current.stretch.reset();
             current.stretch.set_tempo(tempo);
             current.applied_tempo = tempo;
+            current.direct = tempo == 1.0;
+            current.draining = false;
+            current.drain_flushed = false;
+            current.drain_tail.clear();
+            current.drain_pos = 0;
             current.last_trace = std::time::Instant::now();
 
             let channels = self.shared.channels.load(Ordering::Relaxed).max(1) as u64;
@@ -1350,6 +1753,7 @@ mod worker {
                 .store(Transport::Idle as u8, Ordering::Relaxed);
             self.shared.set_paused(true);
             self.shared.duration_ms.store(0, Ordering::Relaxed);
+            self.shared.native_rate.store(0, Ordering::Relaxed);
             self.shared.set_ended(false);
             self.shared.reset_position(0.0, self.shared.tempo());
             self.shared.clear_seek_preview();
@@ -1380,7 +1784,6 @@ mod worker {
                     current.flushed,
                 );
             }
-
             // Push any buffered end-of-stream tail first so ordering is kept.
             Self::push_tail(ring, current);
             if current.flushed && current.tail_pos >= current.tail.len() {
@@ -1393,9 +1796,76 @@ mod worker {
                 return;
             }
 
+            let tempo = shared.tempo();
+            let want_direct = tempo == 1.0;
+
+            // Leaving the direct 1.0x feed: hand the decoded-but-unqueued audio
+            // to WSOLA so nothing is dropped, and anchor the new tempo segment.
+            if !want_direct && current.direct && !current.draining {
+                let boundary = current.out_made + current.stretch.available() as u64;
+                let position = shared.position_at(boundary);
+                shared.push_segment(boundary, position, tempo);
+                // The stretcher was drained when the direct feed began; reset it
+                // so the new tempo run primes from a clean state.
+                current.stretch.reset();
+                let aligned = current.pending.len() / channels * channels;
+                if aligned > 0 {
+                    current.stretch.push(&current.pending[..aligned]);
+                    current.pending.drain(0..aligned);
+                }
+                current.stretch.set_tempo(tempo);
+                current.applied_tempo = tempo;
+                current.direct = false;
+            }
+
+            // Entering 1.0x: finish whatever WSOLA still holds before switching,
+            // so the identity path never clips the tail of an in-flight stretch.
+            if want_direct && !current.direct && !current.draining {
+                let want = current.stretch.available();
+                current.drain_tail.clear();
+                current.drain_tail.extend(current.stretch.pull(want));
+                current.drain_pos = 0;
+                current.drain_flushed = false;
+                current.draining = true;
+            }
+
+            if current.draining {
+                if Self::push_drain(ring, current) {
+                    return;
+                }
+                current.draining = false;
+                let now = shared.tempo();
+                if now == 1.0 {
+                    current.direct = true;
+                    current.applied_tempo = 1.0;
+                    let position = shared.position_at(current.out_made);
+                    shared.push_segment(current.out_made, position, 1.0);
+                } else {
+                    // The tempo changed again while draining: resume stretching.
+                    let boundary = current.out_made + current.stretch.available() as u64;
+                    let position = shared.position_at(boundary);
+                    shared.push_segment(boundary, position, now);
+                    current.stretch.reset();
+                    let aligned = current.pending.len() / channels * channels;
+                    if aligned > 0 {
+                        current.stretch.push(&current.pending[..aligned]);
+                        current.pending.drain(0..aligned);
+                    }
+                    current.stretch.set_tempo(now);
+                    current.applied_tempo = now;
+                    current.direct = false;
+                }
+            }
+
+            // At exactly 1.0x, WSOLA is a costly identity transform: feed the
+            // ring straight from the decoder instead (this is the common case).
+            if current.direct {
+                Self::direct_output(ring, current, channels);
+                return;
+            }
+
             // Apply a playback-rate change: anchor a new tempo segment at the
             // source position of the current output index, then retune.
-            let tempo = shared.tempo();
             if (tempo - current.applied_tempo).abs() > 1e-4 {
                 // Output already inside WSOLA still belongs to the old tempo.
                 let boundary = current.out_made + current.stretch.available() as u64;
@@ -1415,29 +1885,7 @@ mod worker {
 
             // Only decode when WSOLA actually needs more input.
             if !current.source_done && current.pending.len() < channels {
-                let decode_started = std::time::Instant::now();
-                while current.pending.len() < DECODE_CHUNK {
-                    match current.decoder.next() {
-                        Some(sample) => current.pending.push(sample),
-                        None => {
-                            // Do not discard the final partial chunk. Dropping
-                            // it causes an abrupt cutoff and an audible click.
-                            current.source_done = true;
-                            log::debug!("playback: decoder reached end of stream");
-                            break;
-                        }
-                    }
-                }
-                // A blocking network read on the worker shows up here: the
-                // refill is normally sub-millisecond, so anything slow means the
-                // decoder is waiting on bytes (the classic post-seek stall).
-                let elapsed = decode_started.elapsed();
-                if !current.source_done && elapsed > Duration::from_millis(200) {
-                    log::warn!(
-                        "playback: decode refill blocked for {elapsed:?} ({} samples)",
-                        current.pending.len(),
-                    );
-                }
+                Self::refill(current, channels);
             }
 
             // Hand whole frames to the stretcher (it requires frame alignment).
@@ -1462,6 +1910,115 @@ mod worker {
             if current.flushed && current.tail_pos >= current.tail.len() {
                 ring.done.store(true, Ordering::Release);
             }
+        }
+
+        /// Decode one chunk into `pending` at the work rate, resampling the
+        /// decoder's native output first when the device runs at a lower rate.
+        /// Sets `source_done` at end of stream.
+        fn refill(current: &mut Current, channels: usize) {
+            let Current {
+                decoder,
+                native,
+                pending,
+                resampler,
+                source_done,
+                ..
+            } = current;
+            native.clear();
+            let decode_started = std::time::Instant::now();
+            // Fill whole frames only: the resampler interpolates frame-wise, so a
+            // partial trailing frame would be dropped instead of carried over.
+            let target = DECODE_CHUNK / channels * channels;
+            while native.len() < target {
+                match decoder.next() {
+                    Some(sample) => native.push(sample),
+                    None => {
+                        *source_done = true;
+                        break;
+                    }
+                }
+            }
+            // A blocking network read on the worker shows up here: a refill is
+            // normally sub-millisecond, so anything slow means the decoder is
+            // waiting on bytes (the classic post-seek stall).
+            let elapsed = decode_started.elapsed();
+            if !*source_done && elapsed > Duration::from_millis(200) {
+                log::warn!(
+                    "playback: decode refill blocked for {elapsed:?} ({} samples)",
+                    native.len(),
+                );
+            }
+            match resampler.as_mut() {
+                Some(resampler) => resampler.process(native, pending),
+                None => pending.extend_from_slice(native),
+            }
+        }
+
+        /// At 1.0x, move decoded samples straight from `pending` into the ring
+        /// and never touch the stretcher. Costs a single copy per sample instead
+        /// of WSOLA's per-sample similarity search, so high-rate lossless files
+        /// (96 kHz) regain the full realtime margin.
+        fn direct_output(ring: &mut Ring, current: &mut Current, channels: usize) {
+            loop {
+                if current.pending.len() < channels {
+                    if current.source_done {
+                        ring.done.store(true, Ordering::Release);
+                        return;
+                    }
+                    Self::refill(current, channels);
+                    if current.pending.len() < channels {
+                        if current.source_done {
+                            // End of stream with nothing but a sub-frame left.
+                            current.pending.clear();
+                            ring.done.store(true, Ordering::Release);
+                        }
+                        return;
+                    }
+                }
+                let space = ring.space();
+                if space < channels {
+                    return;
+                }
+                let aligned = space.min(current.pending.len()) / channels * channels;
+                if aligned == 0 {
+                    return;
+                }
+                let pushed = ring.push_slice(&current.pending[..aligned]);
+                current.pending.drain(0..pushed);
+                current.out_made += pushed as u64;
+                if pushed == 0 {
+                    return;
+                }
+            }
+        }
+
+        /// Push the stretcher's remaining buffered output while switching to the
+        /// direct feed. Returns true when the ring filled and the drain must
+        /// resume on the next call, false once everything was handed over.
+        fn push_drain(ring: &mut Ring, current: &mut Current) -> bool {
+            while current.drain_pos < current.drain_tail.len() {
+                let pushed = ring.push_slice(&current.drain_tail[current.drain_pos..]);
+                if pushed == 0 {
+                    return true;
+                }
+                current.drain_pos += pushed;
+                current.out_made += pushed as u64;
+            }
+            if !current.drain_flushed {
+                current.drain_flushed = true;
+                let tail: Vec<f32> = current.stretch.flush().collect();
+                current.drain_tail = tail;
+                current.drain_pos = 0;
+                while current.drain_pos < current.drain_tail.len() {
+                    let pushed = ring.push_slice(&current.drain_tail[current.drain_pos..]);
+                    if pushed == 0 {
+                        return true;
+                    }
+                    current.drain_pos += pushed;
+                    current.out_made += pushed as u64;
+                }
+            }
+            false
         }
 
         fn pull_output(ring: &mut Ring, current: &mut Current, channels: usize) -> usize {
@@ -1556,6 +2113,7 @@ mod worker {
             self.shared.set_ended(false);
             self.shared.clear_seek_preview();
             self.shared.duration_ms.store(0, Ordering::Relaxed);
+            self.shared.native_rate.store(0, Ordering::Relaxed);
             self.shared.set_paused(true);
             *self
                 .shared

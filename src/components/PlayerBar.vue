@@ -22,6 +22,7 @@ import { useDesktopLyricsStore } from "../stores/desktopLyrics";
 import { requestDesktopLyricPermission } from "../composables/useDesktopLyrics";
 import { coverPending, initial, percent } from "../lib/format";
 import { seekPercent } from "../lib/audio";
+import * as audioQuality from "../lib/audioQuality";
 import LayeredSelect from "./LayeredSelect.vue";
 import RealtimeWaveform from "./RealtimeWaveform.vue";
 
@@ -55,6 +56,17 @@ const speed = computed({
   get: () => String(player.playbackRate),
   set: (value: string) => player.setPlaybackRate(Number(value)),
 });
+
+/**
+ * The quality button always shows just the rate in use right now. Clicking it
+ * opens the picker modal.
+ */
+const rateText = computed(() => audioQuality.formatRate(player.outputRate || player.workRate || player.sampleRate));
+const rateTitle = computed(() => `${t("audioQuality.title")}: ${rateText.value}`);
+function openQuality() {
+  void audioQuality.refreshDeviceInfo();
+  audioQuality.qualityModalOpen.value = true;
+}
 
 /** Toggle the floating lyrics; on Android ask for the overlay grant first. */
 function toggleDesktopLyrics() {
@@ -208,6 +220,15 @@ function endSeek() {
           variant="text"
           class="hidden md:block"
         />
+        <button
+          type="button"
+          class="hidden font-mono text-[11px] tabular-nums text-dim transition-colors hover:text-accent md:block"
+          :title="rateTitle"
+          :aria-label="t('audioQuality.title')"
+          @click="openQuality"
+        >
+          {{ rateText }}
+        </button>
         <div class="hidden items-center gap-2 md:flex">
           <button
             type="button"
@@ -286,6 +307,15 @@ function endSeek() {
             variant="text"
             class="shrink-0"
           />
+          <button
+            type="button"
+            class="shrink-0 font-mono text-[12px] tabular-nums text-muted transition-colors hover:text-accent"
+            :title="rateTitle"
+            :aria-label="t('audioQuality.title')"
+            @click="openQuality"
+          >
+            {{ rateText }}
+          </button>
           <button type="button" class="text-dim transition-colors hover:text-fg" :title="player.muted ? t('controls.unmute') : t('controls.mute')" :aria-label="player.muted ? t('controls.unmute') : t('controls.mute')" @click="player.toggleMute()">
             <VolumeX v-if="player.muted" :size="17" :stroke-width="1.8" />
             <Volume2 v-else :size="17" :stroke-width="1.8" />

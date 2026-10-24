@@ -101,6 +101,12 @@ export const usePlayerStore = defineStore("player", () => {
   const volume = ref(readStoredVolume());
   const muted = ref(localStorage.getItem(MUTED_STORAGE_KEY) === "1");
   const playbackRate = ref(readStoredRate());
+  /** Native sample rate of the loaded file (Hz), 0 when idle. */
+  const sampleRate = ref(0);
+  /** Rate the engine actually processes at: min(file, device). */
+  const workRate = ref(0);
+  /** Rate the output stream is currently opened at (the quality picker's target). */
+  const outputRate = ref(0);
 
   // Persist the output volume/mute locally so each launch starts where the
   // previous one left off (mirrors the theme/accent localStorage pattern).
@@ -379,6 +385,12 @@ export const usePlayerStore = defineStore("player", () => {
     bufferedProgress.value = Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : 0;
   }
 
+  function setRates(fileRate: number, workRate_: number, outputRate_ = 0) {
+    sampleRate.value = Number.isFinite(fileRate) && fileRate > 0 ? Math.round(fileRate) : 0;
+    workRate.value = Number.isFinite(workRate_) && workRate_ > 0 ? Math.round(workRate_) : 0;
+    if (Number.isFinite(outputRate_) && outputRate_ > 0) outputRate.value = Math.round(outputRate_);
+  }
+
   function setVolume(value: number) {
     volume.value = Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : volume.value;
   }
@@ -441,6 +453,9 @@ export const usePlayerStore = defineStore("player", () => {
     volume,
     muted,
     playbackRate,
+    sampleRate,
+    workRate,
+    outputRate,
     currentIndex,
     hasTrack,
     elapsedTime,
@@ -460,6 +475,7 @@ export const usePlayerStore = defineStore("player", () => {
     setPosition,
     setDuration,
     setBufferedProgress,
+    setRates,
     setVolume,
     setPlaybackRate,
     toggleMute,

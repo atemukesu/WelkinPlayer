@@ -9,7 +9,7 @@
 use tauri::State;
 
 use crate::core::error::AppError;
-use crate::playback::engine::{AudioState, Command, Engine};
+use crate::playback::engine::{device_info, AudioState, Command, DeviceInfo, Engine};
 
 /// Load a track with an explicit initial playback intent. Building the byte
 /// source happens on the worker, so this returns as soon as the command is
@@ -68,6 +68,23 @@ pub fn audio_set_mute(engine: State<Engine>, muted: bool) {
 #[tauri::command]
 pub fn audio_set_speed(engine: State<Engine>, rate: f64) -> Result<(), AppError> {
     engine.send(Command::SetTempo { rate: rate as f32 })
+}
+
+/// Probe the output device for the sample rates it supports.
+#[tauri::command]
+pub fn audio_device_info(engine: State<Engine>) -> DeviceInfo {
+    let shared = engine.shared();
+    let mut info = device_info();
+    info.current_rate = shared.device_rate();
+    info.preferred_rate = shared.preferred_rate();
+    info
+}
+
+/// Choose the output quality. `rate == 0` follows the device default;
+/// otherwise the stream is reopened at that exact rate.
+#[tauri::command]
+pub fn audio_set_quality(engine: State<Engine>, rate: u32) -> Result<(), AppError> {
+    engine.send(Command::SetQuality { rate })
 }
 
 /// Stop playback and clear the loaded track.

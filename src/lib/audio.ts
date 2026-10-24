@@ -14,6 +14,7 @@ import { useNetworkStore } from "../stores/network";
 import { useCacheStore } from "../stores/cache";
 import { pushToast } from "./toast";
 import { trackKey } from "./sources";
+import { preferredRate } from "./audioQuality";
 
 /**
  * Playback client.
@@ -54,6 +55,9 @@ interface AudioStatePayload {
   positionMs: number;
   durationMs: number;
   ended: boolean;
+  sampleRate?: number;
+  workRate?: number;
+  outputRate?: number;
 }
 
 interface AudioErrorPayload {
@@ -147,6 +151,7 @@ function onState(payload: AudioStatePayload) {
   enginePlaying = payload.playing;
   player.setPosition(position);
   if (duration > 0) player.setDuration(duration);
+  player.setRates(payload.sampleRate ?? 0, payload.workRate ?? 0, payload.outputRate ?? 0);
   if (pendingResumeSecs > 0 && duration > 0) {
     // The saved position belongs to a known track length; clamp so a stale
     // resume point can never seek past the end of a shorter track.
@@ -199,6 +204,7 @@ async function syncTrack() {
   lastStreamReportAt = 0;
   // A load replaces the decoder; a seek still in flight can never land.
   pendingSeekSecs = null;
+  player.setRates(0, 0, player.outputRate);
   if (!track?.path) {
     playbackLog("syncTrack: no track, stopping engine");
     await invoke("audio_stop").catch(() => {});
@@ -348,6 +354,11 @@ async function bootstrap(): Promise<void> {
   await invoke("audio_set_volume", { volume: player.volume }).catch(() => {});
   await invoke("audio_set_mute", { muted: player.muted }).catch(() => {});
   await invoke("audio_set_speed", { rate: player.playbackRate }).catch(() => {});
+  // Apply the stored output-quality preference before the first load, so the
+  // engine opens the stream at the right rate from the start.
+  if (preferredRate.value > 0) {
+    await invoke("audio_set_quality", { rate: preferredRate.value }).catch(() => {});
+  }
   await syncTrack();
 
   syncBuffered();

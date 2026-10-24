@@ -49,6 +49,7 @@ import { useUpdateStore } from "./stores/update";
 import AppNavigation from "./components/AppNavigation.vue";
 import QueuePanel from "./components/QueuePanel.vue";
 import PlayerBar from "./components/PlayerBar.vue";
+import AudioQualityModal from "./components/AudioQualityModal.vue";
 import SetupWizard from "./components/SetupWizard.vue";
 import ToastStack from "./components/ToastStack.vue";
 import UpdateModal from "./components/UpdateModal.vue";
@@ -373,6 +374,7 @@ onUnmounted(() => { savePlaybackPosition(true); stopDesktopLyrics(); stopMediaCo
     <PlayerBar v-if="player.currentTrack" @open="navigate('player')" @queue="toggleQueue" @open-artist="openArtist" @open-album="openAlbum" />
     <AppNavigation placement="mobile" :active-view="baseView" :active-playlist-id="playlistFilter" :active-artist="artistFilter" :active-album="albumFilter" :active-source="sourceFilter" @navigate="navigate" @create-playlist="createPlaylist" @open-playlist="openUserPlaylist" />
     <ToastStack />
+    <AudioQualityModal />
     <UpdateModal @friendly-error="showError" />
   </div>
 </template>
