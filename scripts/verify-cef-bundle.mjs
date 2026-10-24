@@ -14,7 +14,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 
 function arg(name) {
   const index = process.argv.indexOf(`--${name}`);
@@ -74,8 +74,9 @@ function run(command, args, options) {
 function listDebFiles(file) {
   const work = mkdtempSync(join(tmpdir(), "verify-cef-"));
   try {
-    // `ar t`/`ar x` are part of binutils and always available.
-    run("ar", ["x", file], { cwd: work });
+    // `ar t`/`ar x` are part of binutils and always available. `cwd` changes
+    // below, so hand `ar` an absolute path (the bundle argument may be relative).
+    run("ar", ["x", resolve(file)], { cwd: work });
     const dataTar = readdirSync(work).find((name) => name.startsWith("data.tar"));
     if (!dataTar) throw new Error("no data.tar member in archive");
 
@@ -133,11 +134,16 @@ for (const [kind, extension] of [
       continue;
     }
 
-    const names = files.map((path) => basename(path));
-    const missing = REQUIRED.filter((name) => !names.includes(name));
-    const absent = EXPECTED.filter((name) => !names.includes(name));
+    // Entries are paths relative to the filesystem root, e.g.
+    // `usr/share/Welkin/locales/en-US.pak`, so match on the trailing path
+    // segments to cover both `libcef.so` and `locales/en-US.pak`.
+    const has = (name) =>
+      files.some((path) => path === name || path.endsWith(`/${name}`));
+
+    const missing = REQUIRED.filter((name) => !has(name));
+    const absent = EXPECTED.filter((name) => !has(name));
     const size = (statSync(file).size / 1024 / 1024).toFixed(1);
-    const found = REQUIRED.filter((name) => names.includes(name));
+    const found = REQUIRED.filter((name) => has(name));
 
     console.log(`[verify-cef] ${basename(file)}: ${files.length} entries, ${size} MB`);
     console.log(`[verify-cef]   required CEF files present: ${found.join(", ")}`);
