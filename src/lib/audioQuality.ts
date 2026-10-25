@@ -35,6 +35,17 @@ export const deviceInfo = ref<AudioDeviceInfo | null>(null);
 export const qualityModalOpen = ref(false);
 
 /** Render a sample rate as e.g. `44.1 kHz`, or `—` when unknown. */
+/** Snap a preferred rate down to the nearest standard rate not exceeding fileRate. */
+export function resolveOutputRate(preferred: number, fileRate: number): number {
+  const STANDARD = [44_100, 48_000, 88_200, 96_000, 176_400, 192_000];
+  const cap = fileRate > 0 ? Math.min(preferred || STANDARD[0], fileRate) : (preferred || STANDARD[0]);
+  let best = STANDARD[0];
+  for (const r of STANDARD) {
+    if (r <= cap) best = r; else break;
+  }
+  return best;
+}
+
 export function formatRate(rate: number): string {
   if (!Number.isFinite(rate) || rate <= 0) return "—";
   const khz = rate / 1000;

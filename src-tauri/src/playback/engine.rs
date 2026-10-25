@@ -1481,7 +1481,16 @@ mod worker {
             // Auto-following the file's sample rate is disabled: the output
             // rate is determined solely by the user's explicit preference (or
             // the device default when none is set).
-            let work_rate = rate.min(self.device_rate.max(1)).max(1);
+            // Snap the user's preferred rate down to the nearest standard rate
+            // not exceeding the file's native rate.
+            let preferred = self.shared.preferred_rate.load(Ordering::Relaxed);
+            let standard = [44_100u32, 48_000, 88_200, 96_000, 176_400, 192_000];
+            let cap = if preferred > 0 { preferred.min(rate) } else { rate };
+            let mut work_rate = standard[0];
+            for &r in &standard {
+                if r <= cap { work_rate = r; } else { break; }
+            }
+            let work_rate = work_rate.max(1);
             let duration_ms = decoder
                 .total_duration()
                 .map(|value| value.as_millis() as u64)

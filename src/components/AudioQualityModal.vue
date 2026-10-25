@@ -4,7 +4,7 @@
 -->
 
 <script setup lang="ts">
-import { computed, onMounted } from "vue";
+import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 import { X } from "@lucide/vue";
 import { usePlayerStore } from "../stores/player";
@@ -24,12 +24,15 @@ const chosen = computed(() => audioQuality.preferredRate.value);
 const STANDARD_RATES = [44_100, 48_000, 88_200, 96_000, 176_400, 192_000];
 
 const options = computed(() => {
-  const reported = new Set(audioQuality.deviceInfo.value?.supportedRates ?? []);
-  return STANDARD_RATES.map((rate) => ({
-    value: rate,
-    label: audioQuality.formatRate(rate),
-    unsupported: reported.size > 0 && !reported.has(rate),
-  }));
+  const fileRate = player.sampleRate || 0;
+  const cap = fileRate > 0 ? fileRate : STANDARD_RATES[STANDARD_RATES.length - 1];
+  return STANDARD_RATES
+    .filter((rate) => rate <= cap)
+    .map((rate) => ({
+      value: rate,
+      label: audioQuality.formatRate(rate),
+      unsupported: false,
+    }));
 });
 
 /** The output stream's rate — what the picker actually switches. */
@@ -41,15 +44,9 @@ const maxText = computed(() => {
   return max > 0 ? t("audioQuality.deviceMax", { max: audioQuality.formatRate(max) }) : "";
 });
 
-const tooHigh = computed(() => chosen.value > 0 && audioQuality.rateTooHigh.value);
-
 function select(rate: number) {
   void audioQuality.setPreferredRate(rate);
 }
-
-onMounted(() => {
-  void audioQuality.refreshDeviceInfo();
-});
 </script>
 
 <template>
@@ -66,7 +63,7 @@ onMounted(() => {
             <span class="text-2xl font-black tabular-nums text-accent">{{ currentText }}</span>
             <span class="text-[11px] text-dim">{{ t("audioQuality.current") }}</span>
           </div>
-          <p v-if="maxText" class="mt-1 text-[11px] text-dim">{{ maxText }}</p>
+
 
           <div class="mt-4 grid max-h-[50vh] gap-1.5 overflow-y-auto">
             <button
@@ -86,9 +83,7 @@ onMounted(() => {
             </button>
           </div>
 
-          <p v-if="tooHigh" class="mt-4 border border-amber-500/60 bg-amber-500/10 p-3 text-[12px] leading-relaxed text-amber-500">
-            {{ t("audioQuality.tooHigh") }}
-          </p>
+
         </div>
       </div>
     </Transition>
