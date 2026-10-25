@@ -1478,14 +1478,9 @@ mod worker {
 
             let channels = decoder.channels().max(1);
             let rate = decoder.sample_rate().max(1);
-            // In "follow device" mode the stream follows the *file*: if the
-            // device advertises this file's rate we reopen at it (bit-perfect),
-            // otherwise the device default stands and high rates are folded down
-            // here on the worker. An explicit preference (chosen rate) already
-            // owns the stream, so its setting is respected as-is.
-            if self.shared.preferred_rate() == 0 {
-                adopt_file_rate(&mut self.device_rate, &mut self.stream, &self.shared, rate);
-            }
+            // Auto-following the file's sample rate is disabled: the output
+            // rate is determined solely by the user's explicit preference (or
+            // the device default when none is set).
             let work_rate = rate.min(self.device_rate.max(1)).max(1);
             let duration_ms = decoder
                 .total_duration()

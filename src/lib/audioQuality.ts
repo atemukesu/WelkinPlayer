@@ -56,7 +56,7 @@ export const rateTooHigh = computed(() => {
 
 function readStored(): number {
   const value = Number(localStorage.getItem(STORAGE_KEY));
-  return Number.isFinite(value) && value > 0 ? Math.round(value) : 0;
+  return Number.isFinite(value) && value > 0 ? Math.round(value) : 44_100;
 }
 
 /** Persist and apply a new output-rate preference. */

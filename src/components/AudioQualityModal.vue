@@ -25,14 +25,11 @@ const STANDARD_RATES = [44_100, 48_000, 88_200, 96_000, 176_400, 192_000];
 
 const options = computed(() => {
   const reported = new Set(audioQuality.deviceInfo.value?.supportedRates ?? []);
-  return [
-    { value: 0, label: t("audioQuality.auto"), unsupported: false },
-    ...STANDARD_RATES.map((rate) => ({
-      value: rate,
-      label: audioQuality.formatRate(rate),
-      unsupported: reported.size > 0 && !reported.has(rate),
-    })),
-  ];
+  return STANDARD_RATES.map((rate) => ({
+    value: rate,
+    label: audioQuality.formatRate(rate),
+    unsupported: reported.size > 0 && !reported.has(rate),
+  }));
 });
 
 /** The output stream's rate — what the picker actually switches. */
