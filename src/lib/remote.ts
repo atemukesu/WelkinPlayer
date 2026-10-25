@@ -4,6 +4,7 @@
  */
 
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { isAndroid } from "./desktopLyric";
 import type { Track } from "../stores/player";
 import type { SourceKind } from "./sources";
 
@@ -102,7 +103,9 @@ export interface CachedTrack {
  * upstream workaround for tauri-apps/tauri#16201.
  */
 function localFileUrl(path: string): string {
-  if (!import.meta.env.DEV) return convertFileSrc(path);
+  // On Android the dev server's /@fs handler is unreachable and WebView blocks
+  // it anyway; always use Tauri's asset protocol there.
+  if (isAndroid() || !import.meta.env.DEV) return convertFileSrc(path);
   const normalized = path.replace(/\\/g, "/");
   const encoded = encodeURI(normalized).replace(/[?#]/g, (character) => encodeURIComponent(character));
   return `/@fs${encoded.startsWith("/") ? "" : "/"}${encoded}`;
