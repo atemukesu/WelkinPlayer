@@ -232,7 +232,7 @@ watch(() => currentPath.value, () => void nextTick(() => scrollEl.value?.scrollT
           <button v-else type="button" class="group flex w-full items-center gap-4 px-2 py-3 text-left transition-colors hover:bg-fg/5" :class="player.currentTrack?.path === entry.path ? 'ak-select relative z-10 border-transparent' : ''" v-request-meta="toTrack(entry)" @click="playFile(entry)" @contextmenu.prevent="openContextMenu($event, entry)">
             <span class="grid h-11 w-11 shrink-0 place-items-center overflow-hidden text-lg font-black text-white/90" :style="{ backgroundColor: audioColor(entry) }">
               <img v-if="audioCover(entry)" :src="audioCover(entry)" alt="" loading="lazy" decoding="async" class="h-full w-full object-cover" />
-              <LoaderCircle v-else-if="coverPending(toTrack(entry))" :size="18" :stroke-width="2" class="animate-spin text-muted" />
+              <LoaderCircle v-else-if="coverPending(toTrack(entry))" :size="18" :stroke-width="2" class="animate-spin" />
               <template v-else>{{ initial(toTrack(entry)) }}</template>
             </span>
             <span class="min-w-0 flex-1">
