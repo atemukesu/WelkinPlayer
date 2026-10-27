@@ -42,6 +42,8 @@ const lyrics = useLyricsStore();
 useWakeLock();
 
 const lyricsScroll = ref<HTMLElement | null>(null);
+const lyricAtTop = ref(true);
+const lyricAtBottom = ref(false);
 const lyricsVirtualizer = ref<VirtualizerHandle | null>(null);
 /** Whether a user scroll is currently holding automatic line following. */
 let manualScroll = false;
@@ -418,8 +420,19 @@ function holdManualScroll() {
   if (!manualTimer) manualTimer = window.setTimeout(releaseManualScroll, MANUAL_RESUME_MS);
 }
 
+function updateLyricEdgeFlags() {
+  const handle = lyricsVirtualizer.value;
+  if (!handle) return;
+  const offset = handle.scrollOffset;
+  const viewport = handle.viewportSize;
+  const total = handle.scrollSize;
+  lyricAtTop.value = offset <= 1;
+  lyricAtBottom.value = offset + viewport >= total - 1;
+}
+
 function onVirtualScroll() {
   if (programmaticScroll) return;
+  updateLyricEdgeFlags();
   holdManualScroll();
 }
 
@@ -428,6 +441,7 @@ function onVirtualScrollEnd() {
   // a detached instance; refresh them on the next tick.
   wordCacheDirty = true;
   wordCacheRetryAt = 0;
+  updateLyricEdgeFlags();
   if (programmaticScroll) {
     programmaticScroll = false;
     followTarget = -1;
@@ -441,6 +455,7 @@ onMounted(() => {
   if (player.isPlaying) startLoop();
   else syncLyrics();
   bumpControls();
+  window.setTimeout(updateLyricEdgeFlags, 100);
   void syncFullscreen();
   window.addEventListener("pointermove", bumpControls);
   window.addEventListener("pointerdown", bumpControls);
@@ -651,7 +666,7 @@ watch(
          <div class="mb-4 md:hidden">
           <h1 class="mt-2 truncate text-xl font-black leading-none tracking-tight">{{ player.currentTrack.title }}</h1>
          </div>
-         <div ref="lyricsScroll" class="lyrics-scroll min-h-0 flex-1 overflow-y-auto border-l border-line pl-6 md:max-h-[76vh] md:pl-10" :style="{ '--line-size': `${lyrics.classic.lineSize}px`, '--translation-size': `${lyrics.classic.translationSize}px`, '--line-spacing': `${lyrics.classic.lineSpacing}px`, '--line-weight': lyrics.classic.fontWeight, '--line-weight-active': lyricActiveWeight, fontFamily: lyricFontFamily }">
+         <div ref="lyricsScroll" class="lyrics-scroll min-h-0 flex-1 overflow-y-auto border-l border-line pl-6 md:max-h-[76vh] md:pl-10" :class="{ 'lyric-at-top': lyricAtTop, 'lyric-at-bottom': lyricAtBottom }" :style="{ '--line-size': `${lyrics.classic.lineSize}px`, '--translation-size': `${lyrics.classic.translationSize}px`, '--line-spacing': `${lyrics.classic.lineSpacing}px`, '--line-weight': lyrics.classic.fontWeight, '--line-weight-active': lyricActiveWeight, fontFamily: lyricFontFamily }">
           <Virtualizer
             ref="lyricsVirtualizer"
             :data="lyrics.lines"
@@ -706,6 +721,21 @@ watch(
   mask-repeat: no-repeat;
   -webkit-mask-size: 100% 100%;
   mask-size: 100% 100%;
+}
+
+.lyrics-scroll.lyric-at-top {
+  -webkit-mask-image: linear-gradient(to bottom, #000 95%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 95%, transparent 100%);
+}
+
+.lyrics-scroll.lyric-at-bottom {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, #000 5%);
+  mask-image: linear-gradient(to bottom, transparent 0%, #000 5%);
+}
+
+.lyrics-scroll.lyric-at-top.lyric-at-bottom {
+  -webkit-mask-image: none;
+  mask-image: none;
 }
 
 .lyrics-scroll::-webkit-scrollbar {
