@@ -314,10 +314,15 @@ function loop() {
   if (!running) return;
   frame = requestAnimationFrame(loop);
   const now = performance.now();
-  if (now - lastLyricsSync < LYRICS_TICK_MS) return;
-  lastLyricsSync = now;
   const positionMs = currentTime() * 1000;
-  lyrics.sync(positionMs / 1000);
+  // `lyrics.sync` stays throttled (it re-derives the active set), but the
+  // per-word gradient is rewritten every frame so the sweep tracks the beat
+  // instead of stepping at ~30 Hz. The epsilon in updateWordProgress already
+  // skips DOM writes when a word barely changed.
+  if (now - lastLyricsSync >= LYRICS_TICK_MS) {
+    lastLyricsSync = now;
+    lyrics.sync(positionMs / 1000);
+  }
   updateWordProgress(positionMs);
 }
 
@@ -694,7 +699,7 @@ watch(
   touch-action: pan-y;
   overscroll-behavior: contain;
   --lyric-ease: cubic-bezier(0.22, 1, 0.36, 1);
-  --lyric-duration: 560ms;
+  --lyric-duration: 800ms;
   -webkit-mask-image: linear-gradient(to bottom, transparent 0%, #000 5%, #000 95%, transparent 100%);
   mask-image: linear-gradient(to bottom, transparent 0%, #000 5%, #000 95%, transparent 100%);
   -webkit-mask-repeat: no-repeat;
