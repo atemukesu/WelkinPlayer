@@ -1170,38 +1170,6 @@ mod worker {
         }
     }
 
-    /// In "follow device" mode, open the output stream at the file's own rate
-    /// when the device can take it, so the file plays bit-perfect: a 96 kHz FLAC
-    /// truly runs at 96 kHz, and a 48 kHz file is never forced down to a
-    /// 44.1 kHz default. Returns the rate the stream ended up at, and leaves the
-    /// current stream untouched when the file's rate is not on offer. This uses
-    /// the same corrected list the picker shows, so a Linux plugin endpoint
-    /// (which claims `1 … 384000`) cannot drag the work rate up to the file's
-    /// high rate and make WSOLA stutter.
-    fn adopt_file_rate(device_rate: &mut u32, stream: &mut OutputStream, shared: &Shared, file_rate: u32) -> u32 {
-        if file_rate == 0 || file_rate == *device_rate {
-            return *device_rate;
-        }
-        if !device_info().supported_rates.contains(&file_rate) {
-            log::debug!("playback: device does not offer {file_rate} Hz, keeping {device_rate} Hz");
-            return *device_rate;
-        }
-        match open_stream(file_rate) {
-            Ok(replacement) => {
-                let actual = replacement.config().sample_rate();
-                *stream = replacement;
-                *device_rate = actual;
-                shared.device_rate.store(actual, Ordering::Relaxed);
-                log::info!("playback: opened output at {actual} Hz to match the file");
-                actual
-            }
-            Err(error) => {
-                log::warn!("playback: could not open {file_rate} Hz output ({error}); keeping {device_rate} Hz");
-                *device_rate
-            }
-        }
-    }
-
     struct Worker {
         app: AppHandle,
         cache: Arc<StreamCache>,
