@@ -5,6 +5,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
+import { requestMeta } from "../directives/requestMeta";
 import { ChevronRight, FileAudio, Folder, FolderOpen, Play, Search, Server, HardDrive, ArrowUp, ArrowLeft } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { usePlayerStore } from "../stores/player";
@@ -12,6 +13,9 @@ import type { Track } from "../stores/player";
 import { useSourcesStore } from "../stores/sources";
 import { trackFromEntry, type RemoteEntry } from "../lib/remote";
 import { sourceLabel } from "../lib/sources";
+import { coverPending, initial } from "../lib/format";
+import { LoaderCircle } from "@lucide/vue";
+import TrackContextMenu from "../components/TrackContextMenu.vue";
 import { describeError } from "../api";
 import { pushToast } from "../lib/toast";
 
@@ -27,6 +31,7 @@ const { t } = useI18n();
 const player = usePlayerStore();
 const sources = useSourcesStore();
 
+const vRequestMeta = requestMeta;
 const source = computed(() => sources.sources.find((item) => item.id === props.sourceId) ?? null);
 const sourceName = computed(() => source.value ? sourceLabel(source.value) : "");
 
@@ -36,6 +41,8 @@ const entries = ref<RemoteEntry[]>([]);
 const loadingDir = ref(false);
 const error = ref("");
 const query = ref("");
+const contextTrack = ref<Track | null>(null);
+const contextPosition = ref({ x: 0, y: 0 });
 
 /** Build the breadcrumb trail from the current path segments. */
 const crumbs = computed<Crumb[]>(() => {
@@ -147,6 +154,7 @@ async function playFolder(entry: RemoteEntry) {
  * recursing into subfolders) so the next/prev controls walk the same directory.
  * The clicked file is the starting track.
  */
+function openContextMenu(event: MouseEvent, entry: RemoteEntry) { contextTrack.value = toTrack(entry); contextPosition.value = { x: event.clientX, y: event.clientY }; }
 function playFile(entry: RemoteEntry) {
   const siblings = entries.value.filter((item) => !item.isDir).map((item) => toTrack(item));
   if (siblings.length === 0) return;
@@ -221,10 +229,11 @@ watch(() => currentPath.value, () => void nextTick(() => scrollEl.value?.scrollT
               <ChevronRight :size="16" class="text-dim" />
             </span>
           </button>
-          <button v-else type="button" class="group flex w-full items-center gap-4 px-2 py-3 text-left transition-colors hover:bg-fg/5" @click="playFile(entry)" @contextmenu.prevent="emit('downloadMetadata', toTrack(entry))">
-            <span class="grid h-11 w-11 shrink-0 overflow-hidden text-lg font-black text-white/90" :style="{ backgroundColor: audioColor(entry) }">
+          <button v-else type="button" class="group flex w-full items-center gap-4 px-2 py-3 text-left transition-colors hover:bg-fg/5" :class="player.currentTrack?.path === entry.path ? 'ak-select relative z-10 border-transparent' : ''" v-request-meta="toTrack(entry)" @click="playFile(entry)" @contextmenu.prevent="openContextMenu($event, entry)">
+            <span class="grid h-11 w-11 shrink-0 place-items-center overflow-hidden text-lg font-black text-white/90" :style="{ backgroundColor: audioColor(entry) }">
               <img v-if="audioCover(entry)" :src="audioCover(entry)" alt="" loading="lazy" decoding="async" class="h-full w-full object-cover" />
-              <FileAudio v-else :size="20" :stroke-width="2" class="text-muted" />
+              <LoaderCircle v-else-if="coverPending(toTrack(entry))" :size="18" :stroke-width="2" class="animate-spin text-muted" />
+              <template v-else>{{ initial(toTrack(entry)) }}</template>
             </span>
             <span class="min-w-0 flex-1">
               <p class="truncate text-sm font-bold">{{ entry.name }}</p>
@@ -235,5 +244,7 @@ watch(() => currentPath.value, () => void nextTick(() => scrollEl.value?.scrollT
         </li>
       </ul>
     </div>
+
+    <TrackContextMenu v-if="contextTrack" :track="contextTrack" :x="contextPosition.x" :y="contextPosition.y" :selected-paths="[]" :downloading="downloadingTrackId === contextTrack.id" @close="contextTrack = null" @download-metadata="emit('downloadMetadata', $event)" @edit-lyrics="emit('editLyrics', $event)" @edit-info="emit('editInfo', $event)" @show-info="emit('showInfo', $event)" />
   </div>
 </template>
