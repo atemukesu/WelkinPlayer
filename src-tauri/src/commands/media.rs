@@ -419,23 +419,28 @@ pub async fn read_track_metadata_batch(
     app: AppHandle,
     source_id: String,
     paths: Vec<String>,
-) -> Result<Vec<CachedTrack>, AppError> {
+    on_event: tauri::ipc::Channel<CachedTrack>,
+) -> Result<(), AppError> {
     let backend = backend_for(&app, &source_id)?;
     let dir = resolve_cache_dir(&app);
     let source = source_id.clone();
 
-    let results = stream::iter(paths)
+    stream::iter(paths)
         .map(|path| {
             let backend = &backend;
             let dir = &dir;
             let source = &source;
-            async move { read_or_fetch_metadata(backend, dir, source, path).await }
+            let on_event = &on_event;
+            async move {
+                let result = read_or_fetch_metadata(backend, dir, source, path).await;
+                let _ = on_event.send(result);
+            }
         })
         .buffer_unordered(METADATA_CONCURRENCY)
         .collect::<Vec<_>>()
         .await;
 
-    Ok(results)
+    Ok(())
 }
 
 /// Serve one track's cached metadata, fetching and caching it when missing.

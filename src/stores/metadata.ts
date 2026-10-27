@@ -6,6 +6,7 @@
 import { ref } from "vue";
 import { defineStore } from "pinia";
 import { invoke } from "../api";
+import { Channel } from "@tauri-apps/api/core";
 import { coverUrl, formatDuration } from "../lib/remote";
 import type { CachedTrack } from "../lib/remote";
 import { trackKey } from "../lib/sources";
@@ -89,11 +90,13 @@ export const useMetadataStore = defineStore("metadata", () => {
         pending.value = queued.size;
 
         try {
-          const results = await invoke<CachedTrack[]>("read_track_metadata_batch", {
+          const channel = new Channel<CachedTrack>();
+          channel.onmessage = (result) => applyOne(result);
+          await invoke("read_track_metadata_batch", {
             sourceId,
             paths: batch.map((track) => track.path as string),
+            onEvent: channel,
           });
-          apply(batch, results);
         } catch (error) {
           // Mark the attempt as failed so the spinner stops; the backoff still
           // allows a later retry.
@@ -115,42 +118,35 @@ export const useMetadataStore = defineStore("metadata", () => {
     }
   }
 
-  /** Merge batch results into the player tracks. */
-  function apply(batch: Track[], results: CachedTrack[]) {
-    const byPath = new Map(results.map((result) => [result.path, result]));
-    // Resolve the *current* track by key: a library reload may have replaced
-    // the objects (and their ids) while the batch was in flight.
+  /** Merge a single streamed result into the player tracks. */
+  function applyOne(result: CachedTrack) {
     const byKey = new Map(
       player.tracks
         .filter((track) => track.path)
         .map((track) => [trackKey(track) as string, track]),
     );
-    const patches: Array<{ id: number; patch: Partial<Track> }> = [];
-    for (const track of batch) {
-      const key = trackKey(track);
-      if (key) attempted.set(key, Date.now());
-      const result = track.path ? byPath.get(track.path) : undefined;
-      const meta = result?.metadata;
-      const current = key ? byKey.get(key) : undefined;
-      const id = current?.id ?? track.id;
-      // A `null` metadata means the read failed: stop the spinner but leave the
-      // track retryable once the backoff elapses.
-      if (!meta) {
-        patches.push({ id, patch: { metaFailed: true } });
-        continue;
-      }
-      const patch: Partial<Track> = { metaLoaded: true, metaFailed: false };
-      if (meta.title) patch.title = meta.title;
-      if (meta.artist) patch.artist = meta.artist;
-      if (meta.album) patch.album = meta.album;
-      if (meta.durationSecs) patch.duration = formatDuration(meta.durationSecs);
-      const url = coverUrl(result?.coverPath, current?.modified ?? track.modified);
-      if (url) patch.cover = url;
-      if (meta.coverHash) patch.coverHash = meta.coverHash;
-      patches.push({ id, patch });
+    const current = [...byKey.values()].find((t) => t.path === result.path);
+    if (!current) return;
+    const key = trackKey(current);
+    if (key) attempted.set(key, Date.now());
+    const meta = result?.metadata;
+    const id = current.id;
+    if (!meta) {
+      player.updateTrack(id, { metaFailed: true });
+      return;
     }
-    player.updateTracks(patches);
+    const patch: Partial<Track> = { metaLoaded: true, metaFailed: false };
+    if (meta.title) patch.title = meta.title;
+    if (meta.artist) patch.artist = meta.artist;
+    if (meta.album) patch.album = meta.album;
+    if (meta.durationSecs) patch.duration = formatDuration(meta.durationSecs);
+    const url = coverUrl(result?.coverPath, current.modified);
+    if (url) patch.cover = url;
+    if (meta.coverHash) patch.coverHash = meta.coverHash;
+    player.updateTrack(id, patch);
   }
+
+  // apply removed; replaced by applyOne streaming per-track patches
 
   return { pending, request, requestMany };
 });
