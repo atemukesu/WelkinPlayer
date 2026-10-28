@@ -86,7 +86,9 @@ const windowBehavior = useWindowBehaviorStore();
 const update = useUpdateStore();
 const { loadingLibrary, refreshing, friendlyError, loadCachedLibrary, loadRemoteLibrary, refreshLibrary, downloadTrackMetadata } = useLibrary();
 const view = ref<View>(getViewFromHash());
-const baseView = ref<View>(view.value === "player" || view.value === "track-info" ? "library" : view.value);
+/** Views that sit on top of the current page as overlays and must not replace `baseView`. */
+const OVERLAY_VIEWS: ReadonlySet<View> = new Set(["player", "track-info", "lyrics-edit", "track-edit", "sponsor"]);
+const baseView = ref<View>(OVERLAY_VIEWS.has(view.value) ? "library" : view.value);
 const theme = ref<Theme>(localStorage.getItem("welkin-theme") === "dark" ? "dark" : "light");
 const accent = ref<Accent>(readAccent());
 const sidebarCollapsed = ref(localStorage.getItem("welkin-sidebar-collapsed") === "1");
@@ -119,10 +121,12 @@ let resumedKey = "";
 /** Local-only safety-net cadence (ms) for periodic progress writes while playing. */
 const POSITION_SAVE_INTERVAL_MS = 30_000;
 
-// The full-screen player and track-info are overlays that sit on top of whatever
-// page was open, so they must not change `baseView`; everything else (including
-// the folder browser) becomes the underlying page when opened.
-watch(view, (next) => { if (next !== "player" && next !== "track-info") baseView.value = next; });
+// The full-screen player, track-info, the track editors and the sponsor view are
+// overlays that sit on top of whatever page was open, so they must not change
+// `baseView`; everything else (including the folder browser) becomes the
+// underlying page when opened. Keeping the underlying page mounted preserves its
+// scroll position and the source browser's current folder across the overlay.
+watch(view, (next) => { if (!OVERLAY_VIEWS.has(next)) baseView.value = next; });
 
 // Reload the library shortly after a source is added, removed or reconfigured,
 // so configuring a source in Settings takes effect without a manual refresh.
@@ -261,6 +265,7 @@ function openUserPlaylist(id: string) { clearCollectionFilters(); playlistFilter
 /** Open a source in the file-manager browser instead of the flat track list. */
 function browseSource(id: string) { clearCollectionFilters(); browseSourceId.value = id; setView("source-browser"); }
 function openSourceConfig(from: View) { sourceConfigReturn.value = from; setView("source-config"); }
+
 function closeSourceConfig() { setView(sourceConfigReturn.value); }
 function openGroup(kind: "artists" | "albums", key: string) { playlistFilter.value = null; artistFilter.value = kind === "artists" ? key : null; albumFilter.value = kind === "albums" ? key : null; sourceFilter.value = null; setView("tracks"); }
 function onOpenGroup(key: string) { openGroup(baseView.value === "albums" ? "albums" : "artists", key); }
@@ -273,7 +278,8 @@ function editPlaylist(id: string) { clearCollectionFilters(); editingPlaylist.va
 function editLyrics(track: Track) { if (!track.path) return; editingLyricsTrack.value = track; closeQueue(); setView("lyrics-edit"); }
 function editInfo(track: Track) { if (!track.path) return; editingTrack.value = track; closeQueue(); setView("track-edit"); }
 function showTrackInfo(track: Track) { if (!track.path) return; viewingTrack.value = track; closeQueue(); setView("track-info"); }
-function closeTrackInfo() { setView(baseView.value); }
+/** Close an overlay (track info, editors, sponsor) back to the page underneath. */
+function closeOverlay() { setView(baseView.value); }
 function onPlaylistSaved(id: string) { artistFilter.value = null; albumFilter.value = null; sourceFilter.value = null; playlistFilter.value = id; setView("tracks"); }
 function onPlaylistEditorCancel() { navigate("library"); }
 function onPlaylistDeleted(id: string) {
@@ -352,7 +358,10 @@ onUnmounted(() => { savePlaybackPosition(true); stopDesktopLyrics(); stopMediaCo
 <template>
   <AmllPlayerView v-if="amllMounted && player.currentTrack" :active="amllActive" :return-view="baseView" @navigate="navigate" @closed="amllMounted = false" />
   <Transition name="slide"><PlayerView v-if="view === 'player' && player.currentTrack && !lyrics.useAmll" :return-view="baseView" @navigate="navigate" @queue="toggleQueue" @open-artist="openArtist" @open-album="openAlbum" /></Transition>
-  <Transition name="info"><TrackInfoView v-if="view === 'track-info' && viewingTrack" :path="viewingTrack.path ?? null" :source-id="viewingTrack.sourceId" @back="closeTrackInfo" /></Transition>
+  <Transition name="info"><TrackInfoView v-if="view === 'track-info' && viewingTrack" :path="viewingTrack.path ?? null" :source-id="viewingTrack.sourceId" @back="closeOverlay" /></Transition>
+  <Transition name="info"><LyricsEditorView v-if="view === 'lyrics-edit' && editingLyricsTrack" :path="editingLyricsTrack.path ?? null" :source-id="editingLyricsTrack.sourceId" @back="closeOverlay" @friendly-error="showError" /></Transition>
+  <Transition name="info"><TrackEditorView v-if="view === 'track-edit' && editingTrack" :path="editingTrack.path ?? null" :source-id="editingTrack.sourceId" @back="closeOverlay" @friendly-error="showError" /></Transition>
+  <Transition name="info"><SponsorView v-if="view === 'sponsor'" @back="closeOverlay" /></Transition>
   <SetupWizard v-if="booted && profile.firstRun" v-model:theme="theme" v-model:accent="accent" @finish="onWizardFinish" />
   <div class="flex h-screen flex-col overflow-hidden bg-bg text-fg" :class="booted ? '' : 'opacity-0'">
     <AppNavigation placement="header" :active-view="baseView" @navigate="navigate" />
@@ -370,9 +379,6 @@ onUnmounted(() => { savePlaybackPosition(true); stopDesktopLyrics(); stopMediaCo
           <PlaylistsView v-else-if="baseView === 'playlists'" key="playlists" @open-playlist="openUserPlaylist" @edit-playlist="editPlaylist" @create-playlist="createPlaylist" />
           <StatsView v-else-if="baseView === 'stats'" key="stats" :loading="loadingLibrary" :downloading-track-id="downloadingTrackId" @download-metadata="downloadMetadata" @edit-lyrics="editLyrics" @edit-info="editInfo" @show-info="showTrackInfo" />
           <PlaylistEditorView v-else-if="baseView === 'playlist-new'" key="playlist-new" :playlist-id="editingPlaylist" @done="onPlaylistSaved" @deleted="onPlaylistDeleted" @cancel="onPlaylistEditorCancel" />
-          <LyricsEditorView v-else-if="baseView === 'lyrics-edit'" key="lyrics-edit" :path="editingLyricsTrack?.path ?? null" :source-id="editingLyricsTrack?.sourceId" @back="navigate('source-browser')" @friendly-error="showError" />
-          <TrackEditorView v-else-if="baseView === 'track-edit'" key="track-edit" :path="editingTrack?.path ?? null" :source-id="editingTrack?.sourceId" @back="navigate('source-browser')" @friendly-error="showError" />
-          <SponsorView v-else-if="baseView === 'sponsor'" key="sponsor" @back="navigate('source-browser')" />
           <SettingsView v-else key="settings" v-model:theme="theme" v-model:accent="accent" @sponsor="navigate('sponsor')" @sources="openSourceConfig('settings')" @friendly-error="showError" />
         </Transition>
       </main>

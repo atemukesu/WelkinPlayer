@@ -159,8 +159,13 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="mx-auto w-full max-w-4xl p-6 lg:p-8">
-    <button type="button" class="flex items-center gap-2 text-[13px] font-semibold uppercase tracking-[0.25em] text-dim transition-colors hover:text-fg" @click="emit('back')"><ArrowLeft :size="15" :stroke-width="2" />{{ t("controls.return") }}</button>
+  <div class="fixed inset-0 z-40 flex flex-col overflow-hidden bg-bg text-fg">
+    <div class="flex min-h-0 flex-1 flex-col overflow-hidden bg-bg">
+      <header class="flex h-16 shrink-0 items-center gap-4 border-b border-line px-5">
+        <button type="button" class="flex items-center gap-2 text-[13px] font-semibold uppercase tracking-[0.25em] text-dim transition-colors hover:text-fg" @click="emit('back')"><ArrowLeft :size="15" :stroke-width="2" />{{ t("controls.return") }}</button>
+      </header>
+      <div class="min-h-0 flex-1 overflow-y-auto">
+        <div class="mx-auto w-full max-w-4xl p-6 lg:p-8">
 
     <header class="mt-6 border-b border-line pb-6">
       <p class="flex items-center gap-2 text-[13px] font-semibold uppercase tracking-[0.35em] text-accent"><span class="h-2 w-2 bg-accent"></span>{{ t("sponsor.eyebrow") }}</p>
@@ -320,6 +325,9 @@ onUnmounted(() => {
       </div>
       </Transition>
     </Teleport>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 

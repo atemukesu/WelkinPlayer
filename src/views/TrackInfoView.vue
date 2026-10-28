@@ -117,8 +117,8 @@ watch(() => props.path, load, { immediate: true });
 </script>
 
 <template>
-  <div class="fixed inset-0 z-40 flex flex-col overflow-hidden bg-bg text-fg sm:items-center sm:justify-center sm:bg-black/60 sm:p-6 sm:backdrop-blur-sm">
-    <div class="ak-info-panel flex h-full min-h-0 w-full flex-col overflow-hidden bg-bg sm:ak-frame sm:h-auto sm:max-h-[88vh] sm:max-w-4xl sm:border sm:border-line sm:shadow-2xl">
+  <div class="fixed inset-0 z-40 flex flex-col overflow-hidden bg-bg text-fg">
+    <div class="flex min-h-0 flex-1 flex-col overflow-hidden bg-bg">
       <header class="flex h-16 shrink-0 items-center gap-4 border-b border-line px-5">
         <button type="button" class="flex items-center gap-2 text-[12px] font-semibold uppercase tracking-[0.2em] text-dim transition-colors hover:text-fg" @click="emit('back')">
           <ArrowLeft :size="16" />{{ t("trackInfo.back") }}

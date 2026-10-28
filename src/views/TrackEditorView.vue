@@ -181,10 +181,15 @@ watch(() => props.path, load, { immediate: true });
 </script>
 
 <template>
-  <div class="mx-auto w-full max-w-4xl px-6 py-6 lg:px-8 lg:py-8">
-    <button type="button" class="flex items-center gap-2 text-[12px] font-semibold uppercase tracking-[0.2em] text-dim transition-colors hover:text-fg" @click="emit('back')">
-      <ArrowLeft :size="15" />{{ t("trackEditor.back") }}
-    </button>
+  <div class="fixed inset-0 z-40 flex flex-col overflow-hidden bg-bg text-fg">
+    <div class="flex min-h-0 flex-1 flex-col overflow-hidden bg-bg">
+      <header class="flex h-16 shrink-0 items-center gap-4 border-b border-line px-5">
+        <button type="button" class="flex items-center gap-2 text-[12px] font-semibold uppercase tracking-[0.2em] text-dim transition-colors hover:text-fg" @click="emit('back')">
+          <ArrowLeft :size="15" />{{ t("trackEditor.back") }}
+        </button>
+      </header>
+      <div class="min-h-0 flex-1 overflow-y-auto">
+        <div class="mx-auto w-full max-w-4xl px-6 py-6 lg:px-8 lg:py-8">
 
     <header class="mt-6 flex items-start gap-5 border-b border-line pb-6">
       <span class="ak-frame grid h-20 w-20 shrink-0 place-items-center overflow-hidden border border-line text-2xl font-black text-white/90" :style="{ backgroundColor: track?.color ?? 'var(--color-accent)' }">
@@ -253,5 +258,8 @@ watch(() => props.path, load, { immediate: true });
     </template>
 
     <CoverCropper v-if="cropSrc" :src="cropSrc" @confirm="applyCrop" @cancel="cropSrc = null" />
+        </div>
+      </div>
+    </div>
   </div>
 </template>
