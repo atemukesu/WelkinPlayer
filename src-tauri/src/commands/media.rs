@@ -36,19 +36,19 @@ const LIBRARY_HASH_PREFIX: &str = "library-hash-";
 const HEAD_RANGES: [u64; 2] = [1_572_864, 6_291_456]; // 1.5 / 6 MiB
 
 pub(crate) fn lyric_path(track_path: &str) -> Result<String, AppError> {
-    let slash = track_path
-        .rfind('/')
-        .ok_or_else(|| AppError::invalid_argument("path", "must contain an audio file name"))?;
-    let file_name = &track_path[slash + 1..];
+    let slash = track_path.rfind('/').unwrap_or(usize::MAX);
+    // When the audio file sits at the source root there is no directory
+    // separator; treat the whole path as the file name.
+    let (dir, file_name) = if slash == usize::MAX {
+        ("", track_path)
+    } else {
+        (&track_path[..slash + 1], &track_path[slash + 1..])
+    };
     let dot = file_name.rfind('.').ok_or_else(|| {
         AppError::invalid_argument("path", "must include an audio file extension")
     })?;
 
-    Ok(format!(
-        "{}{}.lrc",
-        &track_path[..slash + 1],
-        &file_name[..dot]
-    ))
+    Ok(format!("{}{}.lrc", dir, &file_name[..dot]))
 }
 
 fn default_cache_dir(app: &AppHandle) -> Result<PathBuf, AppError> {

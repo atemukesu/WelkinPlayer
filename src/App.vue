@@ -370,9 +370,9 @@ onUnmounted(() => { savePlaybackPosition(true); stopDesktopLyrics(); stopMediaCo
           <PlaylistsView v-else-if="baseView === 'playlists'" key="playlists" @open-playlist="openUserPlaylist" @edit-playlist="editPlaylist" @create-playlist="createPlaylist" />
           <StatsView v-else-if="baseView === 'stats'" key="stats" :loading="loadingLibrary" :downloading-track-id="downloadingTrackId" @download-metadata="downloadMetadata" @edit-lyrics="editLyrics" @edit-info="editInfo" @show-info="showTrackInfo" />
           <PlaylistEditorView v-else-if="baseView === 'playlist-new'" key="playlist-new" :playlist-id="editingPlaylist" @done="onPlaylistSaved" @deleted="onPlaylistDeleted" @cancel="onPlaylistEditorCancel" />
-          <LyricsEditorView v-else-if="baseView === 'lyrics-edit'" key="lyrics-edit" :path="editingLyricsTrack?.path ?? null" :source-id="editingLyricsTrack?.sourceId" @back="navigate('library')" @friendly-error="showError" />
-          <TrackEditorView v-else-if="baseView === 'track-edit'" key="track-edit" :path="editingTrack?.path ?? null" :source-id="editingTrack?.sourceId" @back="navigate('library')" @friendly-error="showError" />
-          <SponsorView v-else-if="baseView === 'sponsor'" key="sponsor" @back="navigate('library')" />
+          <LyricsEditorView v-else-if="baseView === 'lyrics-edit'" key="lyrics-edit" :path="editingLyricsTrack?.path ?? null" :source-id="editingLyricsTrack?.sourceId" @back="navigate('source-browser')" @friendly-error="showError" />
+          <TrackEditorView v-else-if="baseView === 'track-edit'" key="track-edit" :path="editingTrack?.path ?? null" :source-id="editingTrack?.sourceId" @back="navigate('source-browser')" @friendly-error="showError" />
+          <SponsorView v-else-if="baseView === 'sponsor'" key="sponsor" @back="navigate('source-browser')" />
           <SettingsView v-else key="settings" v-model:theme="theme" v-model:accent="accent" @sponsor="navigate('sponsor')" @sources="openSourceConfig('settings')" @friendly-error="showError" />
         </Transition>
       </main>

@@ -14,11 +14,11 @@
 export function lyricSidecarPath(trackPath: string | null | undefined): string | null {
   if (!trackPath) return null;
   const slash = trackPath.lastIndexOf("/");
-  if (slash < 0) return null;
-  const fileName = trackPath.slice(slash + 1);
+  const dir = slash < 0 ? "" : trackPath.slice(0, slash + 1);
+  const fileName = slash < 0 ? trackPath : trackPath.slice(slash + 1);
   const dot = fileName.lastIndexOf(".");
   if (dot < 0) return null;
-  return `${trackPath.slice(0, slash + 1)}${fileName.slice(0, dot)}.lrc`;
+  return `${dir}${fileName.slice(0, dot)}.lrc`;
 }
 
 /** Build the public song page for a QQ / NetEase lyric, if one can be derived. */
