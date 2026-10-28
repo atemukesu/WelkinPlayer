@@ -6,7 +6,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
 import { requestMeta } from "../directives/requestMeta";
-import { ChevronRight, FileAudio, Folder, FolderOpen, Play, Search, Server, HardDrive, ArrowUp, ArrowLeft } from "@lucide/vue";
+import { ChevronRight, Folder, FolderOpen, Play, Search, Server, HardDrive, ArrowUp, ArrowLeft } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { usePlayerStore } from "../stores/player";
 import type { Track } from "../stores/player";

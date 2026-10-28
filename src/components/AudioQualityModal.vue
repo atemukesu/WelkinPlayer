@@ -38,12 +38,6 @@ const options = computed(() => {
 /** The output stream's rate — what the picker actually switches. */
 const currentText = computed(() => audioQuality.formatRate(player.outputRate || player.workRate || player.sampleRate));
 
-/** "Device max" line, from the corrected (plugin-bounded) probe. */
-const maxText = computed(() => {
-  const max = audioQuality.deviceInfo.value?.maxRate ?? 0;
-  return max > 0 ? t("audioQuality.deviceMax", { max: audioQuality.formatRate(max) }) : "";
-});
-
 function select(rate: number) {
   void audioQuality.setPreferredRate(rate);
 }
