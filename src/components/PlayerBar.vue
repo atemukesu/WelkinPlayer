@@ -61,7 +61,10 @@ const speed = computed({
  * The quality button always shows just the rate in use right now. Clicking it
  * opens the picker modal.
  */
-const rateText = computed(() => (player.sampleRate || 0) > 48000 ? "Hi-Res" : audioQuality.formatRate(player.outputRate || player.workRate || player.sampleRate));
+const rateText = computed(() => {
+  const currentRate = player.outputRate || player.workRate || player.sampleRate || 0;
+  return currentRate > 48000 ? "Hi-Res" : audioQuality.formatRate(currentRate);
+});
 const rateTitle = computed(() => `${t("audioQuality.title")}: ${rateText.value}`);
 function openQuality() {
   void audioQuality.refreshDeviceInfo();
