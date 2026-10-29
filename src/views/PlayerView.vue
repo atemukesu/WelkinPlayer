@@ -88,6 +88,20 @@ function rubyText(word: { ruby?: Array<{ word: string }> }): string {
 }
 
 /**
+ * A line carries genuine per-word timestamps only when its words have
+ * distinct, valid start times. Line-level timing (every word shares one
+ * timestamp) means there is no word-by-word sweep to run, so the whole line
+ * is highlighted instead of attempting a per-word animation.
+ */
+function lineHasWordTimestamps(line: LyricLine): boolean {
+  const words = line.words;
+  if (!words || words.length < 2) return false;
+  const starts = words.map((word) => Number(word.startTime)).filter(Number.isFinite);
+  if (starts.length !== words.length) return false;
+  return new Set(starts).size > 1;
+}
+
+/**
  * Every line that should render as active: the primary line (which advances
  * ahead of the beat and ignores background vocals) plus any line whose own time
  * window overlaps it — background vocals and duet counter-lines.
@@ -100,6 +114,17 @@ const activeSet = computed(() => {
 
 const activeKey = computed(() =>
   Array.from(activeSet.value).sort((a, b) => a - b).join(",")
+);
+
+/** Line indices that carry genuine per-word timestamps. Lines without them
+ * (line-level timing only) get a whole-line highlight instead of a word sweep. */
+const wordTimestampLines = computed(() =>
+  new Set(
+    lyrics.lines
+      .map((line, index) => ({ line, index }))
+      .filter(({ line }) => lineHasWordTimestamps(line))
+      .map(({ index }) => index),
+  ),
 );
 
 const controlsVisible = ref(true);
@@ -255,9 +280,16 @@ function invalidateWordCache() {
 
 function rebuildWordCache(container: HTMLElement) {
   const words: CachedWord[] = [];
+  let hasMountedActiveLine = false;
   container.querySelectorAll<HTMLElement>('[data-lyric-active="true"]').forEach((element) => {
-    const line = lyrics.lines[Number(element.dataset.lyricIndex)];
+    const lineIndex = Number(element.dataset.lyricIndex);
+    const line = lyrics.lines[lineIndex];
     if (!line) return;
+    hasMountedActiveLine = true;
+    // Lines without genuine per-word timestamps have no word-by-word sweep to
+    // run; they are highlighted as a whole line instead (--word-progress stays
+    // at its initial 0%, so the gradient resolves to --word-rest everywhere).
+    if (!wordTimestampLines.value.has(lineIndex)) return;
     // Parsed lyrics are immutable; unwrap the reactive proxy once so the
     // update loop does not pay a proxy `get` trap for every word.
     const raw = toRaw(line);
@@ -267,9 +299,9 @@ function rebuildWordCache(container: HTMLElement) {
   });
   cachedWords = words;
   cachedSet = activeSet.value;
-  // A line outside the virtualizer's mounted range has no elements yet; retry
-  // later instead of querying the DOM on every tick.
-  wordCacheDirty = words.length === 0;
+  // Retry only when there are active lines mounted but none of them carry
+  // word timestamps yet; otherwise stop polling the DOM.
+  wordCacheDirty = hasMountedActiveLine && words.length === 0;
   wordCacheRetryAt = wordCacheDirty ? performance.now() + WORD_CACHE_RETRY_MS : 0;
 }
 
@@ -676,7 +708,7 @@ watch(
             @scroll-end="onVirtualScrollEnd"
           >
             <template #default="{ item: line, index: lineIndex }">
-              <div class="lyric-line" :class="{ 'is-active': activeSet.has(lineIndex), 'text-muted': !activeSet.has(lineIndex), 'is-bg': line.isBG, 'is-duet': line.isDuet }" :data-lyric-active="activeSet.has(lineIndex)" :data-lyric-primary="lineIndex === lyrics.activeIndex" :data-lyric-index="lineIndex">
+              <div class="lyric-line" :class="{ 'is-active': activeSet.has(lineIndex), 'text-muted': !activeSet.has(lineIndex), 'is-bg': line.isBG, 'is-duet': line.isDuet }" :data-lyric-active="activeSet.has(lineIndex)" :data-lyric-primary="lineIndex === lyrics.activeIndex" :data-lyric-index="lineIndex" :data-lyric-word-timestamps="wordTimestampLines.has(lineIndex)">
                 <p class="lyric-primary">
                   <template v-for="(word, wordIndex) in line.words" :key="wordIndex">
                     <ruby v-if="showRuby && word.ruby?.length" class="lyric-ruby">
@@ -788,6 +820,15 @@ watch(
   background-clip: text;
   color: transparent;
   -webkit-text-fill-color: transparent;
+}
+
+/*
+ * Lines that carry only a single line-level timestamp (no per-word timing)
+ * have no word sweep to run: lock --word-progress at 100% so the whole line
+ * paints in the accent ("sung") color instead of sitting flat at --word-rest.
+ */
+.lyric-line.is-active[data-lyric-word-timestamps="false"] .lyric-word {
+  --word-progress: 100%;
 }
 
 .lyric-line.is-bg.is-active .lyric-word {
