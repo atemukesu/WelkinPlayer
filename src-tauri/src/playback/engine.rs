@@ -100,8 +100,6 @@ pub struct DeviceInfo {
     /// could be probed). Software endpoints are bounded first, so this is a real
     /// music rate rather than a plugin's `384000` fiction.
     pub max_rate: u32,
-    /// The user's stored preference: 0 means "follow the device/file".
-    pub preferred_rate: u32,
 }
 
 /// The sample rates worth offering in the quality picker: the standard music
@@ -162,17 +160,15 @@ pub fn device_info() -> DeviceInfo {
         current_rate: 0,
         supported_rates,
         max_rate,
-        preferred_rate: 0,
     }
 }
 
-/// The rate to open the output stream at before a track is loaded (and as the
-/// fallback when auto mode has no better answer). cpal's ALSA default is
-/// hard-coded to prefer 44.1 kHz whenever the range allows it, which is why
-/// "follow device" would otherwise land on 44.1 kHz on a 48 kHz system. Prefer
-/// 48 kHz — the modern hardware standard — then 44.1 kHz, then the highest on
-/// offer, then cpal's own default as a last resort.
-fn preferred_device_rate() -> u32 {
+/// The rate to open the output stream at before a track is loaded. cpal's ALSA
+/// default is hard-coded to prefer 44.1 kHz whenever the range allows it, so
+/// we don't hand the stream to cpal unmodified: prefer 48 kHz — the modern
+/// hardware standard — then 44.1 kHz, then the highest on offer, then cpal's
+/// own default as a last resort.
+fn default_output_rate() -> u32 {
     let supported = device_info().supported_rates;
     if supported.contains(&48_000) {
         return 48_000;
@@ -204,8 +200,6 @@ pub struct Shared {
     native_rate: AtomicU32,
     /// The rate the output stream is currently opened at, for the quality UI.
     device_rate: AtomicU32,
-    /// User's preferred output rate; 0 = follow the device stream rate.
-    preferred_rate: AtomicU32,
     duration_ms: AtomicU64,
     transport: AtomicU8,
     worker_started: AtomicBool,
@@ -269,7 +263,6 @@ impl Shared {
             sample_rate: AtomicU32::new(44_100),
             native_rate: AtomicU32::new(0),
             device_rate: AtomicU32::new(0),
-            preferred_rate: AtomicU32::new(0),
             duration_ms: AtomicU64::new(0),
             transport: AtomicU8::new(Transport::Idle as u8),
             worker_started: AtomicBool::new(false),
@@ -312,11 +305,6 @@ impl Shared {
     /// Live output stream rate, for the quality UI.
     pub fn device_rate(&self) -> u32 {
         self.device_rate.load(Ordering::Relaxed)
-    }
-
-    /// User's stored output-rate preference (0 = follow the device).
-    pub fn preferred_rate(&self) -> u32 {
-        self.preferred_rate.load(Ordering::Relaxed)
     }
 
     pub fn set_paused(&self, paused: bool) {
@@ -740,9 +728,8 @@ pub enum Command {
     SetTempo {
         rate: f32,
     },
-    /// User-selected output quality: `0` follows the device's default stream
-    /// rate, any other value asks for that exact rate. Reopens the output
-    /// stream and resyncs the current track without dropping playback.
+    /// User-selected output quality: the output stream is reopened at this
+    /// exact rate and resyncs the current track without dropping playback.
     SetQuality {
         rate: u32,
     },
@@ -1137,28 +1124,22 @@ mod worker {
         Ok(stretch)
     }
 
-    /// Open an output stream, optionally pinned to a requested sample rate.
-    ///
-    /// `rate == 0` means "follow the device": open at the device's preferred
-    /// rate (48 kHz-first), *not* cpal's `open_default_stream()`, which is
-    /// hard-coded to 44.1 kHz on the Linux plugin endpoints. A non-zero rate
-    /// asks for that exact rate; if the device refuses it we fall back to the
-    /// preferred rate so a bad preference can never leave the engine without
-    /// output.
+    /// Open an output stream pinned to the requested sample rate. If the device
+    /// refuses it we fall back to the default output rate so a bad preference
+    /// can never leave the engine without output.
     fn open_stream(rate: u32) -> Result<OutputStream, String> {
-        let target = if rate == 0 { preferred_device_rate() } else { rate };
         let device = rodio::cpal::default_host()
             .default_output_device()
             .ok_or_else(|| "no output device".to_string())?;
         let stream = OutputStreamBuilder::default()
             .with_device(device.clone())
-            .with_sample_rate(target)
+            .with_sample_rate(rate)
             .open_stream();
         match stream {
             Ok(stream) => Ok(stream),
             Err(error) => {
                 log::warn!(
-                    "playback engine: {target} Hz output rejected ({error}), falling back to device default"
+                    "playback engine: {rate} Hz output rejected ({error}), falling back to device default"
                 );
                 Ok::<_, String>(
                     OutputStreamBuilder::default()
@@ -1199,9 +1180,11 @@ mod worker {
     ) {
         log::info!("playback: worker thread starting, opening output stream");
         shared.worker_started.store(true, Ordering::Release);
-        // Open at the device's preferred rate rather than cpal's 44.1 kHz
-        // default, so "follow device" reflects 48 kHz hardware correctly.
-        let initial_rate = preferred_device_rate();
+        // Open at a sane default rate rather than cpal's 44.1 kHz hard-coded
+        // default, which on ALSA/PipeWire/Pulse prefers 44.1 kHz even on 48 kHz
+        // hardware. The frontend pins the real rate via `audio_set_quality`
+        // before the first track loads, which reopens the stream.
+        let initial_rate = default_output_rate();
         let stream = open_stream(initial_rate).or_else(|error| {
             log::warn!("playback engine: opening {initial_rate} Hz output failed ({error}); using device default");
             OutputStreamBuilder::open_default_stream().map_err(|fallback| fallback.to_string())
@@ -1235,25 +1218,24 @@ mod worker {
             pending_tempo: None,
             last_trace: std::time::Instant::now(),
         };
-        worker.publish_device_rates(0);
+        worker.publish_device_rates();
         worker.loop_forever(rx);
     }
 
     impl Worker {
         /// Publish the live stream rate, the device's advertised maximum, and
-        /// the user's preference, so the quality UI can warn about over-asking.
-        fn publish_device_rates(&self, preferred: u32) {
+        /// Publish the live stream rate so the quality UI reflects reality.
+        fn publish_device_rates(&self) {
             self.shared.device_rate.store(self.device_rate, Ordering::Relaxed);
-            self.shared.preferred_rate.store(preferred, Ordering::Relaxed);
         }
 
         /// Apply a new output-quality preference: reopen the output stream at
-        /// the requested rate (0 = device default) and resync the current track.
+        /// the requested rate and resync the current track.
         fn set_quality(&mut self, rate: u32) {
-            if rate == self.shared.preferred_rate.load(Ordering::Relaxed) {
+            if rate == self.device_rate {
                 return;
             }
-            log::info!("playback: quality change requested -> {rate} Hz (0 = device default)");
+            log::info!("playback: quality change requested -> {rate} Hz");
             let was_paused = self.shared.is_paused();
             let location = self
                 .shared
@@ -1283,7 +1265,7 @@ mod worker {
             // the device rejected it and we fell back to its default.
             self.stream = stream;
             self.device_rate = actual;
-            self.publish_device_rates(rate);
+            self.publish_device_rates();
             log::info!("playback: output stream reopened at {actual} Hz (asked {rate})");
 
             // The old mixer's sources are invalidated by the generation bump;
@@ -1446,14 +1428,12 @@ mod worker {
 
             let channels = decoder.channels().max(1);
             let rate = decoder.sample_rate().max(1);
-            // Auto-following the file's sample rate is disabled: the output
-            // rate is determined solely by the user's explicit preference (or
-            // the device default when none is set).
-            // Snap the user's preferred rate down to the nearest standard rate
-            // not exceeding the file's native rate.
-            let preferred = self.shared.preferred_rate.load(Ordering::Relaxed);
+            // The output stream rate is fixed by the user's explicit quality
+            // choice (or the default output rate); the work rate is just the
+            // nearest standard rate <= the device rate, capped at the file's
+            // native rate.
             let standard = [44_100u32, 48_000, 88_200, 96_000, 176_400, 192_000];
-            let cap = if preferred > 0 { preferred.min(rate) } else { rate };
+            let cap = self.device_rate.min(rate);
             let mut work_rate = standard[0];
             for &r in &standard {
                 if r <= cap { work_rate = r; } else { break; }

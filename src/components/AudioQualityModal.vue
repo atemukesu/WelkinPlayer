@@ -13,25 +13,25 @@ import * as audioQuality from "../lib/audioQuality";
 const { t } = useI18n();
 const player = usePlayerStore();
 
-/** `0` = follow the device; otherwise the pinned output rate in Hz. */
+/** The pinned output rate in Hz, chosen by the user. */
 const chosen = computed(() => audioQuality.preferredRate.value);
 
 /**
- * Every rate the engine knows how to run at. All of them stay selectable even
- * when the device does not report them — picking one just warns, since the OS
- * will resample. Rates the device does not list are marked as such.
+ * Every rate the engine knows how to run at. Rates the device does not report
+ * are marked as such — picking one just warns, since the OS will resample.
  */
 const STANDARD_RATES = [44_100, 48_000, 88_200, 96_000, 176_400, 192_000];
 
 const options = computed(() => {
   const fileRate = player.sampleRate || 0;
   const cap = fileRate > 0 ? fileRate : STANDARD_RATES[STANDARD_RATES.length - 1];
+  const supported = audioQuality.deviceInfo.value?.supportedRates ?? [];
   return STANDARD_RATES
     .filter((rate) => rate <= cap)
     .map((rate) => ({
       value: rate,
       label: audioQuality.formatRate(rate),
-      unsupported: false,
+      unsupported: supported.length > 0 && !supported.includes(rate),
     }));
 });
 

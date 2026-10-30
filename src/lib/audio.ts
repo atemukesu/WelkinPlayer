@@ -356,9 +356,7 @@ async function bootstrap(): Promise<void> {
   await invoke("audio_set_speed", { rate: player.playbackRate }).catch(() => {});
   // Apply the stored output-quality preference before the first load, so the
   // engine opens the stream at the right rate from the start.
-  if (preferredRate.value > 0) {
-    await invoke("audio_set_quality", { rate: preferredRate.value }).catch(() => {});
-  }
+  await invoke("audio_set_quality", { rate: preferredRate.value }).catch(() => {});
   await syncTrack();
 
   syncBuffered();

@@ -76,12 +76,10 @@ pub fn audio_device_info(engine: State<Engine>) -> DeviceInfo {
     let shared = engine.shared();
     let mut info = device_info();
     info.current_rate = shared.device_rate();
-    info.preferred_rate = shared.preferred_rate();
     info
 }
 
-/// Choose the output quality. `rate == 0` follows the device default;
-/// otherwise the stream is reopened at that exact rate.
+/// Choose the output quality. The output stream is reopened at the given rate.
 #[tauri::command]
 pub fn audio_set_quality(engine: State<Engine>, rate: u32) -> Result<(), AppError> {
     engine.send(Command::SetQuality { rate })
