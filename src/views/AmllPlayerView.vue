@@ -213,6 +213,9 @@ watch(
 const repeatTitle = computed(() => player.repeat === "one" ? t("controls.repeatOne") : player.repeat === "all" ? t("controls.repeatAll") : t("controls.repeatOff"));
 const shuffleTitle = computed(() => player.shuffle ? t("controls.shuffleOn") : t("controls.shuffleOff"));
 
+/** True when the rate actually playing is Hi-Res (above the 48 kHz CD ceiling). */
+const isHiRes = computed(() => player.outputRate > 48000);
+
 /**
  * AMLL deep-clones its input with `structuredClone`, which rejects Vue's
  * reactive proxies — hand it the raw (non-reactive) lyric data instead. Also
@@ -387,6 +390,8 @@ function onLyricSeek(timeMs: number) {
           </div>
           <div class="mt-1.5 flex items-center justify-between font-mono text-xs tabular-nums text-white/60">
             <span>{{ player.elapsedTime }}</span>
+            <span v-if="isHiRes" class="select-none text-[11px] tracking-wide">Hi-Res</span>
+            <span v-else></span>
             <button
               type="button"
               class="transition hover:text-white"

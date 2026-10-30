@@ -181,6 +181,8 @@ const repeatTitle = computed(() => player.repeat === "one" ? t("controls.repeatO
 const shuffleTitle = computed(() => player.shuffle ? t("controls.shuffleOn") : t("controls.shuffleOff"));
 /** Whether the total-time label toggles to show the remaining time instead. */
 const showRemaining = ref(false);
+/** True when the rate actually playing is Hi-Res (above the 48 kHz CD ceiling). */
+const isHiRes = computed(() => player.outputRate > 48000);
 
 /**
  * Scrub state. While the user drags, the slider shows `seekValue` instead of
@@ -689,6 +691,8 @@ watch(
           </div>
           <div class="mt-1.5 flex items-center justify-between font-mono text-[13px] tabular-nums text-muted">
             <span>{{ elapsedDisplay }}</span>
+            <span v-if="isHiRes" class="select-none text-[12px] tracking-wide">Hi-Res</span>
+            <span v-else></span>
             <button type="button" class="transition-colors hover:text-fg" :aria-pressed="showRemaining" @click="showRemaining = !showRemaining">
               <template v-if="showRemaining">-{{ remainingDisplay }}</template>
               <template v-else>{{ player.totalTime }}</template>
