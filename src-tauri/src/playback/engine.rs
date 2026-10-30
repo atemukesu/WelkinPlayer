@@ -1162,8 +1162,14 @@ mod worker {
         stream: OutputStream,
         /// Device output rate, in samples per second. The work rate never
         /// exceeds it: a 96 kHz file plays on a 48 kHz device at 48 kHz, with
-        /// WSOLA and the ring all running at 48 kHz.
+        /// WSOLA and the ring all running at 48 kHz. While a track is loaded
+        /// this equals the file's native rate capped by `selected_rate`, so a
+        /// lower-rate file is never upsampled to a higher output rate.
         device_rate: u32,
+        /// The user's chosen output-quality ceiling (from the picker). The live
+        /// `device_rate` is `min(selected_rate, file rate)`, so HD files use the
+        /// higher rate and lower-rate files stay at their native rate.
+        selected_rate: u32,
         current: Option<Current>,
         pending_tempo: Option<f32>,
         /// Throttles the worker-loop heartbeat.
@@ -1214,6 +1220,7 @@ mod worker {
             ring: Ring::new(1).0,
             stream,
             device_rate,
+            selected_rate: initial_rate,
             current: None,
             pending_tempo: None,
             last_trace: std::time::Instant::now(),
@@ -1230,12 +1237,22 @@ mod worker {
         }
 
         /// Apply a new output-quality preference: reopen the output stream at
-        /// the requested rate and resync the current track.
+        /// `min(rate, current file rate)` and resync the current track. The
+        /// output rate is never raised above the file's native rate, so a 48 kHz
+        /// track on a 96 kHz selection plays natively at 48 kHz instead of
+        /// being upsampled.
         fn set_quality(&mut self, rate: u32) {
-            if rate == self.device_rate {
+            self.selected_rate = rate;
+            let file_rate = self.shared.native_rate.load(Ordering::Relaxed);
+            let target = if file_rate > 0 {
+                rate.min(file_rate)
+            } else {
+                rate
+            };
+            if target == self.device_rate {
                 return;
             }
-            log::info!("playback: quality change requested -> {rate} Hz");
+            log::info!("playback: quality change requested -> {rate} Hz (file {file_rate} Hz, opening {target} Hz)");
             let was_paused = self.shared.is_paused();
             let location = self
                 .shared
@@ -1245,7 +1262,7 @@ mod worker {
                 .clone();
             let position = self.shared.position_secs();
 
-            let stream = match open_stream(rate) {
+            let stream = match open_stream(target) {
                 Ok(stream) => stream,
                 Err(error) => {
                     log::error!("playback engine: reopening output stream failed: {error}");
@@ -1266,7 +1283,7 @@ mod worker {
             self.stream = stream;
             self.device_rate = actual;
             self.publish_device_rates();
-            log::info!("playback: output stream reopened at {actual} Hz (asked {rate})");
+            log::info!("playback: output stream reopened at {actual} Hz (asked {target})");
 
             // The old mixer's sources are invalidated by the generation bump;
             // rebuild the current track against the new stream.
@@ -1428,10 +1445,28 @@ mod worker {
 
             let channels = decoder.channels().max(1);
             let rate = decoder.sample_rate().max(1);
-            // The output stream rate is fixed by the user's explicit quality
-            // choice (or the default output rate); the work rate is just the
-            // nearest standard rate <= the device rate, capped at the file's
-            // native rate.
+            // The output stream runs at `min(selected_quality, file rate)` so a
+            // lower-rate file is never upsampled to a higher output rate. Reopen
+            // the stream when that differs from what is currently open.
+            let output_rate = self.selected_rate.min(rate);
+            if output_rate != self.device_rate {
+                log::info!(
+                    "playback: reopening output stream for {rate} Hz file at {output_rate} Hz (quality {})",
+                    self.selected_rate,
+                );
+                match open_stream(output_rate) {
+                    Ok(stream) => {
+                        self.stream = stream;
+                        self.device_rate = self.stream.config().sample_rate();
+                        self.publish_device_rates();
+                    }
+                    Err(error) => {
+                        log::warn!("playback: reopening output stream at {output_rate} Hz failed: {error}");
+                    }
+                }
+            }
+            // The work rate is the nearest standard rate <= the device rate,
+            // capped at the file's native rate.
             let standard = [44_100u32, 48_000, 88_200, 96_000, 176_400, 192_000];
             let cap = self.device_rate.min(rate);
             let mut work_rate = standard[0];
