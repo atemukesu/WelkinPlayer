@@ -199,8 +199,27 @@
     return result;
   }
 
+  /**
+   * A line carries genuine per-word timestamps only when its words have
+   * distinct, valid start times. Line-level timing (every word shares one
+   * timestamp) means there is no word-by-word sweep to run, so the whole line
+   * is highlighted instead of attempting a per-word animation.
+   */
+  function lineHasWordTimestamps(line) {
+    var words = Array.isArray(line.words) ? line.words : [];
+    if (words.length < 2) return false;
+    var starts = [];
+    for (var i = 0; i < words.length; i++) {
+      var start = Number(words[i].start);
+      if (!Number.isFinite(start)) return false;
+      starts.push(start);
+    }
+    return new Set(starts).size > 1;
+  }
+
   function makeWords(line) {
-    var words = Array.isArray(line.words) && line.words.length ? line.words : [{ text: line.text || "", start: 0, end: 0 }];
+    var rawWords = Array.isArray(line.words) ? line.words : [];
+    var words = rawWords.length ? rawWords : [{ text: line.text || "", start: 0, end: 0 }];
     var fragment = document.createDocumentFragment();
     var elements = [];
     for (var i = 0; i < words.length; i++) {
@@ -211,7 +230,7 @@
       fragment.appendChild(element);
       elements.push(element);
     }
-    return { fragment: fragment, elements: elements, data: words };
+    return { fragment: fragment, elements: elements, data: words, hasTimestamps: lineHasWordTimestamps(rawWords) };
   }
 
   // The second voice of a duet hugs the right edge. A background line follows
@@ -231,10 +250,10 @@
   // vocals. Both participate in the karaoke sweep; only the size differs.
   function makeLine(line, kind) {
     var paragraph = document.createElement("div");
-    paragraph.className = "lyric-line " + kind + (isCounterLine(line) ? " duet" : "");
+    paragraph.className = "lyric-line " + kind + (isCounterLine(line) ? " duet" : "") + (lineHasWordTimestamps(line) ? "" : " whole-line");
     var words = makeWords(line);
     paragraph.appendChild(words.fragment);
-    return { el: paragraph, words: words.elements, wordData: words.data };
+    return { el: paragraph, words: words.elements, wordData: words.data, hasTimestamps: words.hasTimestamps };
   }
 
   function makeSubline(text, className, counter) {
@@ -252,7 +271,7 @@
     var counter = isCounterLine(entry.line);
     if (state.settings && state.settings.translation && entry.line.translation) group.appendChild(makeSubline(entry.line.translation, "translation", counter));
     if (entry.line.roman) group.appendChild(makeSubline(entry.line.roman, "roman", counter));
-    return { el: group, wordSets: [{ elements: line.words, data: line.wordData }] };
+    return { el: group, wordSets: [{ elements: line.words, data: line.wordData, hasTimestamps: line.hasTimestamps }] };
   }
 
   function buildExtraItem(entry) {
@@ -263,14 +282,14 @@
     if (entry.line.isBG) {
       var bg = makeLine(entry.line, "bg");
       wrapper.appendChild(bg.el);
-      wordSets.push({ elements: bg.words, data: bg.wordData });
+      wordSets.push({ elements: bg.words, data: bg.wordData, hasTimestamps: bg.hasTimestamps });
       var bgCounter = isCounterLine(entry.line);
       if (state.settings && state.settings.translation && entry.line.translation) wrapper.appendChild(makeSubline(entry.line.translation, "translation bg-translation", bgCounter));
       if (entry.line.roman) wrapper.appendChild(makeSubline(entry.line.roman, "roman", bgCounter));
     } else {
       var duet = makeLine(entry.line, "primary");
       wrapper.appendChild(duet.el);
-      wordSets.push({ elements: duet.words, data: duet.wordData });
+      wordSets.push({ elements: duet.words, data: duet.wordData, hasTimestamps: duet.hasTimestamps });
       var counter = isCounterLine(entry.line);
       if (state.settings && state.settings.translation && entry.line.translation) wrapper.appendChild(makeSubline(entry.line.translation, "translation", counter));
       if (entry.line.roman) wrapper.appendChild(makeSubline(entry.line.roman, "roman", counter));
@@ -461,11 +480,16 @@
     if (!state.currentNode || !state.settings) return;
     var sets = state.currentWordSets;
     for (var s = 0; s < sets.length; s++) {
-      var elements = sets[s].elements;
-      var data = sets[s].data;
+      var set = sets[s];
+      // Lines without genuine per-word timestamps have no word sweep to run;
+      // lock the karaoke clip at 100% so the whole line paints in the active
+      // color instead of sitting flat at the base text color.
+      var wholeLine = !set.hasTimestamps;
+      var elements = set.elements;
+      var data = set.data;
       for (var i = 0; i < elements.length; i++) {
         var word = data[i];
-        var progress = 0;
+        var progress = wholeLine ? 1 : 0;
         if (word) progress = Math.max(0, Math.min(1, (position - word.start) / Math.max(1, word.end - word.start)));
         elements[i].style.setProperty("--p", progress * 100 + "%");
         elements[i].classList.toggle("is-unplayed", progress <= 0);
