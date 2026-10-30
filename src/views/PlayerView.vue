@@ -609,12 +609,36 @@ watch(
     <div class="pointer-events-none absolute inset-0 opacity-20" :style="{ background: `radial-gradient(circle at 20% 20%, ${player.currentTrack.color}, transparent 55%), radial-gradient(circle at 80% 80%, ${player.currentTrack.color}, transparent 55%)` }"></div>
     <div class="pointer-events-none absolute -right-32 top-1/2 h-[150%] w-40 rotate-[18deg] bg-accent/10"></div>
     <div class="pointer-events-none absolute -left-24 bottom-0 h-[60%] w-24 -rotate-[18deg] bg-accent/5"></div>
-    <header class="relative z-10 flex h-16 shrink-0 items-center px-5">
-      <div class="ml-auto flex items-center gap-3">
+    <header class="pointer-events-none absolute inset-x-0 top-[env(safe-area-inset-top)] z-20 h-16 px-4 md:hidden">
+      <div class="flex h-full min-w-0 items-center gap-3">
+        <span
+          class="ak-frame grid h-10 w-10 shrink-0 place-items-center overflow-hidden text-sm font-black text-white/90"
+          :style="{ backgroundColor: player.currentTrack.color }"
+        >
+          <img v-if="player.currentTrack.cover" :src="player.currentTrack.cover" alt="" decoding="async" class="h-full w-full object-cover" />
+          <LoaderCircle v-else-if="coverPending(player.currentTrack)" :size="16" :stroke-width="2" class="animate-spin" />
+          <template v-else>{{ initial(player.currentTrack) }}</template>
+        </span>
+        <span class="grid min-w-0 gap-0.5">
+          <strong class="truncate text-sm font-semibold leading-tight">{{ player.currentTrack.title }}</strong>
+          <button
+            v-if="player.currentTrack.artist"
+            type="button"
+            class="truncate text-left text-xs leading-tight text-dim transition-colors hover:text-accent"
+            :title="t('library.openArtist')"
+            @click="emit('openArtist', player.currentTrack.artist)"
+          >
+            {{ player.currentTrack.artist }}
+          </button>
+        </span>
+      </div>
+    </header>
+
+    <div class="pointer-events-none absolute right-8 top-[calc(env(safe-area-inset-top)+2rem)] z-30">
+      <div class="flex items-center gap-4 transition-all duration-300 ease-out" :class="revealClass">
         <button
           type="button"
-          class="grid h-10 w-10 place-items-center border border-line text-muted transition-all duration-300 ease-out hover:border-fg hover:text-fg"
-          :class="revealClass"
+          class="grid h-10 w-10 shrink-0 place-items-center border border-line bg-bg/60 text-muted backdrop-blur transition-all duration-300 ease-out hover:border-fg hover:text-fg"
           :title="t('controls.return')"
           :aria-label="t('controls.return')"
           @click="emit('navigate', returnView)"
@@ -623,8 +647,7 @@ watch(
         </button>
         <button
           type="button"
-          class="grid h-10 w-10 place-items-center border border-line text-muted transition-all duration-300 ease-out hover:border-fg hover:text-fg"
-          :class="revealClass"
+          class="grid h-10 w-10 shrink-0 place-items-center border border-line bg-bg/60 text-muted backdrop-blur transition-all duration-300 ease-out hover:border-fg hover:text-fg"
           :title="fullscreenTitle"
           :aria-label="fullscreenTitle"
           :aria-pressed="isFullscreen"
@@ -634,9 +657,9 @@ watch(
           <Maximize2 v-else :size="16" :stroke-width="2" />
         </button>
       </div>
-    </header>
-    <div class="relative z-10 grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] gap-6 overflow-hidden px-5 py-4 md:grid-cols-[minmax(220px,0.34fr)_minmax(0,0.66fr)] md:grid-rows-1 md:gap-12 md:px-10 md:py-8 lg:grid-cols-[minmax(280px,0.32fr)_minmax(0,0.68fr)] lg:gap-16 lg:px-16">
-      <div class="order-2 flex min-h-0 flex-col justify-end md:order-none md:justify-center">
+    </div>
+    <div class="relative z-10 grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] gap-6 overflow-hidden px-5 pt-[env(safe-area-inset-top)] py-4 md:grid-cols-[minmax(220px,0.34fr)_minmax(0,0.66fr)] md:grid-rows-1 md:gap-12 md:px-10 md:py-8 lg:grid-cols-[minmax(280px,0.32fr)_minmax(0,0.68fr)] lg:gap-16 lg:px-16">
+      <div class="amll-controls order-2 flex min-h-0 flex-col justify-end md:order-none md:justify-center" :data-collapsed="controlsVisible ? 'false' : 'true'">
         <div class="ak-frame mx-auto hidden aspect-square w-full max-w-[420px] overflow-hidden md:block" :style="{ backgroundColor: player.currentTrack.color }">
           <img v-if="player.currentTrack.cover" :src="player.currentTrack.cover" alt="" decoding="async" class="h-full w-full object-cover" />
           <span v-else-if="coverPending(player.currentTrack)" class="grid h-full w-full place-items-center text-white/90"><LoaderCircle :size="40" :stroke-width="1.8" class="animate-spin" /></span>
@@ -694,11 +717,8 @@ watch(
           </div>
         </div>
       </div>
-      <div class="order-1 flex min-h-0 min-w-0 flex-col justify-center md:order-none">
-         <div class="mb-4 md:hidden">
-          <h1 class="mt-2 truncate text-xl font-black leading-none tracking-tight">{{ player.currentTrack.title }}</h1>
-         </div>
-         <div ref="lyricsScroll" class="lyrics-scroll min-h-0 flex-1 overflow-y-auto border-l border-line pl-6 md:max-h-[76vh] md:pl-10" :class="{ 'lyric-at-top': lyricAtTop, 'lyric-at-bottom': lyricAtBottom }" :style="{ '--line-size': `${lyrics.classic.lineSize}px`, '--translation-size': `${lyrics.classic.translationSize}px`, '--line-spacing': `${lyrics.classic.lineSpacing}px`, '--line-weight': lyrics.classic.fontWeight, '--line-weight-active': lyricActiveWeight, fontFamily: lyricFontFamily }">
+      <div class="order-1 flex min-h-0 min-w-0 flex-col justify-center pt-16 md:order-none md:pt-0">
+         <div ref="lyricsScroll" class="lyrics-scroll min-h-0 flex-1 overflow-y-auto pl-6 md:max-h-[76vh] md:border-l md:border-line md:pl-10" :class="{ 'lyric-at-top': lyricAtTop, 'lyric-at-bottom': lyricAtBottom }" :style="{ '--line-size': `${lyrics.classic.lineSize}px`, '--translation-size': `${lyrics.classic.translationSize}px`, '--line-spacing': `${lyrics.classic.lineSpacing}px`, '--line-weight': lyrics.classic.fontWeight, '--line-weight-active': lyricActiveWeight, fontFamily: lyricFontFamily }">
           <Virtualizer
             ref="lyricsVirtualizer"
             :data="lyrics.lines"
@@ -728,7 +748,7 @@ watch(
         </div>
       </div>
     </div>
-    <div class="player-waveform relative z-10 shrink-0">
+    <div class="player-waveform pointer-events-none relative z-30 shrink-0 text-accent md:absolute md:inset-x-0 md:bottom-0">
       <RealtimeWaveform fit class="text-accent" />
     </div>
   </div>
@@ -918,6 +938,35 @@ watch(
 @media (min-width: 640px) {
   .lyric-primary {
     font-size: var(--line-size, 24px);
+  }
+}
+
+/*
+ * Mobile: the transport controls own a region below the lyrics. When they
+ * auto-hide the region collapses to zero height, so the lyrics reclaim the
+ * space instead of leaving a blank strip. A grid-row `0fr` collapse does NOT
+ * work here because the container's height is auto inside a flex column, so
+ * animate `max-height` instead.
+ */
+.amll-controls {
+  max-height: 230px;
+  overflow: hidden;
+  transition: max-height 320ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 220ms ease;
+}
+
+.amll-controls[data-collapsed="true"] {
+  max-height: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+@media (min-width: 768px) {
+  .amll-controls,
+  .amll-controls[data-collapsed="true"] {
+    max-height: none;
+    overflow: visible;
+    opacity: 1;
+    pointer-events: auto;
   }
 }
 
