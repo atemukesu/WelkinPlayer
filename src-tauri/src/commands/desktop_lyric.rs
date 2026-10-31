@@ -216,6 +216,8 @@ fn emit_tick(
     }
     #[cfg(target_os = "android")]
     {
+        // Android feeds the WebView over JNI; `app` is only read on desktop.
+        let _ = app;
         if let Ok(json) = serde_json::to_string(&payload) {
             let _ = crate::platform::android::desktop_lyric_update("tick", &json);
         }

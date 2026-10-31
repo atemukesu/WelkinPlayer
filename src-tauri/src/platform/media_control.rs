@@ -17,7 +17,11 @@
 //! controls keep working when the webview is backgrounded or dead.
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
+// `Manager` (try_state / get_webview_window) is only reached from desktop-gated
+// code; on Android it would be an unused import.
+#[cfg(desktop)]
+use tauri::Manager;
 
 use crate::core::error::AppError;
 
@@ -113,8 +117,6 @@ pub struct MediaControlState {
 /// message loop and macOS its `NSApplication`).
 #[cfg(desktop)]
 pub fn init(app: &AppHandle) {
-    use tauri::Manager;
-
     let config = PlatformConfig {
         // souvlaki registers `org.mpris.MediaPlayer2.<dbus_name>` on Linux, so
         // this must be the bare player suffix — passing a full
@@ -159,7 +161,6 @@ pub fn init(app: &AppHandle) {
 /// Raw `HWND` for Windows SMTC; unused on macOS/Linux.
 #[cfg(all(desktop, target_os = "windows"))]
 fn platform_hwnd(app: &AppHandle) -> Option<*mut std::ffi::c_void> {
-    use tauri::Manager;
     let window = app.get_webview_window("main")?;
     window.hwnd().ok().map(|hwnd| hwnd.0)
 }
