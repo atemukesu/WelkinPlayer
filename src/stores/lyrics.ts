@@ -413,6 +413,20 @@ export const useLyricsStore = defineStore("lyrics", () => {
     return Math.min(1, Math.max(0, (positionMs - word.startTime) / duration));
   }
 
+  /**
+   * Progress of a line that carries only a line-level timestamp (no per-word
+   * timing). Every word in the line shares this value, so the whole line lights
+   * up at once when the line's window is reached — instead of sitting flat at
+   * the base color the entire time it is active.
+   */
+  function lineProgress(line: LyricLine, positionMs: number) {
+    const start = Number(line.startTime);
+    if (!Number.isFinite(start)) return 0;
+    const end = Number(line.endTime);
+    if (!Number.isFinite(end) || end <= start) return positionMs >= start ? 1 : 0;
+    return Math.min(1, Math.max(0, (positionMs - start) / (end - start)));
+  }
+
   /** Replace the active set only when it really changed (avoids a re-render every tick). */
   function setActiveIndices(next: number[]) {
     const current = activeIndices.value;
@@ -469,5 +483,6 @@ export const useLyricsStore = defineStore("lyrics", () => {
     reset,
     sync,
     wordProgress,
+    lineProgress,
   };
 });

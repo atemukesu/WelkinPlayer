@@ -266,7 +266,11 @@ function syncLyrics() {
 // Cache active word elements + their (line, wordIndex) so we don't re-query
 // the DOM every frame. Invalidated when the active set changes, when a
 // virtualized row is remounted, or when the lyric data itself changes.
-type CachedWord = { el: HTMLElement; rt: HTMLElement | null; line: LyricLine; wordIndex: number };
+//
+// `wholeLine` marks lines that carry only a line-level timestamp (no per-word
+// timing). They have no word-by-word sweep, so every word in the line shares
+// one progress derived from the line's own start/end instead.
+type CachedWord = { el: HTMLElement; rt: HTMLElement | null; line: LyricLine; wordIndex: number; wholeLine: boolean };
 let cachedWords: CachedWord[] | null = null;
 let cachedSet: Set<number> | null = null;
 let wordCacheDirty = true;
@@ -289,14 +293,14 @@ function rebuildWordCache(container: HTMLElement) {
     if (!line) return;
     hasMountedActiveLine = true;
     // Lines without genuine per-word timestamps have no word-by-word sweep to
-    // run; they are highlighted as a whole line instead (--word-progress stays
-    // at its initial 0%, so the gradient resolves to --word-rest everywhere).
-    if (!wordTimestampLines.value.has(lineIndex)) return;
+    // run; they are highlighted as a whole line instead, using the line's own
+    // start/end so they only light up while the line is actually being sung.
+    const wholeLine = !wordTimestampLines.value.has(lineIndex);
     // Parsed lyrics are immutable; unwrap the reactive proxy once so the
     // update loop does not pay a proxy `get` trap for every word.
     const raw = toRaw(line);
     element.querySelectorAll<HTMLElement>(".lyric-word").forEach((word, wordIndex) => {
-      words.push({ el: word, rt: word.closest("ruby")?.querySelector<HTMLElement>("rt") ?? null, line: raw, wordIndex });
+      words.push({ el: word, rt: word.closest("ruby")?.querySelector<HTMLElement>("rt") ?? null, line: raw, wordIndex, wholeLine });
     });
   });
   cachedWords = words;
@@ -326,7 +330,11 @@ function updateWordProgress(positionMs: number) {
   }
   if (!cachedWords?.length) return;
   for (const w of cachedWords) {
-    const p = lyrics.wordProgress(w.line, w.wordIndex, positionMs);
+    // A line-level-only line has no per-word timing; drive every word from the
+    // line's own start/end so the whole line lights up at once when sung.
+    const p = w.wholeLine
+      ? lyrics.lineProgress(w.line, positionMs)
+      : lyrics.wordProgress(w.line, w.wordIndex, positionMs);
     const prev = wordProgressCache.get(w.el);
     if (prev !== undefined && Math.abs(p - prev) < WORD_PROGRESS_EPSILON) continue;
     wordProgressCache.set(w.el, p);
@@ -851,9 +859,12 @@ watch(
  * have no word sweep to run: lock --word-progress at 100% so the whole line
  * paints in the accent ("sung") color instead of sitting flat at --word-rest.
  */
-.lyric-line.is-active[data-lyric-word-timestamps="false"] .lyric-word {
-  --word-progress: 100%;
-}
+/*
+ * Lines that carry only a line-level timestamp (no per-word timing) are
+ * highlighted as a whole line: every word shares one progress value derived
+ * from the line's own start/end, so the line lights up at once when sung.
+ * The progress itself is written by updateWordProgress, not hardcoded here.
+ */
 
 .lyric-line.is-bg.is-active .lyric-word {
   --word-sung: var(--accent);
