@@ -7,6 +7,8 @@
 import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch, watchEffect } from "vue";
 import { useI18n } from "vue-i18n";
 import { describeError, invoke } from "./api";
+import { listen } from "@tauri-apps/api/event";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import { initAudio, resumeAt } from "./lib/audio";
 import { accents } from "./lib/app";
 import type { Accent, Theme, View } from "./lib/app";
@@ -35,7 +37,7 @@ function bootMediaControl() {
 }
 import { pushToast } from "./lib/toast";
 import { usePlayerStore } from "./stores/player";
-import type { Track } from "./stores/player";
+import type { Track, PlaybackSnapshot } from "./stores/player";
 import { useSourcesStore } from "./stores/sources";
 import { useProfileStore } from "./stores/profile";
 import { usePlaybackStore } from "./stores/playback";
@@ -121,6 +123,9 @@ let resumedKey = "";
 /** Local-only safety-net cadence (ms) for periodic progress writes while playing. */
 const POSITION_SAVE_INTERVAL_MS = 30_000;
 
+/** Listener for the Rust `playback:changed` snapshot that mirrors into the store. */
+let unlistenPlayback: UnlistenFn | null = null;
+
 // The full-screen player, track-info, the track editors and the sponsor view are
 // overlays that sit on top of whatever page was open, so they must not change
 // `baseView`; everything else (including the folder browser) becomes the
@@ -165,6 +170,13 @@ watch(() => player.currentTrack?.id, () => metadata.request(player.currentTrack)
 // The local copy lands first; the authoritative remote copy may arrive later.
 // Keep accepting it until the user starts playing, then ignore any late reply
 // so it cannot yank playback out from under them.
+//
+// The play queue and selection now live in Rust: we hand the persisted queue to
+// `player.restoreQueue`, which pushes it into the Rust context via
+// `playback_restore`. Rust mirrors the result back through `playback:changed`,
+// which fills the store (currentTrack, queue, isPlaying, …). We only apply the
+// *resume position* here, which `audio.ts` clamps once the track's real
+// duration is known.
 watch(
   [() => playback.ready, () => player.tracks.length, () => playback.path, () => playback.position],
   () => {
@@ -185,22 +197,14 @@ watch(
     restoringPlayback = true;
     // Prefer the saved play queue so the exact playlist/context resumes; fall
     // back to just the track when no queue was stored (older state).
-    if (!(playback.queue.length > 0 && player.restoreQueue(playback.queue, playback.queueIndex, stored))) {
-      player.currentTrack = track;
-    } else {
-      const index = player.queue.findIndex((item) => trackKey(item) === stored);
-      if (index >= 0) {
-        player.queueIndex = index;
-        player.currentTrack = player.queue[index];
-      }
+    if (playback.queue.length > 0) {
+      void player.restoreQueue(playback.queue, playback.queueIndex, stored);
+    } else if (track) {
+      void player.playInQueue([track], track);
     }
-    player.isPlaying = false;
     const position = playback.position;
-    // The saved position belongs to the saved track. Applying it immediately
-    // used the previous track's duration, and an out-of-range seek could wedge
-    // the decoder at EOF (the queue index had shifted to a shorter track).
-    // Hand it to `audio.ts`, which applies it once the load reports the real
-    // duration and clamps it into range.
+    // Hand the saved position to `audio.ts`, which applies it once the load
+    // reports the real duration and clamps it into range.
     resumeAt(position);
     window.setTimeout(() => { restoringPlayback = false; }, 1200);
   },
@@ -352,7 +356,16 @@ function onGlobalKeydown(event: KeyboardEvent) {
 }
 
 onMounted(() => { windowBehavior.sync(); window.addEventListener("hashchange", syncViewFromHash); window.addEventListener("keydown", onGlobalKeydown); window.addEventListener("beforeunload", savePlaybackPositionOnLeave); window.addEventListener("pagehide", savePlaybackPositionOnLeave); window.addEventListener("focus", recheckLicense); document.addEventListener("visibilitychange", onVisibilityChange); void initAudio(); void network.start(); void cache.start(); bootDesktopLyrics(); bootMediaControl(); void invoke<string>("ping").catch((error) => console.warn("[welkin] ping failed", describeError(error))); void bootstrap(); });
-onUnmounted(() => { savePlaybackPosition(true); stopDesktopLyrics(); stopMediaControl(); window.removeEventListener("hashchange", syncViewFromHash); window.removeEventListener("keydown", onGlobalKeydown); window.removeEventListener("beforeunload", savePlaybackPositionOnLeave); window.removeEventListener("pagehide", savePlaybackPositionOnLeave); window.removeEventListener("focus", recheckLicense); document.removeEventListener("visibilitychange", onVisibilityChange); void profile.flush(); });
+onUnmounted(() => { savePlaybackPosition(true); stopDesktopLyrics(); stopMediaControl(); window.removeEventListener("hashchange", syncViewFromHash); window.removeEventListener("keydown", onGlobalKeydown); window.removeEventListener("beforeunload", savePlaybackPositionOnLeave); window.removeEventListener("pagehide", savePlaybackPositionOnLeave); window.removeEventListener("focus", recheckLicense); document.removeEventListener("visibilitychange", onVisibilityChange); unlistenPlayback?.(); unlistenPlayback = null; void profile.flush(); });
+
+// Mirror the Rust playback context into the store. The queue / play intent / next
+// / previous all live in Rust now; this is the single channel that keeps the UI
+// in sync. Listening here (rather than in the store) keeps the store free of any
+// Tauri import and means a killed webview simply stops receiving mirrors — the
+// Rust side keeps playing and controlling itself.
+listen<PlaybackSnapshot>("playback:changed", (event) => {
+  player.applySnapshot(event.payload);
+}).then((stop) => { unlistenPlayback = stop; }).catch(() => {});
 </script>
 
 <template>

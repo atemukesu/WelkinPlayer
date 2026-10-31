@@ -9,7 +9,7 @@
 use tauri::State;
 
 use crate::core::error::AppError;
-use crate::playback::engine::{device_info, AudioState, Command, DeviceInfo, Engine};
+use crate::playback::engine::{device_info, enumerate_devices, AudioState, Command, DeviceInfo, Engine};
 
 /// Load a track with an explicit initial playback intent. Building the byte
 /// source happens on the worker, so this returns as soon as the command is
@@ -77,6 +77,20 @@ pub fn audio_device_info(engine: State<Engine>) -> DeviceInfo {
     let mut info = device_info();
     info.current_rate = shared.device_rate();
     info
+}
+
+/// List the output devices currently available, with the music rates each one
+/// supports. The first entry is the system default where distinguishable.
+#[tauri::command]
+pub fn audio_devices() -> Vec<crate::playback::engine::DeviceEntry> {
+    enumerate_devices()
+}
+
+/// Select a specific output device. `device_id` of `null` (or `None`) follows
+/// the system default. The worker reopens the stream and keeps the track.
+#[tauri::command]
+pub fn audio_set_device(engine: State<Engine>, device_id: Option<String>) -> Result<(), AppError> {
+    engine.send(Command::SetDevice { device_id })
 }
 
 /// Choose the output quality. The output stream is reopened at the given rate.

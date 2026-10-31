@@ -7,23 +7,28 @@ import { effectScope, shallowRef, watch } from "vue";
 import type { EffectScope } from "vue";
 import { listen } from "@tauri-apps/api/event";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { invoke, toAppError } from "../api";
+import { invoke } from "../api";
 import { i18n } from "../i18n";
 import { usePlayerStore } from "../stores/player";
 import { useNetworkStore } from "../stores/network";
 import { useCacheStore } from "../stores/cache";
 import { pushToast } from "./toast";
 import { trackKey } from "./sources";
-import { preferredRate } from "./audioQuality";
+import { preferredRate, currentDevice, deviceInfo, type AudioDeviceInfo } from "./audioQuality";
 
 /**
  * Playback client.
  *
- * Decoding and output live in the Rust engine (desktop + Android); this module
- * only issues transport commands (`audio_load` / `audio_play` / `audio_pause` /
- * `audio_seek` / `audio_set_volume` / `audio_set_mute` / `audio_stop`) and
- * mirrors the `audio:state`, `audio:ended` and `audio:error` events back into
- * the player store. The webview media element is no longer used.
+ * Decoding and output live in the Rust engine (desktop + Android). The *queue*
+ * and track selection also live in Rust now (`playback::context`), so this
+ * module no longer loads tracks or toggles play in response to store changes:
+ * the Rust context drives `audio_load`/`audio_play`/`audio_pause` itself and
+ * mirrors the result back via `playback:changed`. This module only (a) issues
+ * the *engine-local* transport knobs (`audio_set_volume` / `audio_set_mute` /
+ * `audio_set_speed` / `audio_set_quality` / `audio_seek`) and (b) mirrors the
+ * engine's `audio:state` / `audio:ended` / `audio:error` / `audio:spectrum`
+ * events into the player store for display. The webview media element is no
+ * longer used.
  */
 
 /** Localization keys for the `AppError` codes the engine can surface. */
@@ -194,41 +199,12 @@ function onError(payload: AudioErrorPayload) {
   usePlayerStore().setPlaying(false);
 }
 
-/** Load the current track into the engine and start/stop it to match the store. */
-async function syncTrack() {
-  const player = usePlayerStore();
-  const track = player.currentTrack;
-  prefetchedKey = null;
-  spectrumData.value = null;
-  lastStreamReportKey = null;
-  lastStreamReportAt = 0;
-  // A load replaces the decoder; a seek still in flight can never land.
-  pendingSeekSecs = null;
-  player.setRates(0, 0, player.outputRate);
-  if (!track?.path) {
-    playbackLog("syncTrack: no track, stopping engine");
-    await invoke("audio_stop").catch(() => {});
-    return;
-  }
-  playbackLog("syncTrack: loading", { sourceId: track.sourceId, path: track.path, playing: player.isPlaying });
-  try {
-    await invoke("audio_load", { sourceId: track.sourceId, path: track.path, autoplay: player.isPlaying });
-    // Keep the explicit transport command as a compatibility fallback for
-    // older native command schemas and for a load completed while the store
-    // changed its play intent.
-    if (player.isPlaying) {
-      await invoke("audio_play");
-    }
-    if (!useCacheStore().isCached(trackKey(track))) {
-      void invoke("prefetch_track", { sourceId: track.sourceId, path: track.path }).catch(() => {});
-    }
-  } catch (error) {
-    const appError = toAppError(error);
-    playbackLog("syncTrack failed", { code: appError.code, message: appError.message });
-    pushToast("error", t(ERROR_KEYS[appError.code] ?? "playback.failed"));
-    player.setPlaying(false);
-  }
-}
+/**
+ * The queue / play intent now live in Rust: `playback::context` issues
+ * `audio_load` / `audio_play` / `audio_pause` itself in response to the
+ * `playback_*` commands, so this module never loads or stops the engine in
+ * reaction to store changes.
+ */
 
 /** Mirror the real cache coverage (Rust) into the progress bar's prefill. */
 function syncBuffered() {
@@ -269,15 +245,15 @@ function maybePrefetchNext(position: number, duration: number) {
   }).catch(() => {});
 }
 
-/** Advance the queue, restarting the current track when repeat-one is on. */
+/**
+ * The engine reported end-of-track. Auto-advance is now owned by the Rust
+ * playback context (`PlaybackContext::on_ended`), which reloads the next track
+ * without depending on the webview. This handler only logs; it must not drive
+ * `player.next()` — doing so would double-advance (Rust already did) and would
+ * break once the webview is backgrounded.
+ */
 function onEnded() {
-  const player = usePlayerStore();
-  playbackLog("engine ended", { repeat: player.repeat, queueIndex: player.queueIndex });
-  if (player.repeat === "one" && player.currentTrack) {
-    seekTo(0);
-    return;
-  }
-  player.next();
+  playbackLog("engine ended (auto-advance handled by Rust context)");
 }
 
 /** Create the engine client and wire it to the store. Safe to call repeatedly. */
@@ -296,39 +272,21 @@ async function bootstrap(): Promise<void> {
   unlisteners.push(await listen<SpectrumData>("audio:spectrum", (event) => onSpectrum(event.payload)));
   unlisteners.push(await listen("audio:ended", onEnded));
   unlisteners.push(await listen<AudioErrorPayload>("audio:error", (event) => onError(event.payload)));
+  // The engine reopens the output stream (device change, quality change, device
+  // selection) and reports the new capabilities here. Refresh the quality/device
+  // UI so the picker reflects reality (e.g. headphones plugging in/out).
+  unlisteners.push(
+    await listen<AudioDeviceInfo>("audio:deviceChanged", (event) => {
+      deviceInfo.value = event.payload;
+      currentDevice.value = event.payload.currentDevice ?? null;
+    }),
+  );
 
+  // The queue / play intent now live in Rust; this module only forwards the
+  // engine-local knobs (volume, mute, rate, quality) and never loads or pauses
+  // the engine in response to store changes.
   scope = effectScope();
   scope.run(() => {
-    // Track identity includes the source, so switching to the same path on a
-    // different source still reloads.
-    watch(
-      () => {
-        const track = player.currentTrack;
-        return track?.path ? `${track.sourceId ?? ""}::${track.path}` : "";
-      },
-      () => void syncTrack(),
-    );
-
-    // Re-selecting the same track (repeat-one, clicking the current row) bumps
-    // the nonce without changing the path, so restart the engine explicitly.
-    watch(
-      () => player.playbackNonce,
-      () => {
-        if (!player.currentTrack?.path) return;
-        playbackLog("playbackNonce: restarting current track");
-        seekTo(0);
-        if (player.isPlaying) void invoke("audio_play").catch(() => {});
-      },
-    );
-
-    watch(
-      () => player.isPlaying,
-      (playing) => {
-        playbackLog("isPlaying changed", { playing });
-        void invoke(playing ? "audio_play" : "audio_pause").catch(() => {});
-      },
-    );
-
     watch(
       () => player.volume,
       (volume) => {
@@ -354,10 +312,9 @@ async function bootstrap(): Promise<void> {
   await invoke("audio_set_volume", { volume: player.volume }).catch(() => {});
   await invoke("audio_set_mute", { muted: player.muted }).catch(() => {});
   await invoke("audio_set_speed", { rate: player.playbackRate }).catch(() => {});
-  // Apply the stored output-quality preference before the first load, so the
-  // engine opens the stream at the right rate from the start.
+  // Apply the stored output-quality preference so the engine opens the stream at
+  // the right rate from the start.
   await invoke("audio_set_quality", { rate: preferredRate.value }).catch(() => {});
-  await syncTrack();
 
   syncBuffered();
   bufferedTimer = window.setInterval(syncBuffered, 1000);

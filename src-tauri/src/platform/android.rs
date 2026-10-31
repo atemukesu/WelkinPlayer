@@ -134,6 +134,121 @@ fn application<'local>() -> Result<JObject<'local>, String> {
     Ok(unsafe { JObject::from_raw(application.as_obj().as_raw()) })
 }
 
+/// Borrows the cached `JavaVM` for the playback engine's JNI device queries.
+///
+/// Returns `None` (rather than panicking) when `JNI_OnLoad` has not captured the
+/// VM yet, so a missing handle degrades to "no device list" instead of aborting.
+pub fn java_vm<'local>() -> Option<&'static JavaVM> {
+    JAVA_VM.get()
+}
+
+/// Borrows the cached `Application` handle for the playback engine's JNI calls.
+///
+/// Mirrors [`application`] but is exposed for cross-module use (the playback
+/// worker needs a `Context` to reach `AudioManager`). Returns `None` when the
+/// context is not initialized.
+pub fn application_jobject<'local>() -> Option<JObject<'local>> {
+    application().ok()
+}
+
+/// Route audio to a specific output device on Android via `AudioManager`.
+///
+/// `type_` is the `AudioDeviceInfo.getType()` value (2 = speaker, 3/4 = wired,
+/// 8 = Bluetooth A2DP, 11/22 = USB). `name` is the product name used only for
+/// logging; the route is driven by the type. Returns `Ok(true)` when the route
+/// was applied, `Ok(false)` when the device type is not one we route, and
+/// `Err` on a JNI failure.
+///
+/// We deliberately do *not* reopen the output stream here: cpal's Android
+/// backend always follows the system default, so reopening it would not change
+/// which device the OS routes to. The stream stays open; only the route changes.
+pub fn route_audio(type_: i32, name: &str) -> Result<bool, String> {
+    use jni::objects::{JObject, JValue};
+
+    let java_vm = JAVA_VM
+        .get()
+        .ok_or_else(|| "JNI_OnLoad has not run yet".to_string())?;
+    let mut env = java_vm
+        .attach_current_thread()
+        .map_err(|error| format!("failed to attach to the JVM: {error}"))?;
+    let _ = env.exception_clear();
+
+    let context = application()?;
+
+    // Context.AUDIO_SERVICE == "audio"
+    let service_name = JObject::from(env.new_string("audio").map_err(|error| error.to_string())?);
+    let audio_manager = env
+        .call_method(
+            &context,
+            "getSystemService",
+            "(Ljava/lang/String;)Ljava/lang/Object;",
+            &[JValue::Object(&service_name)],
+        )
+        .map_err(|error| format!("getSystemService(audio) failed: {error}"))?
+        .l()
+        .map_err(|error| format!("unexpected audio manager return value: {error}"))?;
+
+    // Route by device type. `setDevicesForMode` is the public routing API
+    // (Android 21+); it handles every output device type uniformly, including
+    // the built-in speaker, so there is no legacy fallback needed.
+    let devices_obj = env
+        .call_method(
+            &audio_manager,
+            "getDevices",
+            "(I)[Landroid/media/AudioDeviceInfo;",
+            &[JValue::Int(2)],
+        )
+        .map_err(|error| format!("AudioManager.getDevices failed: {error}"))?
+        .l()
+        .map_err(|error| format!("unexpected getDevices return value: {error}"))?;
+    let devices_array = unsafe { jni::objects::JObjectArray::from_raw(devices_obj.as_raw()) };
+    let len = env
+        .get_array_length(&devices_array)
+        .map_err(|error| format!("get_array_length failed: {error}"))?;
+    let mut routed = false;
+    for index in 0..len {
+        let device = env
+            .get_object_array_element(&devices_array, index)
+            .map_err(|error| format!("get_object_array_element failed: {error}"))?;
+        let dev_type = env
+            .call_method(&device, "getType", "()I", &[])
+            .map_err(|error| format!("getType failed: {error}"))?
+            .i()
+            .map_err(|error| format!("unexpected getType return value: {error}"))?;
+        if dev_type != type_ {
+            continue;
+        }
+        // setDevicesForMode(mode=0 (NORMAL), [device]) — API 21+.
+        // `routeToDevices` does not exist on any Android version; this is the
+        // correct public routing API.
+        let arr = env
+            .new_object_array(
+                1,
+                "android/media/AudioDeviceInfo",
+                JObject::null(),
+            )
+            .map_err(|error| format!("new_object_array failed: {error}"))?;
+        env.set_object_array_element(&arr, 0, &device)
+            .map_err(|error| format!("set_object_array_element failed: {error}"))?;
+        env.call_method(
+            &audio_manager,
+            "setDevicesForMode",
+            "(I[Landroid/media/AudioDeviceInfo;)V",
+            &[JValue::Int(0), JValue::Object(&arr)],
+        )
+        .map_err(|error| format!("setDevicesForMode failed: {error}"))?;
+        routed = true;
+        break;
+    }
+    if !routed {
+        return Err(format!(
+            "no output device of type {type_} found to route to (name={name})"
+        ));
+    }
+    log::info!("playback: routed to device type={type_} name={name}");
+    Ok(true)
+}
+
 /// The overlay exists on every supported Android version.
 pub fn desktop_lyric_supported() -> bool {
     true
@@ -610,7 +725,7 @@ pub fn network_status() -> crate::core::network::NetworkStatus {
 }
 
 fn query_network() -> Result<crate::core::network::NetworkStatus, String> {
-    use jni::objects::{JObject, JValue};
+    use jni::objects::JValue;
 
     let java_vm = JAVA_VM
         .get()
@@ -714,7 +829,7 @@ fn install_keychain_builder() -> Result<(), String> {
     let java_vm = JAVA_VM
         .get()
         .ok_or_else(|| "JNI_OnLoad has not run yet".to_string())?;
-    let mut env = java_vm
+    let env = java_vm
         .attach_current_thread()
         .map_err(|error| format!("failed to attach to the JVM: {error}"))?;
     let _ = env.exception_clear();

@@ -25,7 +25,7 @@ use rodio::cpal::traits::{DeviceTrait, HostTrait};
 use rodio::{Decoder, OutputStream, OutputStreamBuilder, Source};
 use rtrb::{Consumer, Producer, RingBuffer};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::core::error::AppError;
 use crate::playback::source::{open_track, ReadSeek};
@@ -100,6 +100,34 @@ pub struct DeviceInfo {
     /// could be probed). Software endpoints are bounded first, so this is a real
     /// music rate rather than a plugin's `384000` fiction.
     pub max_rate: u32,
+    /// The output devices currently available. On Android this is the
+    /// `AudioManager.getDevices()` list (with a `device_type`); on desktop it is
+    /// the cpal enumeration. Empty when none could be read.
+    pub devices: Vec<DeviceEntry>,
+    /// Identifier of the device the stream is currently bound to. `None` means
+    /// the engine follows the system default rather than a pinned choice.
+    pub current_device: Option<String>,
+}
+
+/// One selectable output device, with the music rates it actually supports.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceEntry {
+    /// Stable-enough identifier: the device name. On Android this is the
+    /// `AudioDeviceInfo` product name; on desktop it is the cpal device name.
+    /// `getProductName` can return the same string for the built-in speaker and
+    /// a wired headset, so when a name repeats we append `#n` to make the id
+    /// unique (see `enumerate_android_devices`).
+    pub id: String,
+    /// Human-readable label (currently the same as `id`).
+    pub name: String,
+    /// Music sample rates this device can take, after the software-endpoint
+    /// guard described in `device_info`.
+    pub supported_rates: Vec<u32>,
+    /// `AudioDeviceInfo.getType()` value on Android; `0` on platforms where the
+    /// backend does not expose a device type. Lets the UI tag a row as
+    /// headphones / USB / Bluetooth / built-in speaker.
+    pub device_type: u32,
 }
 
 /// The sample rates worth offering in the quality picker: the standard music
@@ -160,7 +188,236 @@ pub fn device_info() -> DeviceInfo {
         current_rate: 0,
         supported_rates,
         max_rate,
+        devices: enumerate_devices(),
+        current_device: None,
     }
+}
+
+/// Enumerate the output devices cpal can see (desktop), with the rates each one
+/// supports after the software-endpoint guard. Safe to call from any thread.
+/// On Android this defers to [`enumerate_android_devices`], which talks to
+/// `AudioManager` directly because cpal's Android backend does no enumeration.
+pub fn enumerate_devices() -> Vec<DeviceEntry> {
+    #[cfg(target_os = "android")]
+    {
+        enumerate_android_devices()
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        enumerate_cpal_devices()
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+fn enumerate_cpal_devices() -> Vec<DeviceEntry> {
+    let host = rodio::cpal::default_host();
+    let mut devices: Vec<DeviceEntry> = Vec::new();
+    if let Ok(list) = host.output_devices() {
+        for device in list {
+            let name = match device.name() {
+                Ok(name) => name,
+                Err(_) => continue,
+            };
+            let ranges = device
+                .supported_output_configs()
+                .map(|configs| {
+                    configs
+                        .map(|config| (config.min_sample_rate().0, config.max_sample_rate().0))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let ceiling = if is_software_endpoint(&ranges) {
+                device
+                    .default_output_config()
+                    .map(|config| config.sample_rate().0)
+                    .unwrap_or(48_000)
+                    .max(48_000)
+            } else {
+                u32::MAX
+            };
+            let supported_rates: Vec<u32> = STANDARD_RATES
+                .into_iter()
+                .filter(|rate| *rate <= ceiling)
+                .filter(|rate| ranges.iter().any(|(low, high)| low <= rate && rate <= high))
+                .collect();
+            devices.push(DeviceEntry {
+                id: name.clone(),
+                name,
+                supported_rates,
+                device_type: 0,
+            });
+        }
+        if let Some(default_name) = host
+            .default_output_device()
+            .and_then(|device| device.name().ok())
+        {
+            if let Some(index) = devices.iter().position(|device| device.id == default_name) {
+                let default = devices.remove(index);
+                devices.insert(0, default);
+            }
+        }
+    }
+    devices
+}
+
+/// `AudioManager.getDevices()` on Android, read through JNI. cpal's Android
+/// backend does not enumerate output devices, and its device names are *not* the
+/// `AudioDeviceInfo` product names — so the only reliable way to present a device
+/// list and to detect plug/unplug is to ask `AudioManager` ourselves.
+///
+/// Returns device entries for the playback-relevant output types. Sensible even
+/// though we still open the stream through cpal's default device: the list is
+/// what the UI shows, and its signature is what `check_device` compares each poll
+/// to learn that headphones were plugged in or out.
+#[cfg(target_os = "android")]
+pub fn enumerate_android_devices() -> Vec<DeviceEntry> {
+    use jni::objects::{JObject, JString, JValue};
+
+    // Playback-relevant output types (AudioDeviceInfo constant values).
+    const TYPES: &[i32] = &[
+        2,  // TYPE_BUILTIN_SPEAKER
+        3,  // TYPE_WIRED_HEADSET
+        4,  // TYPE_WIRED_HEADPHONES
+        8,  // TYPE_BLUETOOTH_A2DP
+        11, // TYPE_USB_DEVICE
+        22, // TYPE_USB_HEADSET
+    ];
+
+    let vm = match crate::platform::android::java_vm() {
+        Some(vm) => vm,
+        None => return Vec::new(),
+    };
+    let mut env = match vm.attach_current_thread() {
+        Ok(env) => env,
+        Err(error) => {
+            log::warn!("playback: android device enum attach failed: {error}");
+            return Vec::new();
+        }
+    };
+    let application = match crate::platform::android::application_jobject() {
+        Some(object) => object,
+        None => return Vec::new(),
+    };
+
+    // Context.AUDIO_SERVICE == "audio"
+    let service_name = match env.new_string("audio") {
+        Ok(string) => JObject::from(string),
+        Err(_) => return Vec::new(),
+    };
+    let audio_manager = match env
+        .call_method(
+            &application,
+            "getSystemService",
+            "(Ljava/lang/String;)Ljava/lang/Object;",
+            &[JValue::Object(&service_name)],
+        )
+        .and_then(|value| value.l())
+    {
+        Ok(object) => object,
+        Err(error) => {
+            log::warn!("playback: android getSystemService(audio) failed: {error}");
+            return Vec::new();
+        }
+    };
+
+    // AudioManager.GET_DEVICES_OUTPUTS == 2
+    let devices_obj = match env
+        .call_method(
+            &audio_manager,
+            "getDevices",
+            "(I)[Landroid/media/AudioDeviceInfo;",
+            &[JValue::Int(2)],
+        )
+        .and_then(|value| value.l())
+    {
+        Ok(object) => object,
+        Err(error) => {
+            log::warn!("playback: android AudioManager.getDevices failed: {error}");
+            return Vec::new();
+        }
+    };
+    // The returned `AudioDeviceInfo[]` is a `JObjectArray`, not a bare `JObject`.
+    let devices_array = unsafe { jni::objects::JObjectArray::from_raw(devices_obj.as_raw()) };
+
+    let len = match env.get_array_length(&devices_array) {
+        Ok(len) => len,
+        Err(_) => 0,
+    };
+    let mut out = Vec::new();
+    for index in 0..len {
+        let device = match env.get_object_array_element(&devices_array, index) {
+            Ok(device) => device,
+            Err(_) => continue,
+        };
+        let type_ = match env
+            .call_method(&device, "getType", "()I", &[])
+            .and_then(|value| value.i())
+        {
+            Ok(type_) => type_,
+            Err(_) => continue,
+        };
+        if !TYPES.contains(&type_) {
+            continue;
+        }
+        // `getProductName` returns a `CharSequence`; convert it to a `String`
+        // (toString) before reading it as a JNI string.
+        let name_obj = match env
+            .call_method(&device, "getProductName", "()Ljava/lang/CharSequence;", &[])
+            .and_then(|value| value.l())
+        {
+            Ok(object) => object,
+            Err(_) => JObject::null(),
+        };
+        let name = if name_obj.as_raw().is_null() {
+            format!("type-{type_}")
+        } else {
+            let name_str = match env
+                .call_method(&name_obj, "toString", "()Ljava/lang/String;", &[])
+                .and_then(|value| value.l())
+            {
+                Ok(string) => string,
+                Err(_) => JObject::null(),
+            };
+            if name_str.as_raw().is_null() {
+                format!("type-{type_}")
+            } else {
+                env.get_string(&JString::from(name_str))
+                    .map(|string| string.into())
+                    .unwrap_or_else(|_| format!("type-{type_}"))
+            }
+        };
+        out.push(DeviceEntry {
+            id: name.clone(),
+            name,
+            supported_rates: Vec::new(),
+            device_type: type_ as u32,
+        });
+    }
+    // `getProductName` can return the same string for the built-in speaker and
+    // a wired headset (both report "Welkin" or similar), which would make two
+    // rows collapse into one id and the picker ambiguous. Disambiguate by type.
+    let mut used: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for device in &mut out {
+        if let Some(n) = used.get_mut(&device.name) {
+            *n += 1;
+            device.id = format!("{}#{}", device.name, *n);
+        } else {
+            used.insert(device.name.clone(), 1);
+            device.id = device.name.clone();
+        }
+    }
+    out.sort_by_key(|device| (device.device_type, device.name.clone()));
+    out
+}
+
+/// A canonical, order-independent signature of the current output-device list,
+/// used by [`Worker::check_device`] to detect plug/unplug without a native
+/// event. On Android it is the `AudioManager` list; on desktop it is the single
+/// cpal default device name. Empty when enumeration is unavailable.
+fn device_signature() -> String {
+    let mut ids: Vec<String> = enumerate_devices().into_iter().map(|device| format!("{}:{}", device.device_type, device.id)).collect();
+    ids.sort();
+    ids.join("|")
 }
 
 /// The rate to open the output stream at before a track is loaded. cpal's ALSA
@@ -224,6 +481,9 @@ pub struct Shared {
     /// Requested seek target (seconds as `f64` bits) while a seek is in flight.
     /// The event thread reports this instead of the decoder's stale playhead.
     seek_preview: Mutex<Option<f64>>,
+    /// The application handle, for emitting playback-context events from the
+    /// shared state (the queue lives outside the engine but needs to notify).
+    app: Mutex<Option<AppHandle>>,
 }
 
 /// One constant-tempo run of playback. `out` is an interleaved output-sample
@@ -277,7 +537,33 @@ impl Shared {
             spectrum: std::array::from_fn(|_| AtomicU32::new(0)),
             spectrum_sequence: AtomicU64::new(0),
             seek_preview: Mutex::new(None),
+            app: Mutex::new(None),
         }
+    }
+
+    /// Stash the app handle so the shared state can emit `playback:changed`.
+    pub fn set_app(&self, app: AppHandle) {
+        *self.app.lock().unwrap_or_else(|error| error.into_inner()) = Some(app);
+    }
+
+    /// The application handle, if it has been set.
+    pub fn app_handle(&self) -> Option<AppHandle> {
+        self.app
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
+    /// Whether the engine currently holds `(source_id, path)` as the loaded
+    /// track. Used by the playback context to decide between resuming and
+    /// reloading, so a `play` on an already-loaded track does not reload it.
+    pub fn is_loaded(&self, source_id: &str, path: &str) -> bool {
+        let location = self
+            .location
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        matches!(location.as_ref(), Some((loaded_source, loaded_path))
+            if loaded_source == source_id && loaded_path == path)
     }
 
     /// Report a seek target while the decoder is still being repositioned, so
@@ -733,6 +1019,13 @@ pub enum Command {
     SetQuality {
         rate: u32,
     },
+    /// Select a specific output device (`None` follows the system default).
+    /// On Android this only pins a `AudioManager` device identity for change
+    /// detection; the actual stream still follows the system default (cpal
+    /// cannot address an Android device by name).
+    SetDevice {
+        device_id: Option<String>,
+    },
     Play,
     Pause,
     Seek {
@@ -741,7 +1034,9 @@ pub enum Command {
     Stop,
 }
 
-/// Handle held in Tauri managed state.
+/// Handle held in Tauri managed state. `Clone` is cheap: the sender is
+/// multi-producer and the rest is shared via `Arc`.
+#[derive(Clone)]
 pub struct Engine {
     tx: Sender<Command>,
     shared: Arc<Shared>,
@@ -771,6 +1066,7 @@ pub fn start(app: AppHandle, cache: Arc<StreamCache>, smart: Arc<SmartCache>) ->
     log::info!("playback: starting worker and event threads");
     let (tx, rx) = mpsc::channel();
     let shared = Arc::new(Shared::new());
+    shared.set_app(app.clone());
     let shutdown = Arc::new(AtomicBool::new(false));
 
     let worker_shared = shared.clone();
@@ -906,6 +1202,12 @@ mod events {
             if state.ended && ended_armed {
                 ended_armed = false;
                 let _ = app.emit("audio:ended", ());
+                // Auto-advance the queue in Rust so playback survives a dead or
+                // throttled webview. The webview no longer drives next/previous;
+                // the context owns the queue and reloads the engine directly.
+                if let Some(context) = app.try_state::<crate::playback::context::PlaybackContext>() {
+                    context.on_ended();
+                }
             }
         }
     }
@@ -1124,10 +1426,34 @@ mod worker {
         Ok(stretch)
     }
 
-    /// Open an output stream pinned to the requested sample rate. If the device
-    /// refuses it we fall back to the default output rate so a bad preference
-    /// can never leave the engine without output.
-    fn open_stream(rate: u32) -> Result<OutputStream, String> {
+    /// Open an output stream pinned to the requested sample rate. `device_id`
+    /// selects a specific cpal device on desktop; on Android cpal does not
+    /// enumerate and its device names do not match `AudioManager` product names,
+    /// so it is ignored and the system default is used (the OS routes to the
+    /// active output device anyway). If the device is gone or refuses the rate we
+    /// fall back to the default device so a bad preference never kills output.
+    fn open_stream(rate: u32, device_id: Option<&str>) -> Result<OutputStream, String> {
+        #[cfg(target_os = "android")]
+        let _ = device_id; // cpal follows the system default on Android.
+        #[cfg(not(target_os = "android"))]
+        let device = match device_id {
+            Some(id) => rodio::cpal::default_host()
+                .output_devices()
+                .ok()
+                .and_then(|devices| {
+                    devices
+                        .into_iter()
+                        .find(|device| device.name().map(|name| name == id).unwrap_or(false))
+                })
+                .or_else(|| rodio::cpal::default_host().default_output_device())
+                .ok_or_else(|| "no output device".to_string())?,
+            None => rodio::cpal::default_host()
+                .default_output_device()
+                .ok_or_else(|| "no output device".to_string())?,
+        };
+        #[cfg(not(target_os = "android"))]
+        let device = device;
+        #[cfg(target_os = "android")]
         let device = rodio::cpal::default_host()
             .default_output_device()
             .ok_or_else(|| "no output device".to_string())?;
@@ -1170,10 +1496,21 @@ mod worker {
         /// `device_rate` is `min(selected_rate, file rate)`, so HD files use the
         /// higher rate and lower-rate files stay at their native rate.
         selected_rate: u32,
+        /// The device the user asked for, or `None` to follow the system default.
+        /// On Android this is only used to detect change and to report a pin; the
+        /// actual stream opening ignores it (cpal follows the system default).
+        selected_device: Option<String>,
         current: Option<Current>,
         pending_tempo: Option<f32>,
         /// Throttles the worker-loop heartbeat.
         last_trace: std::time::Instant,
+        /// Signature of the device list observed on the previous poll (a sorted,
+        /// canonical string of `type:name`), so a change can be detected without
+        /// any platform-native event hooks. On Android this is the
+        /// `AudioManager` list; on desktop it is the cpal default device name.
+        bound_device_signature: String,
+        /// Throttles the device-change poll to roughly once per second.
+        last_device_check: std::time::Instant,
     }
 
     pub fn run(
@@ -1191,7 +1528,7 @@ mod worker {
         // hardware. The frontend pins the real rate via `audio_set_quality`
         // before the first track loads, which reopens the stream.
         let initial_rate = default_output_rate();
-        let stream = open_stream(initial_rate).or_else(|error| {
+        let stream = open_stream(initial_rate, None).or_else(|error| {
             log::warn!("playback engine: opening {initial_rate} Hz output failed ({error}); using device default");
             OutputStreamBuilder::open_default_stream().map_err(|fallback| fallback.to_string())
         });
@@ -1221,9 +1558,12 @@ mod worker {
             stream,
             device_rate,
             selected_rate: initial_rate,
+            selected_device: None,
             current: None,
             pending_tempo: None,
             last_trace: std::time::Instant::now(),
+            bound_device_signature: device_signature(),
+            last_device_check: std::time::Instant::now(),
         };
         worker.publish_device_rates();
         worker.loop_forever(rx);
@@ -1262,7 +1602,7 @@ mod worker {
                 .clone();
             let position = self.shared.position_secs();
 
-            let stream = match open_stream(target) {
+            let stream = match open_stream(target, self.selected_device.as_deref()) {
                 Ok(stream) => stream,
                 Err(error) => {
                     log::error!("playback engine: reopening output stream failed: {error}");
@@ -1301,6 +1641,164 @@ mod worker {
             }
         }
 
+        /// Reopen the output stream for the current device/rate selection and
+        /// re-mount the playing track at its current position. Used both when the
+        /// user changes quality/device and when the output device changes under
+        /// us (headphone plug, etc.). Forced: unlike `set_quality` it never short
+        /// circuits on `target == device_rate`, because the stream handle itself
+        /// may have been invalidated by the OS-level device change.
+        ///
+        /// Returns `true` when the stream was actually (re)opened.
+        fn rebuild_stream(&mut self) -> bool {
+            let file_rate = self.shared.native_rate.load(Ordering::Relaxed);
+            let target = if file_rate > 0 {
+                self.selected_rate.min(file_rate)
+            } else {
+                self.selected_rate
+            };
+            log::info!(
+                "playback: rebuilding output stream for device {:?} at {target} Hz (current {})",
+                self.selected_device,
+                self.device_rate,
+            );
+            let was_paused = self.shared.is_paused();
+            let location = self
+                .shared
+                .location
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone();
+            let position = self.shared.position_secs();
+
+            let stream = match open_stream(target, self.selected_device.as_deref()) {
+                Ok(stream) => stream,
+                Err(error) => {
+                    log::error!("playback engine: rebuilding output stream failed: {error}");
+                    *self
+                        .shared
+                        .failure
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner()) = Some(ErrorInfo {
+                        code: "AUDIO_DEVICE".to_string(),
+                        message: "无法重建音频输出设备".to_string(),
+                    });
+                    return false;
+                }
+            };
+            let actual = stream.config().sample_rate();
+            self.stream = stream;
+            self.device_rate = actual;
+            self.publish_device_rates();
+            log::info!("playback: output stream rebuilt at {actual} Hz (asked {target})");
+
+            // The old mixer's sources are invalidated by the generation bump;
+            // rebuild the current track against the new stream.
+            self.bump_generation();
+            self.ring = Ring::new(1).0;
+            self.ring.done.store(true, Ordering::Release);
+            self.current = None;
+            let Some((source_id, path)) = location else {
+                // No track loaded: just publish the fresh device list/rate so the
+                // device picker reflects the new capability.
+                self.emit_device_changed();
+                return true;
+            };
+            self.load(&source_id, &path, !was_paused);
+            if position > 0.0 {
+                self.seek(position);
+            }
+            self.emit_device_changed();
+            true
+        }
+
+        /// Push the current device list/rate to the frontend via `audio:deviceChanged`.
+        fn emit_device_changed(&self) {
+            let mut info = device_info();
+            info.current_rate = self.device_rate;
+            info.current_device = self.selected_device.clone();
+            let _ = self.app.emit("audio:deviceChanged", info);
+        }
+
+        /// Choose a specific output device (`None` = follow system default). On
+        /// desktop the stream is reopened against that cpal device; on Android we
+        /// call `AudioManager.routeToDevices` directly (cpal cannot address an
+        /// Android device by name, so reopening the stream would not change the
+        /// route). `open_stream` always falls back to the default device if the
+        /// requested one is gone, so a bad selection can never kill output.
+        fn set_device(&mut self, device_id: Option<String>) {
+            let previous = self.selected_device.clone();
+            self.selected_device = device_id;
+            if self.selected_device == previous {
+                return;
+            }
+            #[cfg(target_os = "android")]
+            {
+                if let Some(id) = &self.selected_device {
+                    // Resolve the type from the enumerated list, then route to
+                    // the matching device. The route is what actually makes
+                    // audio play on the chosen device.
+                    if let Some(device) = enumerate_devices()
+                        .iter()
+                        .find(|device| &device.id == id)
+                    {
+                        if let Err(error) = crate::platform::android::route_audio(
+                            device.device_type as i32,
+                            &device.name,
+                        ) {
+                            log::warn!("playback: route to {id} failed: {error}");
+                            *self
+                                .shared
+                                .failure
+                                .lock()
+                                .unwrap_or_else(|error| error.into_inner()) = Some(ErrorInfo {
+                                code: "AUDIO_DEVICE".to_string(),
+                                message: format!("无法切换到输出设备: {error}"),
+                            });
+                            self.selected_device = previous;
+                            return;
+                        }
+                    }
+                } else if let Err(error) = crate::platform::android::route_audio(2, "speaker") {
+                    // "Follow default" on Android means: let the OS decide. We
+                    // route back to the built-in speaker so a previously pinned
+                    // Bluetooth/wired device is actually released.
+                    log::warn!("playback: route to default (speaker) failed: {error}");
+                }
+            }
+            self.rebuild_stream();
+        }
+
+        /// Poll for an output-device change roughly once per second and rebuild
+        /// the stream when it happens. There is no platform-native device-change
+        /// event: on Android we compare the `AudioManager` device-list signature,
+        /// on desktop we compare the cpal default device name. This is what
+        /// recovers playback after the OS invalidates the stream (e.g. headphones
+        /// unplugged on Android).
+        fn check_device(&mut self) {
+            if self.last_device_check.elapsed() < Duration::from_millis(900) {
+                return;
+            }
+            self.last_device_check = std::time::Instant::now();
+            let signature = device_signature();
+            if signature != self.bound_device_signature {
+                log::info!(
+                    "playback: output device list changed: {:?} -> {:?}",
+                    self.bound_device_signature,
+                    signature,
+                );
+                self.bound_device_signature = signature;
+                // A user-pinned device that is no longer in the list was
+                // unplugged: drop the pin and follow the system default.
+                if let Some(pinned) = &self.selected_device {
+                    if !enumerate_devices().iter().any(|device| &device.id == pinned) {
+                        log::info!("playback: pinned device {pinned:?} disappeared, following default");
+                        self.selected_device = None;
+                    }
+                }
+                self.rebuild_stream();
+            }
+        }
+
         fn loop_forever(&mut self, rx: Receiver<Command>) {
             while !self.shutdown.load(Ordering::Acquire) {
                 // Drain every queued command first so seeks/pause stay snappy.
@@ -1315,6 +1813,12 @@ mod worker {
                 if let Some(rate) = self.pending_tempo.take() {
                     self.set_tempo(rate);
                 }
+
+                // Detect output-device changes (headphone plug, etc.) without any
+                // platform-native event: there is none, so we poll the device
+                // list / default roughly once per second. This recovers playback
+                // after the OS invalidates the stream.
+                self.check_device();
 
                 let idle = match self.current.as_mut() {
                     Some(current) if !self.shared.is_paused() && !self.ring.is_done() => {
@@ -1365,6 +1869,11 @@ mod worker {
                 Command::SetQuality { rate } => {
                     log::debug!("playback: cmd SetQuality {rate}");
                     self.set_quality(rate)
+                }
+
+                Command::SetDevice { device_id } => {
+                    log::debug!("playback: cmd SetDevice {device_id:?}");
+                    self.set_device(device_id);
                 }
 
                 Command::Play => {
@@ -1454,7 +1963,7 @@ mod worker {
                     "playback: reopening output stream for {rate} Hz file at {output_rate} Hz (quality {})",
                     self.selected_rate,
                 );
-                match open_stream(output_rate) {
+                match open_stream(output_rate, self.selected_device.as_deref()) {
                     Ok(stream) => {
                         self.stream = stream;
                         self.device_rate = self.stream.config().sample_rate();

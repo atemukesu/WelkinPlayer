@@ -9,7 +9,6 @@ import { listen } from "@tauri-apps/api/event";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { invoke } from "../api";
 import { currentTime, seekTo } from "./audio";
-import { isAndroid } from "./desktopLyric";
 import { trackKey } from "./sources";
 import { usePlayerStore } from "../stores/player";
 
@@ -19,12 +18,16 @@ import { usePlayerStore } from "../stores/player";
  * commands from those surfaces back into the store.
  *
  * Metadata + play/pause are pushed on change; the playhead is pushed on a slow
- * cadence because the OS extrapolates position while playing. Transport events
- * arrive as a `media:control` Tauri event on desktop and as a polled native
- * queue on Android.
+ * cadence because the OS extrapolates position while playing.
+ *
+ * On desktop, transport events arrive as a `media:control` Tauri event (from
+ * souvlaki). On Android the native MediaSession action queue is drained by Rust
+ * directly (see `playback::context::start_media_control_poller`), so this module
+ * does **not** poll on Android — the webview would be throttled or killed in the
+ * background, defeating the purpose. Here we only forward desktop intent and
+ * push metadata; the actual play/pause/next/prev logic lives in Rust.
  */
 const POSITION_TICK_MS = 5000;
-const ANDROID_POLL_MS = 250;
 
 interface ControlCommand {
   action?: string;
@@ -34,7 +37,6 @@ interface ControlCommand {
 let running = false;
 let scope: EffectScope | null = null;
 let tickTimer = 0;
-let pollTimer = 0;
 let unlisten: UnlistenFn | null = null;
 
 /** Full metadata + playback snapshot for the OS. */
@@ -82,7 +84,14 @@ function parseControl(raw: string): ControlCommand | null {
   }
 }
 
-/** Apply a transport command from the OS. */
+/**
+ * Apply a transport command from the OS (desktop souvlaki events).
+ *
+ * Every branch forwards intent to the Rust playback context through the store's
+ * thin wrappers; the context performs the real play/pause/next/prev (and, on
+ * Android, the same actions are drained by Rust directly). This module never
+ * holds queue logic.
+ */
 function handleControl(raw: unknown) {
   const command = (typeof raw === "string" ? parseControl(raw) : raw) as ControlCommand | null;
   if (!command || typeof command.action !== "string") return;
@@ -166,15 +175,8 @@ export function startMediaControl() {
   });
 
   tickTimer = window.setInterval(pushPosition, POSITION_TICK_MS);
-  if (isAndroid()) {
-    pollTimer = window.setInterval(() => {
-      void invoke<string | null>("media_control_take_control")
-        .then((action) => {
-          if (action) handleControl(action);
-        })
-        .catch(() => {});
-    }, ANDROID_POLL_MS);
-  }
+  // Android no longer polls here: the native MediaSession queue is drained by
+  // Rust (`start_media_control_poller`) so control survives a killed webview.
 }
 
 /** Stop mirroring and tear the listeners down. */
@@ -185,8 +187,6 @@ export function stopMediaControl() {
   scope = null;
   window.clearInterval(tickTimer);
   tickTimer = 0;
-  window.clearInterval(pollTimer);
-  pollTimer = 0;
   unlisten?.();
   unlisten = null;
   void invoke("media_control_clear").catch(() => {});

@@ -123,19 +123,33 @@ pub fn run() {
                     // The playback engine decodes in Rust and reads the
                     // stream/smart caches directly; it shares their handles.
                     #[cfg(any(desktop, target_os = "android"))]
-                    {
-                        let engine = playback::engine::start(
-                            app.handle().clone(),
-                            stream_state.cache.clone(),
-                            stream_state.smart.clone(),
+                    let engine = playback::engine::start(
+                        app.handle().clone(),
+                        stream_state.cache.clone(),
+                        stream_state.smart.clone(),
+                    );
+                    #[cfg(any(desktop, target_os = "android"))]
+                    if !app.manage(engine.clone()) {
+                        log::error!(
+                            "playback: Engine was already managed; the newly started worker was dropped"
                         );
-                        if !app.manage(engine) {
-                            log::error!(
-                                "playback: Engine was already managed; the newly started worker was dropped"
-                            );
-                        }
                     }
                     app.manage(stream_state);
+
+                    // The playback context (queue / shuffle / repeat) is owned
+                    // by Rust so playback survives a dead or throttled webview.
+                    // It wraps the engine and drives it directly.
+                    #[cfg(any(desktop, target_os = "android"))]
+                    {
+                        let context =
+                            playback::context::PlaybackContext::new(engine.clone());
+                        if !app.manage(context) {
+                            log::error!("playback: PlaybackContext was already managed");
+                        }
+                        // Drain the native Android MediaSession action queue from
+                        // a Rust timer (the webview cannot be relied on to poll).
+                        playback::context::start_media_control_poller(app.handle().clone());
+                    }
                 }
                 Err(error) => log::error!("failed to initialize streaming caches: {error}"),
             }
@@ -273,11 +287,39 @@ pub fn run() {
             #[cfg(any(desktop, target_os = "android"))]
             playback::commands::audio_device_info,
             #[cfg(any(desktop, target_os = "android"))]
+            playback::commands::audio_devices,
+            #[cfg(any(desktop, target_os = "android"))]
+            playback::commands::audio_set_device,
+            #[cfg(any(desktop, target_os = "android"))]
             playback::commands::audio_set_quality,
             #[cfg(any(desktop, target_os = "android"))]
             playback::commands::audio_stop,
             #[cfg(any(desktop, target_os = "android"))]
             playback::commands::audio_state,
+            #[cfg(any(desktop, target_os = "android"))]
+            playback::commands_context::playback_set_queue,
+            #[cfg(any(desktop, target_os = "android"))]
+            playback::commands_context::playback_select,
+            #[cfg(any(desktop, target_os = "android"))]
+            playback::commands_context::playback_toggle,
+            #[cfg(any(desktop, target_os = "android"))]
+            playback::commands_context::playback_play,
+            #[cfg(any(desktop, target_os = "android"))]
+            playback::commands_context::playback_pause,
+            #[cfg(any(desktop, target_os = "android"))]
+            playback::commands_context::playback_next,
+            #[cfg(any(desktop, target_os = "android"))]
+            playback::commands_context::playback_previous,
+            #[cfg(any(desktop, target_os = "android"))]
+            playback::commands_context::playback_toggle_shuffle,
+            #[cfg(any(desktop, target_os = "android"))]
+            playback::commands_context::playback_set_shuffle,
+            #[cfg(any(desktop, target_os = "android"))]
+            playback::commands_context::playback_cycle_repeat,
+            #[cfg(any(desktop, target_os = "android"))]
+            playback::commands_context::playback_restore,
+            #[cfg(any(desktop, target_os = "android"))]
+            playback::commands_context::playback_state,
             commands::desktop_lyric::desktop_lyric_open,
             commands::desktop_lyric::desktop_lyric_close,
             commands::desktop_lyric::desktop_lyric_load,

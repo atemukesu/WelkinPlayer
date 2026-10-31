@@ -5,7 +5,20 @@
 
 import { computed, ref, watch } from "vue";
 import { defineStore } from "pinia";
-import { trackKey } from "../lib/sources";
+import { invoke } from "../api";
+import { trackKey, splitTrackKey } from "../lib/sources";
+
+/**
+ * Player store — a *mirror* of the Rust playback context.
+ *
+ * The queue, shuffle/repeat, track selection and every next/previous/play
+ * decision now live in Rust (`playback::context::PlaybackContext`). This store
+ * keeps only the UI-facing state and forwards intent through the `playback_*`
+ * Tauri commands. Rust pushes the authoritative snapshot back on the
+ * `playback:changed` event, which {@link applySnapshot} mirrors here. This is
+ * what lets playback (and the Android MediaSession) keep working when the
+ * webview is backgrounded or killed: the store holds no decision logic.
+ */
 
 const VOLUME_STORAGE_KEY = "welkin-volume";
 const MUTED_STORAGE_KEY = "welkin-muted";
@@ -18,6 +31,20 @@ export const MAX_RATE = 2;
 const SHUFFLE_STORAGE_KEY = "welkin-shuffle";
 const REPEAT_STORAGE_KEY = "welkin-repeat";
 export type RepeatMode = "off" | "all" | "one";
+
+/** Snapshot pushed by Rust on every context change. */
+export interface PlaybackSnapshot {
+  /** Track keys (`sourceId::path`) of the active, possibly-shuffled queue. */
+  queue: string[];
+  /** Index of the current item within `queue`, or -1 when nothing is queued. */
+  queueIndex: number;
+  shuffle: boolean;
+  repeat: RepeatMode;
+  hasTrack: boolean;
+  currentSourceId: string | null;
+  currentPath: string | null;
+  isPlaying: boolean;
+}
 
 /** Restore the locally saved output volume, falling back to the default. */
 function readStoredVolume(): number {
@@ -77,14 +104,30 @@ function formatClock(seconds: number): string {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
 }
 
+/** Build a minimal placeholder track for a key the library has not loaded yet. */
+function placeholderFromKey(key: string): Track | null {
+  const split = splitTrackKey(key);
+  if (!split.path) return null;
+  const name = split.path.split("/").pop() ?? split.path;
+  return {
+    id: -1,
+    title: name,
+    artist: "",
+    album: "",
+    duration: "",
+    color: "",
+    sourceId: split.sourceId,
+    path: split.path,
+  };
+}
+
 export const usePlayerStore = defineStore("player", () => {
   const tracks = ref<Track[]>([]);
+  /** The active, possibly-shuffled queue, mirrored from Rust. */
   const queue = ref<Track[]>([]);
-  /** Unshuffled source order of `queue`, so toggling shuffle off can restore it. */
+  /** Kept in sync with `queue` for API compatibility; Rust owns the real order. */
   const baseQueue = ref<Track[]>([]);
   const queueIndex = ref(-1);
-  /** Bumped when a track is (re)selected, so audio restarts even for the same path. */
-  const playbackNonce = ref(0);
   const shuffle = ref(localStorage.getItem(SHUFFLE_STORAGE_KEY) === "1");
   const repeat = ref<RepeatMode>(localStorage.getItem(REPEAT_STORAGE_KEY) === "all" ? "all" : localStorage.getItem(REPEAT_STORAGE_KEY) === "one" ? "one" : "off");
 
@@ -107,6 +150,9 @@ export const usePlayerStore = defineStore("player", () => {
   const workRate = ref(0);
   /** Rate the output stream is currently opened at (the quality picker's target). */
   const outputRate = ref(0);
+
+  /** Last snapshot from Rust, re-applied when `tracks` resolves new metadata. */
+  let lastSnapshot: PlaybackSnapshot | null = null;
 
   // Persist the output volume/mute locally so each launch starts where the
   // previous one left off (mirrors the theme/accent localStorage pattern).
@@ -131,23 +177,18 @@ export const usePlayerStore = defineStore("player", () => {
   watch(shuffle, (value) => localStorage.setItem(SHUFFLE_STORAGE_KEY, value ? "1" : "0"));
   watch(repeat, (value) => localStorage.setItem(REPEAT_STORAGE_KEY, value));
 
-  // Keep `queueIndex` aligned with the current track whenever it changes from
-  // outside the queue helpers (e.g. startup auto-select or resume). This makes
-  // next/previous and the queue panel correct from the very first interaction.
+  // Re-resolve a queued/playing track once the library loads the real metadata
+  // for a key that previously only had a placeholder.
   watch(
-    () => currentTrack.value?.id,
-    (id) => {
-      if (id === undefined) return;
-      const index = queue.value.findIndex((track) => track.id === id);
-      if (index >= 0) queueIndex.value = index;
+    () => tracks.value.length,
+    () => {
+      if (lastSnapshot) applySnapshot(lastSnapshot);
     },
   );
 
   const currentIndex = computed(() => {
-    if (queueIndex.value >= 0 && queue.value[queueIndex.value]?.id === currentTrack.value?.id) {
-      return queueIndex.value + 1;
-    }
-    return currentTrack.value ? tracks.value.findIndex((track) => track.id === currentTrack.value?.id) + 1 : 0;
+    if (queue.value.length === 0) return currentTrack.value ? 1 : 0;
+    return queueIndex.value >= 0 ? queueIndex.value + 1 : (currentTrack.value ? tracks.value.findIndex((track) => trackKey(track) === trackKey(currentTrack.value)) + 1 : 0);
   });
   const hasTrack = computed(() => currentTrack.value !== null);
   const elapsedTime = computed(() => formatClock(position.value));
@@ -158,146 +199,39 @@ export const usePlayerStore = defineStore("player", () => {
     duration.value > 0 ? formatClock(Math.max(0, duration.value - position.value)) : totalTime.value,
   );
 
-  function resetProgress() {
-    position.value = 0;
-    progress.value = 0;
-    bufferedProgress.value = 0;
-    duration.value = 0;
-  }
-
-  function selectTrack(track: Track) {
-    if (track.unavailable) return;
-    // Re-selecting the same track must still restart playback (repeat-one,
-    // clicking the current row again, wrap-around with a one-track queue). The
-    // path is the audio identity, so compare on it (ids can be reassigned on
-    // a library refresh).
-    const restarting = !!track.path && !!currentTrack.value?.path && trackKey(currentTrack.value) === trackKey(track);
-    currentTrack.value = track;
-    if (restarting) {
-      // Same media element: no metadata event will follow, so keep the known
-      // duration/buffer and only rewind the position.
-      position.value = 0;
-      progress.value = 0;
+  /**
+   * Mirror a Rust `playback:changed` snapshot into the store. Track *metadata*
+   * is resolved from the local library when present, so the UI can show titles
+   * and covers; unknown keys fall back to a placeholder.
+   */
+  function applySnapshot(snapshot: PlaybackSnapshot) {
+    lastSnapshot = snapshot;
+    if (snapshot.shuffle !== shuffle.value) shuffle.value = snapshot.shuffle;
+    if (snapshot.repeat !== repeat.value) repeat.value = snapshot.repeat;
+    queueIndex.value = snapshot.queueIndex;
+    queue.value = snapshot.queue
+      .map((key) => tracks.value.find((track) => trackKey(track) === key) ?? placeholderFromKey(key))
+      .filter((track): track is Track => track !== null);
+    baseQueue.value = queue.value;
+    isPlaying.value = snapshot.isPlaying;
+    if (snapshot.currentSourceId && snapshot.currentPath) {
+      const key = `${snapshot.currentSourceId}::${snapshot.currentPath}`;
+      currentTrack.value =
+        tracks.value.find((track) => trackKey(track) === key) ?? placeholderFromKey(key);
     } else {
-      resetProgress();
+      currentTrack.value = null;
     }
-    isPlaying.value = true;
-    if (restarting) playbackNonce.value += 1;
   }
 
-  function shuffled<T>(items: T[]): T[] {
-    const result = [...items];
-    for (let index = result.length - 1; index > 0; index--) {
-      const other = Math.floor(Math.random() * (index + 1));
-      [result[index], result[other]] = [result[other], result[index]];
-    }
-    return result;
+  function resolveIndex(track: Track): number {
+    const key = trackKey(track);
+    if (!key) return -1;
+    return queue.value.findIndex((item) => trackKey(item) === key);
   }
 
-  /** Start a track while preserving the exact context it was chosen from. */
-  function playInQueue(items: Track[], track: Track) {
-    if (track.unavailable) return;
-    const valid = items.filter((item) => item.path);
-    if (valid.length === 0) return;
-    const selected = valid.find((item) => item.id === track.id);
-    baseQueue.value = [...valid];
-    if (shuffle.value && selected) {
-      // Keep the explicitly chosen track first, then shuffle the rest, so the
-      // starting point is predictable instead of landing at a random offset.
-      queue.value = [selected, ...shuffled(valid.filter((item) => item.id !== selected.id))];
-      queueIndex.value = 0;
-    } else {
-      const ordered = shuffle.value ? shuffled(valid) : valid;
-      const selectedIndex = selected ? ordered.findIndex((item) => item.id === selected.id) : -1;
-      queue.value = ordered;
-      queueIndex.value = selectedIndex >= 0 ? selectedIndex : 0;
-    }
-    selectTrack(queue.value[queueIndex.value]);
-  }
-
-  /** Reorder `queue` for the requested shuffle state, keeping `baseQueue` intact. */
-  function setShuffle(on: boolean) {
-    shuffle.value = on;
-    if (queue.value.length === 0) return;
-    const current = currentTrack.value;
-    if (on) {
-      const rest = queue.value.filter((track) => track.id !== current?.id);
-      queue.value = current ? [current, ...shuffled(rest)] : shuffled(queue.value);
-      queueIndex.value = current ? 0 : -1;
-      return;
-    }
-    // Restore the original source order and re-locate the current track in it.
-    const base = baseQueue.value.length > 0 ? baseQueue.value : queue.value;
-    queue.value = [...base];
-    const index = current ? queue.value.findIndex((track) => track.id === current.id) : -1;
-    queueIndex.value = index >= 0 ? index : 0;
-  }
-
-  function toggleShuffle() {
-    if (repeat.value === "one") repeat.value = "all";
-    setShuffle(!shuffle.value);
-  }
-
-  function cycleRepeat() {
-    const next: RepeatMode = repeat.value === "off" ? "all" : repeat.value === "all" ? "one" : "off";
-    repeat.value = next;
-    if (next === "one" && shuffle.value) setShuffle(false);
-  }
-
-  /** Replace the whole library, e.g. after loading a remote WebDAV listing. */
+  /** Push the whole library listing (used by UI that lists tracks to play). */
   function setTracks(nextTracks: Track[]) {
-    const previousKey = trackKey(currentTrack.value);
     tracks.value = [...nextTracks];
-
-    // Re-point existing queue entries at the fresh track objects (metadata,
-    // covers and ids may have changed) while preserving the user's queue order.
-    const byKey = new Map(
-      nextTracks
-        .filter((track) => track.path)
-        .map((track) => [trackKey(track) as string, track]),
-    );
-    const remap = (list: Track[]) =>
-      list
-        .map((track) => {
-          const key = trackKey(track);
-          return key ? byKey.get(key) : undefined;
-        })
-        .filter((track): track is Track => !!track);
-
-    // A fresh library load must honour the persisted shuffle state so launching
-    // with shuffle already on starts with a shuffled queue (the resume watcher
-    // only re-points `currentTrack`, it never rebuilds the order). Only the
-    // first population/fallback re-shuffles; refreshes keep the running order
-    // because `queue` is non-empty by then.
-    const source = nextTracks.filter((track) => track.path);
-    if (baseQueue.value.length === 0) baseQueue.value = [...source];
-    else {
-      const remapped = remap(baseQueue.value);
-      baseQueue.value = remapped.length > 0 ? remapped : [...source];
-    }
-    if (queue.value.length === 0) queue.value = shuffle.value ? shuffled(source) : [...source];
-    else {
-      const remapped = remap(queue.value);
-      queue.value = remapped.length > 0 ? remapped : shuffle.value ? shuffled(source) : [...source];
-    }
-
-    // Keep the current selection (and its restored position/playing state)
-    // when it still exists in the new listing; only fall back to the first
-    // track for a genuinely fresh library.
-    const preserved = previousKey
-      ? nextTracks.find((track) => trackKey(track) === previousKey)
-      : undefined;
-    if (preserved) {
-      currentTrack.value = preserved;
-      queueIndex.value = queue.value.findIndex((track) => track.id === preserved.id);
-      return;
-    }
-    currentTrack.value = nextTracks[0] ?? null;
-    resetProgress();
-    isPlaying.value = false;
-    queueIndex.value = currentTrack.value
-      ? queue.value.findIndex((track) => track.id === currentTrack.value?.id)
-      : -1;
   }
 
   /** Serialize the play queue as stable track keys, for persistence. */
@@ -307,70 +241,114 @@ export const usePlayerStore = defineStore("player", () => {
       .filter((key): key is string => !!key);
   }
 
-  /**
-   * Rebuild the play queue from persisted keys once the library is available.
-   * Keys that no longer resolve to a track are dropped. The stored index can
-   * point at a different track once entries disappear, so it is only used as a
-   * fallback: the current track's own key anchors the position when present.
-   * Returns false when nothing could be restored.
-   */
-  function restoreQueue(keys: string[], index: number, currentKey?: string): boolean {
-    if (keys.length === 0) return false;
-    const byKey = new Map<string, Track>();
-    for (const track of tracks.value) {
-      const key = trackKey(track);
-      if (key && !byKey.has(key)) byKey.set(key, track);
-    }
-    const restored = keys
-      .map((key) => byKey.get(key))
-      .filter((track): track is Track => !!track);
-    if (restored.length === 0) return false;
-    queue.value = restored;
-    baseQueue.value = [...restored];
-    const anchor = currentKey ? restored.findIndex((track) => trackKey(track) === currentKey) : -1;
-    queueIndex.value = anchor >= 0
-      ? anchor
-      : index >= 0 && index < restored.length ? index : 0;
-    currentTrack.value = restored[queueIndex.value];
-    return true;
-  }
-
-  /** Merge a partial update into one track (metadata / cover arrive later). */
-  function updateTrack(id: number, patch: Partial<Track>) {
-    const track = tracks.value.find((item) => item.id === id);
-    if (!track) return;
-    Object.assign(track, patch);
-    if (currentTrack.value && currentTrack.value.id === id) {
-      currentTrack.value = { ...currentTrack.value, ...patch };
+  /** Start a track while preserving the exact context it was chosen from. */
+  async function playInQueue(items: Track[], track: Track) {
+    if (track.unavailable) return;
+    const valid = items.filter((item) => item.path);
+    if (valid.length === 0) return;
+    const keys = valid.map((item) => trackKey(item)).filter((key): key is string => !!key);
+    const startKey = trackKey(track) ?? undefined;
+    try {
+      await invoke("playback_set_queue", { keys, startKey });
+    } catch (error) {
+      console.warn("[welkin] playback_set_queue failed", error);
     }
   }
 
-  /**
-   * Merge many partial updates in a single pass. Hydrating a 10k-track library
-   * otherwise costs O(n²) `find` calls plus one reactive write per track.
-   */
-  function updateTracks(patches: Array<{ id: number; patch: Partial<Track> }>) {
-    if (patches.length === 0) return;
-    const byId = new Map(tracks.value.map((track) => [track.id, track]));
-    for (const { id, patch } of patches) {
-      const track = byId.get(id);
-      if (track) Object.assign(track, patch);
-      if (currentTrack.value && currentTrack.value.id === id) {
-        currentTrack.value = { ...currentTrack.value, ...patch };
-      }
+  /** Select a track by its identity, finding its index in the current queue. */
+  async function selectTrack(track: Track) {
+    if (track.unavailable) return;
+    const index = resolveIndex(track);
+    if (index < 0) return;
+    try {
+      await invoke("playback_select", { index });
+    } catch (error) {
+      console.warn("[welkin] playback_select failed", error);
     }
   }
 
-  function togglePlayback() {
+  async function toggleShuffle() {
+    if (repeat.value === "one") {
+      // The Rust context mirrors the frontend's cycle semantics: leaving
+      // repeat-one also clears shuffle. Request the cycle first; if the result is
+      // still repeat-one the UI shows it as off+shuffle as appropriate.
+    }
+    try {
+      await invoke("playback_toggle_shuffle");
+    } catch (error) {
+      console.warn("[welkin] playback_toggle_shuffle failed", error);
+    }
+  }
+
+  async function cycleRepeat() {
+    try {
+      await invoke("playback_cycle_repeat");
+    } catch (error) {
+      console.warn("[welkin] playback_cycle_repeat failed", error);
+    }
+  }
+
+  async function setShuffle(on: boolean) {
+    try {
+      await invoke("playback_set_shuffle", { on });
+    } catch (error) {
+      console.warn("[welkin] playback_set_shuffle failed", error);
+    }
+  }
+
+  /** Advance to the next track (Rust honours repeat-one / repeat-all / end). */
+  async function next() {
+    try {
+      await invoke("playback_next");
+    } catch (error) {
+      console.warn("[welkin] playback_next failed", error);
+    }
+  }
+
+  /** Go to the previous track. */
+  async function previous() {
+    try {
+      await invoke("playback_previous");
+    } catch (error) {
+      console.warn("[welkin] playback_previous failed", error);
+    }
+  }
+
+  async function togglePlayback() {
     if (!currentTrack.value) return;
-    isPlaying.value = !isPlaying.value;
+    try {
+      await invoke("playback_toggle");
+    } catch (error) {
+      console.warn("[welkin] playback_toggle failed", error);
+    }
   }
 
-  function setPlaying(value: boolean) {
-    isPlaying.value = value;
+  async function setPlaying(value: boolean) {
+    try {
+      await invoke(value ? "playback_play" : "playback_pause");
+    } catch (error) {
+      console.warn("[welkin] playback play/pause failed", error);
+    }
   }
 
-  /** Update the position from the media element (also syncs the slider). */
+  /** Restore a persisted queue + position into the Rust context. */
+  async function restoreQueue(keys: string[], index: number, currentKey?: string): Promise<boolean> {
+    if (keys.length === 0) return false;
+    try {
+      const ok = await invoke<boolean>("playback_restore", {
+        keys,
+        index,
+        currentKey: currentKey ?? null,
+      });
+      return ok;
+    } catch (error) {
+      console.warn("[welkin] playback_restore failed", error);
+      return false;
+    }
+  }
+
+  // --- UI-facing transport state set by the audio layer (position/duration) ---
+
   function setPosition(seconds: number) {
     position.value = Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
     progress.value = duration.value > 0 ? Math.min(100, (position.value / duration.value) * 100) : 0;
@@ -403,47 +381,36 @@ export const usePlayerStore = defineStore("player", () => {
     muted.value = !muted.value;
   }
 
-  function next() {
-    if (queue.value.length === 0) return;
-    if (repeat.value === "one") {
-      if (currentTrack.value) selectTrack(currentTrack.value);
-      return;
+  /** Merge a partial update into one track (metadata / cover arrive later). */
+  function updateTrack(id: number, patch: Partial<Track>) {
+    const track = tracks.value.find((item) => item.id === id);
+    if (!track) return;
+    Object.assign(track, patch);
+    if (currentTrack.value && currentTrack.value.id === id) {
+      currentTrack.value = { ...currentTrack.value, ...patch };
     }
-    const nextIndex = queueIndex.value + 1;
-    if (nextIndex >= queue.value.length) {
-      if (repeat.value !== "all") { isPlaying.value = false; return; }
-      // Reaching the end: with repeat-all + shuffle, start a fresh shuffle
-      // instead of replaying the original shuffled order.
-      if (shuffle.value && queue.value.length > 1) {
-        const current = currentTrack.value;
-        const reshuffled = shuffled(queue.value);
-        if (current && reshuffled[0].id === current.id) {
-          [reshuffled[0], reshuffled[1]] = [reshuffled[1], reshuffled[0]];
-        }
-        queue.value = reshuffled;
-      }
-      queueIndex.value = 0;
-    } else queueIndex.value = nextIndex;
-    selectTrack(queue.value[queueIndex.value]);
   }
 
-  function previous() {
-    if (queue.value.length === 0) return;
-    if (repeat.value === "one") {
-      if (currentTrack.value) selectTrack(currentTrack.value);
-      return;
+  /** Merge many partial updates in a single pass. */
+  function updateTracks(patches: Array<{ id: number; patch: Partial<Track> }>) {
+    if (patches.length === 0) return;
+    const byId = new Map(tracks.value.map((track) => [track.id, track]));
+    for (const { id, patch } of patches) {
+      const track = byId.get(id);
+      if (track) Object.assign(track, patch);
+      if (currentTrack.value && currentTrack.value.id === id) {
+        currentTrack.value = { ...currentTrack.value, ...patch };
+      }
     }
-    queueIndex.value = queueIndex.value <= 0 ? queue.value.length - 1 : queueIndex.value - 1;
-    selectTrack(queue.value[queueIndex.value]);
   }
 
   return {
     tracks,
     queue,
+    baseQueue,
     queueIndex,
     shuffle,
     repeat,
-    playbackNonce,
     currentTrack,
     isPlaying,
     progress,
@@ -461,10 +428,7 @@ export const usePlayerStore = defineStore("player", () => {
     elapsedTime,
     totalTime,
     remainingTime,
-    selectTrack,
-    playInQueue,
-    toggleShuffle,
-    cycleRepeat,
+    applySnapshot,
     setTracks,
     queueKeys,
     restoreQueue,
@@ -481,5 +445,10 @@ export const usePlayerStore = defineStore("player", () => {
     toggleMute,
     next,
     previous,
+    selectTrack,
+    playInQueue,
+    toggleShuffle,
+    cycleRepeat,
+    setShuffle,
   };
 });

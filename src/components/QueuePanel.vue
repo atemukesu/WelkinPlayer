@@ -27,7 +27,6 @@ const upcoming = computed(() => {
 function playFromQueue(index: number) {
   const track = player.queue[index];
   if (track) {
-    player.queueIndex = index;
     player.selectTrack(track);
   }
 }

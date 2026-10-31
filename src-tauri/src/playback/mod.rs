@@ -16,5 +16,7 @@
 //! so the worker only has to decode at the file's native rate.
 
 pub mod commands;
+pub mod commands_context;
+pub mod context;
 pub mod engine;
 pub mod source;
