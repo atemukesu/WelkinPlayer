@@ -327,12 +327,12 @@
 
       /*
        * Lines that carry only a single line-level timestamp (no per-word
-       * timing) have no word sweep to run. The JS locks --p at 100% for them,
-       * so the whole line paints in the active color instead of sitting flat at
-       * the base text color. The marker is on the line so the intent is visible
-       * in the DOM even when karaoke is off.
+       * timing) have no word sweep to run. The JS drives every word from the
+       * line's own start/end, so the whole line lights up at once when sung
+       * instead of sitting flat at the base color the entire time it is active.
+       * The `whole-line` marker stays on the line so the intent is visible in
+       * the DOM even when karaoke is off.
        */
-      .lyric-line.whole-line .word { --p: 100%; }
 
       #tools {
         position: fixed;

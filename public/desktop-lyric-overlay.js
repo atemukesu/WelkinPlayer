@@ -253,7 +253,7 @@
     paragraph.className = "lyric-line " + kind + (isCounterLine(line) ? " duet" : "") + (lineHasWordTimestamps(line) ? "" : " whole-line");
     var words = makeWords(line);
     paragraph.appendChild(words.fragment);
-    return { el: paragraph, words: words.elements, wordData: words.data, hasTimestamps: words.hasTimestamps };
+    return { el: paragraph, words: words.elements, wordData: words.data, hasTimestamps: words.hasTimestamps, line: line };
   }
 
   function makeSubline(text, className, counter) {
@@ -271,7 +271,7 @@
     var counter = isCounterLine(entry.line);
     if (state.settings && state.settings.translation && entry.line.translation) group.appendChild(makeSubline(entry.line.translation, "translation", counter));
     if (entry.line.roman) group.appendChild(makeSubline(entry.line.roman, "roman", counter));
-    return { el: group, wordSets: [{ elements: line.words, data: line.wordData, hasTimestamps: line.hasTimestamps }] };
+    return { el: group, wordSets: [{ elements: line.words, data: line.wordData, hasTimestamps: line.hasTimestamps, line: line.line }] };
   }
 
   function buildExtraItem(entry) {
@@ -282,14 +282,14 @@
     if (entry.line.isBG) {
       var bg = makeLine(entry.line, "bg");
       wrapper.appendChild(bg.el);
-      wordSets.push({ elements: bg.words, data: bg.wordData, hasTimestamps: bg.hasTimestamps });
+      wordSets.push({ elements: bg.words, data: bg.wordData, hasTimestamps: bg.hasTimestamps, line: bg.line });
       var bgCounter = isCounterLine(entry.line);
       if (state.settings && state.settings.translation && entry.line.translation) wrapper.appendChild(makeSubline(entry.line.translation, "translation bg-translation", bgCounter));
       if (entry.line.roman) wrapper.appendChild(makeSubline(entry.line.roman, "roman", bgCounter));
     } else {
       var duet = makeLine(entry.line, "primary");
       wrapper.appendChild(duet.el);
-      wordSets.push({ elements: duet.words, data: duet.wordData, hasTimestamps: duet.hasTimestamps });
+      wordSets.push({ elements: duet.words, data: duet.wordData, hasTimestamps: duet.hasTimestamps, line: duet.line });
       var counter = isCounterLine(entry.line);
       if (state.settings && state.settings.translation && entry.line.translation) wrapper.appendChild(makeSubline(entry.line.translation, "translation", counter));
       if (entry.line.roman) wrapper.appendChild(makeSubline(entry.line.roman, "roman", counter));
@@ -476,20 +476,30 @@
     return state.playing ? state.positionMs + (performance.now() - state.lastTickAt) : state.positionMs;
   }
 
+  function lineProgress(line, position) {
+    var start = Number(line.startTime);
+    if (!Number.isFinite(start)) return 0;
+    var end = Number(line.endTime);
+    if (!Number.isFinite(end) || end <= start) return position >= start ? 1 : 0;
+    return Math.min(1, Math.max(0, (position - start) / (end - start)));
+  }
+
   function updateProgress(position) {
     if (!state.currentNode || !state.settings) return;
     var sets = state.currentWordSets;
     for (var s = 0; s < sets.length; s++) {
       var set = sets[s];
       // Lines without genuine per-word timestamps have no word sweep to run;
-      // lock the karaoke clip at 100% so the whole line paints in the active
-      // color instead of sitting flat at the base text color.
+      // every word shares one progress derived from the line's own start/end,
+      // so the whole line lights up at once when the line is sung instead of
+      // sitting flat at the base color the entire time it is active.
       var wholeLine = !set.hasTimestamps;
+      var lineProgressValue = wholeLine ? lineProgress(set.line, position) : 0;
       var elements = set.elements;
       var data = set.data;
       for (var i = 0; i < elements.length; i++) {
         var word = data[i];
-        var progress = wholeLine ? 1 : 0;
+        var progress = wholeLine ? lineProgressValue : 0;
         if (word) progress = Math.max(0, Math.min(1, (position - word.start) / Math.max(1, word.end - word.start)));
         elements[i].style.setProperty("--p", progress * 100 + "%");
         elements[i].classList.toggle("is-unplayed", progress <= 0);
