@@ -16,6 +16,19 @@ const STORAGE_KEY = "welkin-audio-rate";
  */
 export const preferredRate = ref(readStored());
 
+/** One selectable output device, with the music rates it actually supports. */
+export interface DeviceEntry {
+  /** Stable id (device name / AudioManager product name). */
+  id: string;
+  /** Human-readable label. */
+  name: string;
+  /** Music sample rates this device can take. */
+  supportedRates: number[];
+  /** `AudioDeviceInfo.getType()` on Android; `0` elsewhere. Lets the UI tag a row
+   * as headphones / USB / Bluetooth / built-in speaker. */
+  deviceType: number;
+}
+
 /** Device capabilities reported by the backend. */
 export interface AudioDeviceInfo {
   /** Rate the output stream is currently opened at. */
@@ -24,10 +37,20 @@ export interface AudioDeviceInfo {
   supportedRates: number[];
   /** Highest rate on offer (0 when unknown). */
   maxRate: number;
+  /** The output devices currently available. */
+  devices: DeviceEntry[];
+  /** Identifier of the device the stream is bound to. `null` means the engine
+   * follows the system default rather than a pinned choice. */
+  currentDevice: string | null;
 }
 
 /** Last probed device info; `null` until {@link refreshDeviceInfo} runs. */
 export const deviceInfo = ref<AudioDeviceInfo | null>(null);
+
+/** The device the user asked for, or `null` to follow the system default.
+ * Mirrors the backend's pinned selection; kept in sync by {@link refreshDevices}
+ * and the `audio:deviceChanged` event. */
+export const currentDevice = ref<string | null>(null);
 
 /** Whether the output-quality picker modal is open. */
 export const qualityModalOpen = ref(false);
@@ -57,8 +80,41 @@ export async function refreshDeviceInfo(): Promise<AudioDeviceInfo | null> {
   try {
     const info = await invoke<AudioDeviceInfo>("audio_device_info");
     deviceInfo.value = info;
+    currentDevice.value = info.currentDevice ?? null;
     return info;
   } catch {
     return null;
+  }
+}
+
+/**
+ * List the output devices currently available and sync the pinned selection. The
+ * first entry of the returned list is the system default where distinguishable.
+ */
+export async function refreshDevices(): Promise<DeviceEntry[]> {
+  try {
+    const info = await invoke<AudioDeviceInfo>("audio_device_info");
+    deviceInfo.value = info;
+    currentDevice.value = info.currentDevice ?? null;
+    return info.devices ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Select a specific output device. `deviceId` of `null` (or `undefined`) tells
+ * the engine to follow the system default. The engine reopens the stream and
+ * keeps the current track playing; the `audio:deviceChanged` event later
+ * confirms the new `currentDevice`.
+ */
+export async function setDevice(deviceId: string | null | undefined) {
+  const next = deviceId ?? null;
+  currentDevice.value = next;
+  try {
+    await invoke("audio_set_device", { deviceId: next });
+  } catch {
+    // The engine emits `audio:deviceChanged` on success; if it failed the
+    // previous selection stands and will be re-synced by the next refresh.
   }
 }

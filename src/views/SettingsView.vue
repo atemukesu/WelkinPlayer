@@ -22,6 +22,7 @@ import { useWindowBehaviorStore } from "../stores/windowBehavior";
 import { useUpdateStore } from "../stores/update";
 import { useCacheStore } from "../stores/cache";
 import { isDesktop } from "../lib/desktopLyric";
+import { refreshDevices, setDevice, currentDevice, deviceInfo, formatRate } from "../lib/audioQuality";
 import LyricsSettings from "../components/LyricsSettings.vue";
 import DesktopLyricSettings from "../components/DesktopLyricSettings.vue";
 import pkg from "../../package.json";
@@ -117,6 +118,54 @@ async function clearCache() {
     clearingCache.value = false;
   }
 }
+/** Output device picker. The engine polls the device list (once per second on
+ * Android via `AudioManager`, on desktop via cpal) and rebuilds the stream on
+ * change, so this also recovers playback after a headphone plug. The list shown
+ * here lives off `deviceInfo.devices`, which `lib/audio.ts` keeps in sync with
+ * the `audio:deviceChanged` event — so plugging in headphones updates the list
+ * live without a manual refresh. A manual refresh button is still offered for
+ * when the page was opened before a change. */
+const devices = computed(() => deviceInfo.value?.devices ?? []);
+const devicesLoading = ref(false);
+/** The device selected in the UI; `null` means "follow system default". */
+const selectedDevice = ref<string | null>(null);
+async function refreshDevicesList() {
+  devicesLoading.value = true;
+  try {
+    const list = await refreshDevices();
+    selectedDevice.value = currentDevice.value ?? null;
+    if (list.length === 0) {
+      // Backend returned nothing; fall back to the already-cached event data.
+      selectedDevice.value = deviceInfo.value?.currentDevice ?? null;
+    }
+  } finally {
+    devicesLoading.value = false;
+  }
+}
+function selectDevice(id: string | null) {
+  selectedDevice.value = id;
+  void setDevice(id);
+}
+/** Human label for the currently bound device, or the default hint. */
+const currentDeviceLabel = computed(() => {
+  if (selectedDevice.value === null) return t("audio.deviceDefault");
+  return devices.value.find((device) => device.id === selectedDevice.value)?.name ?? selectedDevice.value;
+});
+
+/** Short tag for an Android `AudioDeviceInfo` type so the UI can tell headphones
+ * from USB/Bluetooth/speaker without guessing from the product name. */
+function deviceTypeLabel(type: number): string {
+  switch (type) {
+    case 2: return t("audio.typeSpeaker");
+    case 3:
+    case 4: return t("audio.typeWired");
+    case 8: return t("audio.typeBluetooth");
+    case 11:
+    case 22: return t("audio.typeUsb");
+    default: return "";
+  }
+}
+
 /** Open an external link, falling back to a browser tab and finally a toast. */
 async function openLink(url: string) {
   try {
@@ -172,6 +221,7 @@ onMounted(() => {
     .catch(() => {});
   void refreshUsage();
   usageTimer = window.setInterval(() => void refreshUsage(), 3000);
+  void refreshDevicesList();
 });
 onUnmounted(() => { window.clearInterval(usageTimer); });
 </script>
@@ -383,6 +433,51 @@ button.text-dim:hover:not(:disabled) {
             <div class="inline-flex border border-line"><button type="button" class="h-9 px-4 text-[13px] font-semibold uppercase tracking-[0.2em]" :class="!windowBehavior.closeToTray ? 'bg-accent text-accent-fg' : 'text-muted hover:text-fg'" @click="windowBehavior.closeToTray = false">{{ t("settings.window.close") }}</button><button type="button" class="h-9 border-l border-line px-4 text-[13px] font-semibold uppercase tracking-[0.2em]" :class="windowBehavior.closeToTray ? 'bg-accent text-accent-fg' : 'text-muted hover:text-fg'" @click="windowBehavior.closeToTray = true">{{ t("settings.window.tray") }}</button></div>
           </div>
           <p class="text-[11px] leading-relaxed text-dim">{{ t("settings.window.hint") }}</p>
+        </div>
+      </section>
+
+      <section class="ak-frame grid gap-6 border border-line bg-surface p-6 lg:grid-cols-[1fr_1.3fr]">
+        <div><h2 class="text-sm font-bold uppercase tracking-[0.2em]">{{ t("audio.title") }}</h2></div>
+        <div class="grid gap-4">
+          <p class="flex flex-wrap items-baseline gap-1.5 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("audio.currentDevice") }}<span class="font-semibold tabular-nums text-fg">{{ currentDeviceLabel }}</span><span v-if="deviceInfo?.currentRate" class="font-semibold tabular-nums text-accent">{{ formatRate(deviceInfo.currentRate) }}</span></p>
+          <div v-if="isDesktop()">
+            <div class="grid gap-2">
+              <div class="flex justify-end">
+                <button
+                  type="button"
+                  class="ak-clip-tr h-8 border border-line px-4 text-[11px] font-semibold uppercase tracking-[0.2em] disabled:opacity-60"
+                  :disabled="devicesLoading"
+                  @click="refreshDevicesList"
+                >{{ t("audio.refresh") }}</button>
+              </div>
+              <div v-if="devicesLoading" class="text-[12px] text-dim">{{ t("audio.loading") }}</div>
+              <div v-else-if="devices.length === 0" class="text-[12px] text-dim">{{ t("audio.noDevices") }}</div>
+              <div v-else class="grid gap-1.5">
+                <button
+                  v-for="device in devices"
+                  :key="device.id"
+                  type="button"
+                  class="flex h-10 items-center justify-between border px-3 text-[13px] font-semibold tracking-wide transition-colors"
+                  :class="selectedDevice === device.id ? 'border-accent text-accent' : 'border-line text-muted hover:border-accent hover:text-fg'"
+                  :aria-pressed="selectedDevice === device.id"
+                  @click="selectDevice(device.id)"
+                >
+                  <span class="flex min-w-0 items-baseline gap-2 truncate"><span class="truncate">{{ device.name }}</span><span v-if="device.deviceType" class="text-[10px] font-normal normal-case tracking-normal text-dim">{{ deviceTypeLabel(device.deviceType) }}</span></span>
+                  <span v-if="selectedDevice === device.id" class="text-[10px] uppercase tracking-[0.2em]">{{ t("audio.active") }}</span>
+                </button>
+                <button
+                  type="button"
+                  class="flex h-10 items-center justify-between border px-3 text-[13px] font-semibold tracking-wide transition-colors"
+                  :class="selectedDevice === null ? 'border-accent text-accent' : 'border-line text-muted hover:border-accent hover:text-fg'"
+                  :aria-pressed="selectedDevice === null"
+                  @click="selectDevice(null)"
+                >
+                  <span class="flex items-baseline gap-2">{{ t("audio.deviceDefault") }}</span>
+                  <span v-if="selectedDevice === null" class="text-[10px] uppercase tracking-[0.2em]">{{ t("audio.active") }}</span>
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 
