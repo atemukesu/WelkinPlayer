@@ -128,28 +128,35 @@ pub fn run() {
                         stream_state.cache.clone(),
                         stream_state.smart.clone(),
                     );
+                    // The playback context (queue / shuffle / repeat) is owned
+                    // by Rust so playback survives a dead or throttled webview.
+                    // It wraps the engine and drives it directly. Build its clone
+                    // *before* moving `engine` into Tauri state, so the original
+                    // engine stays alive for the whole process (dropping it would
+                    // run `Engine::drop`, which stops the worker).
                     #[cfg(any(desktop, target_os = "android"))]
-                    if !app.manage(engine.clone()) {
+                    let context =
+                        playback::context::PlaybackContext::new(engine.clone());
+                    #[cfg(any(desktop, target_os = "android"))]
+                    if !app.manage(engine) {
                         log::error!(
                             "playback: Engine was already managed; the newly started worker was dropped"
                         );
                     }
                     app.manage(stream_state);
-
-                    // The playback context (queue / shuffle / repeat) is owned
-                    // by Rust so playback survives a dead or throttled webview.
-                    // It wraps the engine and drives it directly.
                     #[cfg(any(desktop, target_os = "android"))]
-                    {
-                        let context =
-                            playback::context::PlaybackContext::new(engine.clone());
-                        if !app.manage(context) {
-                            log::error!("playback: PlaybackContext was already managed");
-                        }
-                        // Drain the native Android MediaSession action queue from
-                        // a Rust timer (the webview cannot be relied on to poll).
-                        playback::context::start_media_control_poller(app.handle().clone());
+                    if !app.manage(context) {
+                        log::error!("playback: PlaybackContext was already managed");
                     }
+                    // Drain the native Android MediaSession action queue from a
+                    // Rust timer (the webview cannot be relied on to poll).
+                    #[cfg(any(desktop, target_os = "android"))]
+                    playback::context::start_media_control_poller(app.handle().clone());
+
+                    // The desktop-lyric tick driver runs from Rust (not the
+                    // main webview) so the floating layer keeps advancing even
+                    // after the main webview is hidden, backgrounded, or dead.
+                    commands::desktop_lyric::start_ticker(app.handle().clone());
                 }
                 Err(error) => log::error!("failed to initialize streaming caches: {error}"),
             }
@@ -328,6 +335,7 @@ pub fn run() {
             commands::desktop_lyric::desktop_lyric_status,
             commands::desktop_lyric::desktop_lyric_take_control,
             commands::desktop_lyric::desktop_lyric_request_permission,
+            commands::desktop_lyric::desktop_lyric_set_visible,
             platform::media_control::media_control_update,
             platform::media_control::media_control_position,
             platform::media_control::media_control_clear,

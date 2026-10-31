@@ -91,7 +91,7 @@ export const useMetadataStore = defineStore("metadata", () => {
 
         try {
           const channel = new Channel<CachedTrack>();
-          channel.onmessage = (result) => applyOne(result);
+          channel.onmessage = (result) => applyOne(sourceId, result);
           await invoke("read_track_metadata_batch", {
             sourceId,
             paths: batch.map((track) => track.path as string),
@@ -102,9 +102,9 @@ export const useMetadataStore = defineStore("metadata", () => {
           // allows a later retry.
           console.warn("[welkin] metadata batch failed", error);
           for (const track of batch) {
-            const key = trackKey(track);
-            if (key) attempted.set(key, Date.now());
-            player.updateTrack(track.id, { metaFailed: true });
+            const trackKeyValue = trackKey(track);
+            if (trackKeyValue) attempted.set(trackKeyValue, Date.now());
+            if (trackKeyValue) player.updateTrackByKey(trackKeyValue, { metaFailed: true });
           }
         } finally {
           for (const track of batch) {
@@ -119,20 +119,16 @@ export const useMetadataStore = defineStore("metadata", () => {
   }
 
   /** Merge a single streamed result into the player tracks. */
-  function applyOne(result: CachedTrack) {
-    const byKey = new Map(
-      player.tracks
-        .filter((track) => track.path)
-        .map((track) => [trackKey(track) as string, track]),
-    );
-    const current = [...byKey.values()].find((t) => t.path === result.path);
-    if (!current) return;
-    const key = trackKey(current);
+  function applyOne(sourceId: string, result: CachedTrack) {
+    // The batch is per source. Path-only matching can update another source,
+    // and numeric ids are unsafe for Rust-created id=-1 placeholders.
+    const key = `${sourceId}::${result.path}`;
+    const current = player.tracks.find((track) => trackKey(track) === key) ??
+      (trackKey(player.currentTrack) === key ? player.currentTrack : null);
     if (key) attempted.set(key, Date.now());
     const meta = result?.metadata;
-    const id = current.id;
     if (!meta) {
-      player.updateTrack(id, { metaFailed: true });
+      if (current) player.updateTrackByKey(key, { metaFailed: true });
       return;
     }
     const patch: Partial<Track> = { metaLoaded: true, metaFailed: false };
@@ -140,10 +136,10 @@ export const useMetadataStore = defineStore("metadata", () => {
     if (meta.artist) patch.artist = meta.artist;
     if (meta.album) patch.album = meta.album;
     if (meta.durationSecs) patch.duration = formatDuration(meta.durationSecs);
-    const url = coverUrl(result?.coverPath, current.modified);
+    const url = coverUrl(result?.coverPath, current?.modified);
     if (url) patch.cover = url;
     if (meta.coverHash) patch.coverHash = meta.coverHash;
-    player.updateTrack(id, patch);
+    player.updateTrackByKey(key, patch);
   }
 
   // apply removed; replaced by applyOne streaming per-track patches

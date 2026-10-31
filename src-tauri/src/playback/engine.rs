@@ -588,6 +588,29 @@ impl Shared {
         self.transport.load(Ordering::Relaxed) != Transport::Playing as u8
     }
 
+    /// Authoritative "is audio currently sounding" used by the desktop-lyric tick
+    /// driver: loaded, not paused, and not past the end.
+    pub fn is_playing(&self) -> bool {
+        let transport = self.transport.load(Ordering::Relaxed);
+        transport == Transport::Playing as u8 && !self.has_ended()
+    }
+
+    /// Current playhead in milliseconds. Public so other subsystems (the desktop
+    /// lyric tick driver) can read the engine's authoritative position without
+    /// going through the webview.
+    pub fn position_ms(&self) -> f64 {
+        // While a seek is being applied, report where the user asked to go rather
+        // than the decoder's not-yet-updated playhead.
+        if let Some(target) = *self
+            .seek_preview
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+        {
+            return target * 1000.0;
+        }
+        self.position_secs() * 1000.0
+    }
+
     /// Live output stream rate, for the quality UI.
     pub fn device_rate(&self) -> u32 {
         self.device_rate.load(Ordering::Relaxed)
@@ -622,6 +645,11 @@ impl Shared {
             0.0
         };
         self.volume.store(value.to_bits(), Ordering::Relaxed);
+    }
+
+    /// Current output volume as a percentage (0-100).
+    pub fn volume_percent(&self) -> f32 {
+        f32::from_bits(self.volume.load(Ordering::Relaxed)) * 100.0
     }
 
     fn volume(&self) -> f32 {
@@ -660,20 +688,6 @@ impl Shared {
 
     fn set_ended(&self, ended: bool) {
         self.progress().ended.store(ended, Ordering::Relaxed);
-    }
-
-    /// Position snapshot in milliseconds, derived from the played output.
-    fn position_ms(&self) -> f64 {
-        // While a seek is being applied, report where the user asked to go
-        // rather than the decoder's not-yet-updated playhead.
-        if let Some(target) = *self
-            .seek_preview
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-        {
-            return target * 1000.0;
-        }
-        self.position_secs() * 1000.0
     }
 
     /// Source position (seconds) at the played output sample, mapped through the
@@ -1125,6 +1139,13 @@ mod events {
             if emit_state {
                 state_ticks = 0;
                 let _ = app.emit("audio:state", state);
+                // MPRIS receives the position through the playback snapshot;
+                // update it every state tick instead of once per second.
+                if let Some(context) =
+                    app.try_state::<crate::playback::context::PlaybackContext>()
+                {
+                    context.apply_to_media_control();
+                }
                 log::debug!(
                     "playback: state playing={} pos={:.3}s dur={:.3}s ended={} played={}",
                     state.playing,

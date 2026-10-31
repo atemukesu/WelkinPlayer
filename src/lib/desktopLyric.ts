@@ -33,6 +33,11 @@ export interface DesktopLyricLine {
   isBG: boolean;
   /** Duet counter-line (the second voice). */
   isDuet: boolean;
+  /** Line timing in milliseconds, mirrored from the parsed source. The Rust tick
+   * driver reads these to pick the active line without a main-webview round-trip;
+   * the overlay's whole-line highlight reads the same fields. */
+  startTime: number;
+  endTime: number;
 }
 
 /** Full snapshot, sent only when the track / lyrics / settings change. */

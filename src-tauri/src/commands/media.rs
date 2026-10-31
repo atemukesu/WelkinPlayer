@@ -107,7 +107,8 @@ fn meta_file(dir: &Path, hash: &str) -> PathBuf {
     dir.join("meta").join(format!("{hash}.json"))
 }
 
-fn read_meta(dir: &Path, hash: &str) -> Option<TrackMetadata> {
+/// Read a track's cached parsed metadata (title/artist/album) from disk.
+pub(crate) fn read_meta(dir: &Path, hash: &str) -> Option<TrackMetadata> {
     let bytes = std::fs::read(meta_file(dir, hash)).ok()?;
     serde_json::from_slice(&bytes).ok()
 }

@@ -65,6 +65,13 @@ keyring = { version = "3", features = ["apple-native"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+# Linux MPRIS system media controls. souvlaki's default `dbus-crossroads`
+# backend blocks in `Connection::process(Duration::from_millis(1000))` after
+# every event, so a `set_playback`/`set_metadata` queued from the engine tick can
+# sit for up to a second before it reaches the bus — the 1-2 s play/pause lag.
+# The pure-Rust `zbus` backend polls its channel every 10 ms with no blocking
+# `process`, so updates land in ~1 ms (measured).
+souvlaki = { version = "0.8", default-features = false, features = ["use_zbus"] }
 # Linux runs on the Chromium Embedded Framework instead of the system
 # WebKitGTK webview, so the app no longer links webkit2gtk at all. The CEF
 # binary distribution is downloaded by the `cef` crate on the first build and
@@ -85,10 +92,10 @@ gtk = { version = "0.11.5", package = "gtk4" }
 tauri-runtime-wry = { version = "3.0.0-alpha.5", features = ["devtools"] }
 tauri-plugin-dialog = "3.0.0-alpha.4"
 
-# System media controls on desktop: Windows SMTC, macOS Now Playing and Linux
-# MPRIS behind one API. Android implements its own native MediaSession, so the
-# crate is only pulled in for the three desktop targets.
-[target.'cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))'.dependencies]
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+# System media controls on desktop: Windows SMTC and macOS Now Playing. Android
+# implements its own native MediaSession, so the crate is only pulled in for the
+# desktop targets; Linux enables it (with a different backend) below.
 souvlaki = "0.8"
 # Signed, per-platform updates published as GitHub release assets. Desktop only:
 # Android queries the GitHub Releases API and downloads the APK manually instead.

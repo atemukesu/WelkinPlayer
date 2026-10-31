@@ -5,189 +5,72 @@
 
 import { effectScope, watch } from "vue";
 import type { EffectScope } from "vue";
-import { listen } from "@tauri-apps/api/event";
-import type { UnlistenFn } from "@tauri-apps/api/event";
 import { invoke } from "../api";
-import { currentTime, seekTo } from "./audio";
+import { currentTime } from "./audio";
 import { trackKey } from "./sources";
 import { usePlayerStore } from "../stores/player";
 
 /**
- * Mirrors the player store onto the OS transport controls (Windows SMTC, macOS
- * Now Playing, Linux MPRIS, Android MediaSession) and forwards transport
- * commands from those surfaces back into the store.
- *
- * Metadata + play/pause are pushed on change; the playhead is pushed on a slow
- * cadence because the OS extrapolates position while playing.
- *
- * On desktop, transport events arrive as a `media:control` Tauri event (from
- * souvlaki). On Android the native MediaSession action queue is drained by Rust
- * directly (see `playback::context::start_media_control_poller`), so this module
- * does **not** poll on Android — the webview would be throttled or killed in the
- * background, defeating the purpose. Here we only forward desktop intent and
- * push metadata; the actual play/pause/next/prev logic lives in Rust.
+ * Rust owns transport commands and periodic reporting. The webview still sends
+ * a full snapshot when lazy metadata arrives: the Rust event thread can only
+ * read metadata already present in the disk cache, while this result is the
+ * first moment at which the title/cover is known to the UI.
  */
-const POSITION_TICK_MS = 5000;
-
-interface ControlCommand {
-  action?: string;
-  value?: number | null;
-}
-
 let running = false;
 let scope: EffectScope | null = null;
-let tickTimer = 0;
-let unlisten: UnlistenFn | null = null;
 
-/** Full metadata + playback snapshot for the OS. */
-function snapshot() {
-  const player = usePlayerStore();
-  const track = player.currentTrack;
-  return {
-    title: track?.title ?? "",
-    artist: track?.artist ?? "",
-    album: track?.album ?? "",
-    durationMs: Math.round((player.duration > 0 ? player.duration : 0) * 1000),
-    positionMs: Math.round(currentTime() * 1000),
-    playing: player.isPlaying,
-    volume: player.volume,
-    coverHash: track?.coverHash ?? null,
-  };
-}
-
-/** Push metadata + play/pause (or clear the UI when nothing is selected). */
 function pushFull() {
   const player = usePlayerStore();
-  if (!player.currentTrack) {
+  const track = player.currentTrack;
+  if (!track) {
     void invoke("media_control_clear").catch(() => {});
     return;
   }
-  void invoke("media_control_update", { payload: snapshot() }).catch(() => {});
-}
-
-/** Correct playhead drift; metadata is intentionally left alone. */
-function pushPosition() {
-  const player = usePlayerStore();
-  if (!player.currentTrack || !player.isPlaying) return;
-  void invoke("media_control_position", {
-    positionMs: Math.round(currentTime() * 1000),
-    playing: true,
+  void invoke("media_control_update", {
+    payload: {
+      title: track.title ?? "",
+      artist: track.artist ?? "",
+      album: track.album ?? "",
+      durationMs: Math.round((player.duration > 0 ? player.duration : 0) * 1000),
+      positionMs: Math.round(currentTime() * 1000),
+      playing: player.isPlaying,
+      volume: player.volume,
+      coverHash: track.coverHash ?? null,
+    },
   }).catch(() => {});
-}
-
-function parseControl(raw: string): ControlCommand | null {
-  try {
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Apply a transport command from the OS (desktop souvlaki events).
- *
- * Every branch forwards intent to the Rust playback context through the store's
- * thin wrappers; the context performs the real play/pause/next/prev (and, on
- * Android, the same actions are drained by Rust directly). This module never
- * holds queue logic.
- */
-function handleControl(raw: unknown) {
-  const command = (typeof raw === "string" ? parseControl(raw) : raw) as ControlCommand | null;
-  if (!command || typeof command.action !== "string") return;
-  const player = usePlayerStore();
-  switch (command.action) {
-    case "play":
-      if (!player.isPlaying) player.setPlaying(true);
-      break;
-    case "pause":
-      if (player.isPlaying) player.setPlaying(false);
-      break;
-    case "toggle":
-      player.togglePlayback();
-      break;
-    case "next":
-      player.next();
-      break;
-    case "previous":
-      player.previous();
-      break;
-    case "stop":
-      player.setPlaying(false);
-      break;
-    case "seek":
-      seekTo(Math.max(0, (command.value ?? 0) / 1000));
-      break;
-    case "seekBy":
-      seekTo(Math.max(0, currentTime() + (command.value ?? 0)));
-      break;
-    case "volume":
-      player.setVolume(Math.round((command.value ?? 0) * 100));
-      break;
-  }
 }
 
 /** Start mirroring playback to the OS media controls. */
 export function startMediaControl() {
   if (running) return;
   running = true;
-
   scope = effectScope();
   scope.run(() => {
-    // Re-push whenever the track identity, playback state OR the lazily loaded
-    // metadata changes. Metadata is merged into the existing track object, so
-    // the path key alone would miss the filename -> real title/cover update.
     watch(
       () => {
         const player = usePlayerStore();
         const track = player.currentTrack;
         return [
           trackKey(track),
-          player.isPlaying,
           track?.title ?? "",
           track?.artist ?? "",
           track?.album ?? "",
           track?.coverHash ?? "",
           player.duration,
+          player.isPlaying,
         ].join("\u001f");
       },
       pushFull,
       { immediate: true },
     );
-
-    // The OS extrapolates the playhead while playing, so a repeat-one loop (or
-    // any seek) would leave the reported time drifting until the next slow tick.
-    // A large jump in the store position means the playhead was reset/moved, so
-    // snap the OS position immediately.
-    watch(
-      () => usePlayerStore().position,
-      (position, previous) => {
-        if (typeof previous !== "number") return;
-        if (Math.abs(position - previous) > 2) pushPosition();
-      },
-    );
   });
-
-  void listen<unknown>("media:control", (event) => {
-    handleControl(event.payload);
-  }).then((stop) => {
-    unlisten = stop;
-  });
-
-  tickTimer = window.setInterval(pushPosition, POSITION_TICK_MS);
-  // Android no longer polls here: the native MediaSession queue is drained by
-  // Rust (`start_media_control_poller`) so control survives a killed webview.
 }
 
-/** Stop mirroring and tear the listeners down. */
+/** Stop mirroring playback to the OS media controls. */
 export function stopMediaControl() {
   if (!running) return;
   running = false;
   scope?.stop();
   scope = null;
-  window.clearInterval(tickTimer);
-  tickTimer = 0;
-  unlisten?.();
-  unlisten = null;
   void invoke("media_control_clear").catch(() => {});
 }

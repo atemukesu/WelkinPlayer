@@ -15,9 +15,10 @@
 //! a mirror: it sends intent commands and renders the `playback:changed` event.
 
 use std::sync::Mutex;
+use std::time::Duration;
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::playback::engine::{Command, Engine};
 
@@ -178,6 +179,9 @@ impl PlaybackContext {
         };
         inner.queue = queue;
         inner.index = if inner.queue.is_empty() { -1 } else { index };
+        // Starting a queue is an explicit play request from the user, so load and
+        // begin playback immediately.
+        inner.playing = true;
         let snapshot = self.snapshot_locked(&inner);
         drop(inner);
         self.apply_current(true);
@@ -199,6 +203,8 @@ impl PlaybackContext {
                     inner.queue[index as usize].clone()
                 });
         inner.index = index;
+        // Selecting a track (from the queue / a list) is an explicit play request.
+        inner.playing = true;
         let snapshot = self.snapshot_locked(&inner);
         drop(inner);
         if reselecting {
@@ -253,6 +259,88 @@ impl PlaybackContext {
         drop(inner);
         let _ = self.engine.send(Command::Pause);
         self.emit(snapshot);
+    }
+
+    /// Seek to an absolute position (seconds). Drives the engine directly so the
+    /// native MediaSession's scrub bar works without the webview.
+    pub fn seek(&self, position_secs: f64) {
+        if !position_secs.is_finite() || position_secs < 0.0 {
+            return;
+        }
+        let _ = self.engine.send(Command::Seek {
+            position_secs,
+        });
+    }
+
+    /// Apply a transport action coming from an OS media surface (desktop souvlaki
+    /// or the native Android MediaSession). Both platforms funnel through here so
+    /// the control logic lives in exactly one place.
+    pub fn apply_control(&self, action: &str, value: Option<f64>) {
+        match action {
+            "play" => self.play(),
+            "pause" => self.pause(),
+            "toggle" => self.toggle(),
+            "next" => self.next(),
+            "previous" => self.previous(),
+            "stop" => self.pause(),
+            "seek" => {
+                if let Some(millis) = value {
+                    self.seek(millis / 1000.0);
+                }
+            }
+            "seekBy" => {
+                let delta = value.unwrap_or(0.0);
+                let current = self.engine.shared().position_ms() as f64 / 1000.0;
+                self.seek((current + delta).max(0.0));
+            }
+            "volume" => {
+                let v = value.unwrap_or(0.0).clamp(0.0, 1.0);
+                self.engine.shared().set_volume_percent(v * 100.0);
+            }
+            _ => {}
+        }
+    }
+
+    /// Push the current playback to the OS media controls. Called by the engine
+    /// events thread so reporting no longer depends on the webview. Metadata is
+    /// derived from `source_id::path` by the media-control module.
+    pub fn apply_to_media_control(&self) {
+        let app = match self.engine.shared().app_handle() {
+            Some(app) => app,
+            None => return,
+        };
+        let inner = self.inner.lock().unwrap();
+        let item = inner
+            .index
+            .try_into()
+            .ok()
+            .filter(|&i: &usize| i < inner.queue.len())
+            .map(|i| inner.queue[i].clone());
+        let playing = inner.playing;
+        drop(inner);
+        let shared = self.engine.shared();
+        let state = shared.snapshot();
+        match item {
+            Some(item) => crate::platform::media_control::push_update(
+                &app,
+                &item.source_id,
+                &item.path,
+                state.duration_ms,
+                state.position_ms,
+                state.playing && playing,
+                // MediaControlPayload uses the frontend's 0..100 convention.
+                shared.volume_percent() as f64,
+            ),
+            None => crate::platform::media_control::push_update(
+                &app,
+                "",
+                "",
+                0.0,
+                0.0,
+                false,
+                0.0,
+            ),
+        }
     }
 
     /// Advance to the next track (honouring repeat-one / repeat-all / end).
@@ -670,24 +758,27 @@ impl PlaybackContext {
 /// no-op on non-Android targets (the native bridge is not compiled in).
 #[cfg(target_os = "android")]
 pub fn drain_media_control(app: &AppHandle) {
-    let action = match crate::platform::android::media_control_take_control() {
-        Ok(Some(action)) => action,
-        Ok(None) => return,
-        Err(_) => return,
+    let raw = match crate::platform::android::media_control_take_control() {
+        Ok(Some(raw)) => raw,
+        _ => return,
     };
+    // The Android bridge parks a JSON command (`{"action":"play","value":...}`),
+    // the same shape the desktop souvlaki path emits. The webview used to
+    // `JSON.parse` it before matching on `action`; do the same here so a
+    // command is not silently dropped by a literal string comparison.
+    let parsed = serde_json::from_str::<serde_json::Value>(&raw).ok();
+    let action = parsed
+        .as_ref()
+        .and_then(|value| value.get("action").and_then(|a| a.as_str()).map(|s| s.to_string()))
+        .unwrap_or_else(|| raw.clone());
+    let value = parsed
+        .as_ref()
+        .and_then(|value| value.get("value").and_then(|v| v.as_f64()));
     let context = match app.try_state::<PlaybackContext>() {
         Some(context) => context,
         None => return,
     };
-    match action.as_str() {
-        "play" => context.play(),
-        "pause" => context.pause(),
-        "toggle" => context.toggle(),
-        "next" => context.next(),
-        "previous" => context.previous(),
-        "stop" => context.pause(),
-        _ => {}
-    }
+    context.apply_control(&action, value);
 }
 
 /// Begin a lightweight timer that drains the Android MediaSession queue.
@@ -695,13 +786,15 @@ pub fn drain_media_control(app: &AppHandle) {
 /// Spawned once at startup; only does work on Android. Lives for the process.
 #[cfg(target_os = "android")]
 pub fn start_media_control_poller(app: AppHandle) {
-    std::thread::Builder::new()
+    if let Err(error) = std::thread::Builder::new()
         .name("welkin-media-control".to_string())
         .spawn(move || loop {
             std::thread::sleep(Duration::from_millis(250));
             drain_media_control(&app);
         })
-        .unwrap_or_else(|error| log::error!("failed to start media-control poller: {error}"));
+    {
+        log::error!("failed to start media-control poller: {error}");
+    }
 }
 
 /// On non-Android targets there is nothing to poll; the OS media controls feed

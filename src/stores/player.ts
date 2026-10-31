@@ -391,6 +391,18 @@ export const usePlayerStore = defineStore("player", () => {
     }
   }
 
+  /** Merge asynchronous metadata by stable source/path identity. */
+  function updateTrackByKey(key: string, patch: Partial<Track>) {
+    const track = tracks.value.find((item) => trackKey(item) === key);
+    if (track) Object.assign(track, patch);
+    if (currentTrack.value && trackKey(currentTrack.value) === key) {
+      currentTrack.value = { ...currentTrack.value, ...patch };
+    }
+    for (const item of queue.value) {
+      if (trackKey(item) === key) Object.assign(item, patch);
+    }
+  }
+
   /** Merge many partial updates in a single pass. */
   function updateTracks(patches: Array<{ id: number; patch: Partial<Track> }>) {
     if (patches.length === 0) return;
@@ -433,6 +445,7 @@ export const usePlayerStore = defineStore("player", () => {
     queueKeys,
     restoreQueue,
     updateTrack,
+    updateTrackByKey,
     updateTracks,
     togglePlayback,
     setPlaying,

@@ -2,23 +2,14 @@ import { effectScope, watch } from "vue";
 import type { EffectScope } from "vue";
 import { listen } from "@tauri-apps/api/event";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { findActiveLyricIndices, pickPrimaryIndex } from "lyric-kit";
 import { invoke } from "../api";
-import { currentTime } from "../lib/audio";
 import { i18n } from "../i18n";
 import { pushToast } from "../lib/toast";
-import type { DesktopLyricLine, DesktopLyricLoadPayload, DesktopLyricTickPayload } from "../lib/desktopLyric";
+import type { DesktopLyricLine, DesktopLyricLoadPayload } from "../lib/desktopLyric";
 import { isAndroid } from "../lib/desktopLyric";
 import { useDesktopLyricsStore } from "../stores/desktopLyrics";
 import { useLyricsStore } from "../stores/lyrics";
 import { usePlayerStore } from "../stores/player";
-
-/**
- * Cadence for the playhead document (ms). The renderer interpolates between
- * ticks on its own animation frame, so a low rate keeps IPC cheap without
- * making the karaoke sweep choppy.
- */
-const TICK_INTERVAL_MS = 80;
 
 let running = false;
 let timer = 0;
@@ -28,7 +19,6 @@ let unlistenReady: UnlistenFn | null = null;
 let unlistenControl: UnlistenFn | null = null;
 let unlistenClosed: UnlistenFn | null = null;
 let controlTimer = 0;
-let onVisibility: (() => void) | null = null;
 
 /** Run a command requested from the floating layer, keeping state in sync. */
 function handleControl(action: string) {
@@ -52,6 +42,11 @@ function toLines(): DesktopLyricLine[] {
     words: line.words.map((word) => ({ text: word.word, start: word.startTime, end: word.endTime })),
     isBG: Boolean(line.isBG),
     isDuet: Boolean(line.isDuet),
+    // Line-level timing travels with the snapshot so the Rust tick driver can
+    // pick the active line without a main-webview round-trip (it is also what
+    // the overlay's whole-line highlight reads).
+    startTime: Number(line.startTime) || 0,
+    endTime: Number(line.endTime) || 0,
   }));
 }
 
@@ -89,23 +84,14 @@ function pushSettings() {
   void invoke("desktop_lyric_set_settings", { settings: { ...dl.settings } }).catch(() => {});
 }
 
-function tick() {
-  const player = usePlayerStore();
-  const lyrics = useLyricsStore();
-  const dl = useDesktopLyricsStore();
-  if (!dl.settings.enabled) return;
-  const positionMs = currentTime() * 1000;
-  const lines = lyrics.lines;
-  const activeIndex = lines.length > 0 ? pickPrimaryIndex(lines, positionMs) : -1;
-  const activeIndices = lines.length > 0 ? findActiveLyricIndices(lines, positionMs) : [];
-  const payload: DesktopLyricTickPayload = {
-    positionMs,
-    playing: player.isPlaying,
-    activeIndex,
-    activeIndices,
-    visible: shouldShow(),
-  };
-  void invoke("desktop_lyric_tick", { payload }).catch(() => {});
+/**
+ * Sync whether the floating layer should be painted to the Rust tick driver.
+ * Lyrics can be suppressed in the main window (or the layer switched off
+ * independently) while it stays open; Rust must keep honouring that so the
+ * overlay hides itself even when the main webview has died.
+ */
+function pushVisible() {
+  void invoke("desktop_lyric_set_visible", { visible: shouldShow() }).catch(() => {});
 }
 
 /** (Re)push the full lyric snapshot when the track or its lyrics change. */
@@ -136,6 +122,10 @@ export function startDesktopLyrics() {
       immediate: true,
     });
     watch(() => dl.settings, pushSettings, { deep: true });
+    // Whether the layer should paint can change without reopening it (lyrics
+    // suppressed in the main window, or `enabled` toggled elsewhere). Tell Rust
+    // so its tick keeps the overlay hidden even if this webview later dies.
+    watch(shouldShow, pushVisible, { immediate: true });
     // The player views are not always mounted, so the floating layer must make
     // sure the current track's lyrics are actually loaded. `loadForTrack` is
     // idempotent per track, so this never double-fetches what a view already got.
@@ -193,16 +183,10 @@ export function startDesktopLyrics() {
     }, 250);
   }
 
-  timer = window.setInterval(tick, TICK_INTERVAL_MS);
-
-  // Chromium throttles timers in hidden windows. The background flags keep them
-  // running (so the overlay's rAF never starves), but push an immediate tick on
-  // every visibility change too: after the window is hidden or restored the
-  // playhead/active line resync without waiting for the next interval.
-  onVisibility = () => {
-    if (useDesktopLyricsStore().settings.enabled) tick();
-  };
-  document.addEventListener("visibilitychange", onVisibility);
+  // The high-frequency playhead tick is now driven entirely from Rust
+  // (`start_ticker`), reading the engine's authoritative position and the cached
+  // lyric snapshot. This webview no longer needs a timer, so a hidden,
+  // backgrounded, or dead main window can no longer freeze the floating lyrics.
 }
 
 /** Stop forwarding and tear the floating layer down. */
@@ -221,10 +205,6 @@ export function stopDesktopLyrics() {
   unlistenClosed = null;
   window.clearInterval(controlTimer);
   controlTimer = 0;
-  if (onVisibility) {
-    document.removeEventListener("visibilitychange", onVisibility);
-    onVisibility = null;
-  }
   lastKey = "";
 }
 

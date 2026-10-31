@@ -164,7 +164,9 @@ watch(booted, (ready) => { if (ready) dismissSplash(); });
 watch(() => trackKey(player.currentTrack), (key) => { if (booted.value && key && player.isPlaying) profile.recordPlay(key); });
 
 // The playing track's metadata is wanted immediately, regardless of visibility.
-watch(() => player.currentTrack?.id, () => metadata.request(player.currentTrack));
+// Rust-created placeholders all use id=-1, so use the stable source/path key
+// to ensure every newly selected track gets a metadata request.
+watch(() => trackKey(player.currentTrack), () => metadata.request(player.currentTrack));
 
 // Resume the last track/position once the playback state and library are ready.
 // The local copy lands first; the authoritative remote copy may arrive later.
