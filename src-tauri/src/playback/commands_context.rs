@@ -10,7 +10,7 @@
 use tauri::State;
 
 use crate::core::error::AppError;
-use crate::playback::context::{PlaybackContext, KEY_SEPARATOR};
+use crate::playback::context::PlaybackContext;
 
 /// Replace the play queue and start at `start_key` (a `sourceId::path` key).
 ///
@@ -108,6 +108,3 @@ pub fn playback_state(
 ) -> Result<crate::playback::context::ContextSnapshot, AppError> {
     Ok(context.snapshot())
 }
-
-// Re-export the separator so the frontend can build keys consistently.
-pub const SEPARATOR: &str = KEY_SEPARATOR;

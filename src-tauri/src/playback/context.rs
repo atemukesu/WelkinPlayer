@@ -15,10 +15,15 @@
 //! a mirror: it sends intent commands and renders the `playback:changed` event.
 
 use std::sync::Mutex;
+// `Duration` and `Manager` are only needed by the Android media-control poller
+// below; on desktop they would be unused imports.
+#[cfg(target_os = "android")]
 use std::time::Duration;
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
+#[cfg(target_os = "android")]
+use tauri::Manager;
 
 use crate::playback::engine::{Command, Engine};
 
@@ -582,20 +587,6 @@ impl PlaybackContext {
         // applied lazily once the UI requests playback or the resume playhead.
         self.emit(snapshot);
         true
-    }
-
-    /// Set the play intent only (used to reflect engine pause/play coming from
-    /// the engine's own state, e.g. an error that stopped playback). Does not
-    /// touch the queue.
-    pub fn set_playing(&self, playing: bool) {
-        let mut inner = self.inner.lock().unwrap();
-        if inner.playing == playing {
-            return;
-        }
-        inner.playing = playing;
-        let snapshot = self.snapshot_locked(&inner);
-        drop(inner);
-        self.emit(snapshot);
     }
 
     /// Called by the engine events thread when the current track ends. Advances
