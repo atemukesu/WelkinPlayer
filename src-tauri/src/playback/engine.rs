@@ -218,6 +218,17 @@ fn enumerate_cpal_devices() -> Vec<DeviceEntry> {
                 Ok(name) => name,
                 Err(_) => continue,
             };
+            // Skip cpal's hard-coded ALSA pseudo-devices. cpal probes `jack`
+            // and `oss` to detect them, and on a host without a running jackd
+            // (no socket) or without `/dev/dsp`, the ALSA JACK/OSS plugins dump
+            // their own connection errors straight to stderr. Those messages
+            // come from the C libraries, so no Rust log filter can silence
+            // them; not probing at all is the only clean fix. Real output still
+            // happens through `default` (PipeWire/Pulse), and genuine hardware
+            // is enumerated separately from the card list below.
+            if matches!(name.as_str(), "jack" | "oss") {
+                continue;
+            }
             let ranges = device
                 .supported_output_configs()
                 .map(|configs| {
@@ -414,10 +425,26 @@ pub fn enumerate_android_devices() -> Vec<DeviceEntry> {
 /// used by [`Worker::check_device`] to detect plug/unplug without a native
 /// event. On Android it is the `AudioManager` list; on desktop it is the single
 /// cpal default device name. Empty when enumeration is unavailable.
+///
+/// On desktop this deliberately reads only the default device instead of
+/// running the full [`enumerate_devices`] walk: that walk opens every
+/// pseudo-device, which is both wasteful and noisy (see `enumerate_cpal_devices`),
+/// and it runs on every `check_device` poll. The default device name is the
+/// signal that actually changes when the OS reroutes output, so it is enough
+/// to detect a plug/unplug.
+#[cfg(target_os = "android")]
 fn device_signature() -> String {
     let mut ids: Vec<String> = enumerate_devices().into_iter().map(|device| format!("{}:{}", device.device_type, device.id)).collect();
     ids.sort();
     ids.join("|")
+}
+
+#[cfg(not(target_os = "android"))]
+fn device_signature() -> String {
+    rodio::cpal::default_host()
+        .default_output_device()
+        .and_then(|device| device.name().ok())
+        .unwrap_or_default()
 }
 
 /// The rate to open the output stream at before a track is loaded. cpal's ALSA
