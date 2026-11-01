@@ -6,7 +6,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { ArrowLeft, ImagePlus, RotateCcw, Save, Trash2 } from "@lucide/vue";
+import { ArrowLeft, ImagePlus, RotateCcw, Save, Search, Trash2 } from "@lucide/vue";
 import { describeError, invoke } from "../api";
 import { pushToast } from "../lib/toast";
 import { initial } from "../lib/format";
@@ -16,6 +16,7 @@ import { useSourcesStore } from "../stores/sources";
 import { trackKey } from "../lib/sources";
 import type { TrackMetadata, TrackTags } from "../lib/remote";
 import CoverCropper from "../components/CoverCropper.vue";
+import CoverSearch from "../components/CoverSearch.vue";
 
 const props = defineProps<{ path: string | null; sourceId?: string | null }>();
 const emit = defineEmits<{ back: []; friendlyError: [error: unknown] }>();
@@ -43,7 +44,10 @@ const coverPreview = ref<string | null>(null);
 const pendingCover = ref<string | null>(null);
 const removeCover = ref(false);
 const savedRemoveCover = ref(false);
+const confirmRemoveCover = ref(false);
 const cropSrc = ref<string | null>(null);
+const showCoverSearch = ref(false);
+const coverSearchInitialQuery = computed(() => [form.value.title, form.value.artist].filter(Boolean).join(" ").trim());
 
 const track = computed<Track | null>(() => player.tracks.find((item) => trackKey(item) === key.value) ?? null);
 const previewSrc = computed(() => pendingCover.value ?? (removeCover.value ? null : coverPreview.value));
@@ -117,6 +121,7 @@ function onFile(event: Event) {
 }
 function applyCrop(value: string) { pendingCover.value = value; removeCover.value = false; cropSrc.value = null; }
 function markRemoveCover() { pendingCover.value = null; removeCover.value = true; }
+function onCoverSearchSelect(url: string) { pendingCover.value = url; removeCover.value = false; showCoverSearch.value = false; }
 
 function reset() {
   form.value = { ...savedForm.value };
@@ -182,6 +187,7 @@ watch(() => props.path, load, { immediate: true });
 
 <template>
   <div class="fixed inset-0 z-40 flex flex-col overflow-hidden bg-bg text-fg">
+    <CoverSearch :open="showCoverSearch" :initial-query="coverSearchInitialQuery" @select="onCoverSearchSelect" @close="showCoverSearch = false" />
     <div class="flex min-h-0 flex-1 flex-col overflow-hidden bg-bg">
       <header class="flex h-16 shrink-0 items-center gap-4 border-b border-line px-5">
         <button type="button" class="flex items-center gap-2 text-[12px] font-semibold uppercase tracking-[0.2em] text-dim transition-colors hover:text-fg" @click="emit('back')">
@@ -237,8 +243,14 @@ watch(() => props.path, load, { immediate: true });
             </span>
           </div>
           <p class="mt-3 text-xs text-muted">{{ t("trackEditor.coverHint") }}</p>
-          <label class="ak-clip-tr mt-4 flex h-10 cursor-pointer items-center justify-center gap-2 border border-line px-4 text-[13px] font-semibold transition-colors hover:border-accent hover:text-accent"><ImagePlus :size="15" />{{ t("trackEditor.chooseCover") }}<input type="file" accept="image/*" class="hidden" @change="onFile" /></label>
-          <button v-if="previewSrc && !removeCover" type="button" class="mt-3 flex w-full items-center justify-center gap-2 text-[12px] font-semibold text-dim transition-colors hover:text-red-500" @click="markRemoveCover"><Trash2 :size="14" />{{ t("trackEditor.removeCover") }}</button>
+          <label class="ak-clip-tr mt-4 flex w-full h-10 cursor-pointer items-center justify-center gap-2 border border-line px-4 text-[13px] font-semibold transition-colors hover:border-accent hover:text-accent"><ImagePlus :size="15" />{{ t("trackEditor.chooseCover") }}<input type="file" accept="image/*" class="hidden" @change="onFile" /></label>
+          <button type="button" class="ak-clip-tr mt-3 flex w-full h-10 items-center justify-center gap-2 border border-line px-4 text-[13px] font-semibold transition-colors hover:border-accent hover:text-accent" @click="showCoverSearch = true"><Search :size="15" />{{ t("trackEditor.searchCover") }}</button>
+          <button v-if="previewSrc && !removeCover" type="button" class="mt-3 mx-auto flex items-center justify-center gap-2 text-[12px] font-semibold text-dim transition-colors hover:text-red-500" @click="confirmRemoveCover = true"><Trash2 :size="14" />{{ t("trackEditor.removeCover") }}</button>
+          <div v-if="confirmRemoveCover" class="mt-3 mx-auto flex w-fit items-center justify-center gap-2 text-[12px]">
+            <span class="text-dim">{{ t("trackEditor.removeCover") }}?</span>
+            <button type="button" class="text-red-500 font-semibold" @click="() => { markRemoveCover(); confirmRemoveCover = false; }">{{ t("trackEditor.removeCover") }}</button>
+            <button type="button" class="text-dim" @click="confirmRemoveCover = false">{{ t("lyricsEditor.cancel") }}</button>
+          </div>
         </section>
       </div>
 

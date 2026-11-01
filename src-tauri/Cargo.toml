@@ -43,6 +43,7 @@ lofty = "0.22"
 # Decode embedded cover art and re-encode a small JPEG thumbnail for the cache.
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
 base64 = "0.22"
+urlencoding = "2"
 # Content-addressed naming for standalone playlist cover files.
 sha2 = "0.10"
 # Verifies developer-issued Pro activation codes (Ed25519-signed JWTs).
