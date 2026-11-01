@@ -8,12 +8,12 @@ import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import type { LetterIndexEntry } from "../lib/sort";
 
-const props = defineProps<{ entries: LetterIndexEntry[] }>();
+const props = defineProps<{ entries: LetterIndexEntry[]; current?: string | null }>();
 const emit = defineEmits<{ select: [entry: LetterIndexEntry] }>();
 const { t } = useI18n();
 
 const rail = ref<HTMLElement | null>(null);
-/** Letter currently under the pointer, shown in the floating bubble. */
+/** Letter under the pointer while hovering or scrubbing, shown in the bubble. */
 const active = ref<string | null>(null);
 const dragging = ref(false);
 let hideTimer = 0;
@@ -38,8 +38,12 @@ function indexFromY(clientY: number): number {
 
 function preview(label: string) {
   active.value = label;
+}
+
+/** Clears the pointer highlight shortly after leaving, unless still scrubbing. */
+function clearPreview() {
   window.clearTimeout(hideTimer);
-  hideTimer = window.setTimeout(() => { if (!dragging.value) active.value = null; }, 800);
+  hideTimer = window.setTimeout(() => { if (!dragging.value) active.value = null; }, 600);
 }
 
 /** Jump to the bucket under a Y coordinate, if it holds any tracks. */
@@ -56,6 +60,7 @@ function pickAt(clientY: number) {
 
 function onPointerDown(event: PointerEvent) {
   dragging.value = true;
+  window.clearTimeout(hideTimer);
   (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
   pickAt(event.clientY);
 }
@@ -68,7 +73,7 @@ function onPointerUp(event: PointerEvent) {
   dragging.value = false;
   const el = event.currentTarget as HTMLElement;
   if (el.hasPointerCapture?.(event.pointerId)) el.releasePointerCapture(event.pointerId);
-  hideTimer = window.setTimeout(() => { active.value = null; }, 600);
+  clearPreview();
 }
 </script>
 
@@ -91,10 +96,16 @@ function onPointerUp(event: PointerEvent) {
       :key="entry.label"
       type="button"
       class="track-index__item"
-      :class="[entry.present ? '' : 'track-index__item--empty', active === entry.label ? 'track-index__item--active' : '']"
+      :class="[
+        entry.present ? '' : 'track-index__item--empty',
+        active === entry.label ? 'track-index__item--active' : '',
+        current === entry.label ? 'track-index__item--current' : '',
+      ]"
       :disabled="!entry.present"
+      :aria-current="current === entry.label ? 'true' : undefined"
       :aria-selected="active === entry.label"
       @mouseenter="entry.present && preview(entry.label)"
+      @mouseleave="clearPreview"
     >{{ entry.label }}</button>
   </div>
 </template>
@@ -116,6 +127,7 @@ function onPointerUp(event: PointerEvent) {
 }
 
 .track-index__item {
+  position: relative;
   display: grid;
   place-items: center;
   width: 1.05rem;
@@ -132,6 +144,23 @@ function onPointerUp(event: PointerEvent) {
 .track-index__item--active {
   color: var(--accent);
   transform: scale(1.35);
+}
+
+/* The bucket the list is currently scrolled into: a persistent accent marker. */
+.track-index__item--current {
+  color: var(--accent);
+  transform: scale(1.25);
+}
+
+.track-index__item--current::before {
+  content: "";
+  position: absolute;
+  left: -0.3rem;
+  top: 50%;
+  width: 2px;
+  height: 0.75rem;
+  background: var(--accent);
+  transform: translateY(-50%);
 }
 
 .track-index__item--empty {

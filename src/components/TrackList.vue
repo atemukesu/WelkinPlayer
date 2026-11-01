@@ -16,6 +16,8 @@ import { trackKey } from "../lib/sources";
 import { pushToast } from "../lib/toast";
 import { trackViewMode } from "../lib/ui";
 import { requestMeta } from "../directives/requestMeta";
+import { bucketLabel } from "../lib/reading";
+import { reading } from "../lib/readings";
 import TrackCard from "./TrackCard.vue";
 import TrackIndexRail from "./TrackIndexRail.vue";
 import type { LetterIndexEntry } from "../lib/sort";
@@ -209,7 +211,22 @@ function scrollToTop() {
 
 // The alphabetical rail is only meaningful for a title-sorted list in list
 // mode; it is hidden while selecting so it never overlaps the checkboxes.
-const showIndex = computed(() => !!props.letterIndex?.length && trackViewMode.value === "list" && !props.selectable);
+const showIndex = computed(() => !!props.letterIndex?.length && trackViewMode.value === "list" && !props.selectable && external.value);
+/**
+ * The letter bucket the list is currently scrolled into, highlighted on the
+ * rail. The topmost visible row's title reading gives the current bucket; the
+ * playhead and locate buttons already keep `scrollOffset` in sync, so this
+ * tracks both manual scrolling and programmatic jumps (drag/click on the rail).
+ */
+const currentLetter = computed(() => {
+  const index = props.letterIndex;
+  if (!showIndex.value || !index) return null;
+  const row = listRef.value?.findItemIndex(scrollOffset.value + 1) ?? 0;
+  const track = props.tracks[row];
+  if (!track) return index[0]?.label ?? null;
+  const label = bucketLabel(reading(track.title));
+  return index.some((entry) => entry.label === label) ? label : index[0]?.label ?? null;
+});
 /** Scroll to the first track of a bucket in the title-sorted list. */
 function jumpToLetter(entry: LetterIndexEntry) {
   if (!entry.present) return;
@@ -291,7 +308,7 @@ function jumpToLetter(entry: LetterIndexEntry) {
       </div>
     </template>
     </div>
-    <TrackIndexRail v-if="showIndex" :entries="letterIndex!" @select="jumpToLetter" />
+    <TrackIndexRail v-if="showIndex" :entries="letterIndex!" :current="currentLetter" @select="jumpToLetter" />
     <div v-if="controlsEnabled" class="pointer-events-none sticky bottom-4 z-30 mt-2 flex flex-col items-end gap-2 px-4">
       <button v-if="showLocate" type="button" class="pointer-events-auto grid h-8 w-8 place-items-center border border-line bg-bg text-dim shadow-sm transition-colors hover:border-accent hover:text-accent" :title="t('library.locateCurrent')" @click="locateCurrent"><LocateFixed :size="14" :stroke-width="2" /></button>
       <button v-if="showTop" type="button" class="pointer-events-auto grid h-8 w-8 place-items-center border border-line bg-bg text-dim shadow-sm transition-colors hover:border-accent hover:text-accent" :title="t('library.backToTop')" @click="scrollToTop"><ArrowUp :size="14" :stroke-width="2" /></button>
