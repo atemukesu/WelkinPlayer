@@ -4,7 +4,7 @@
 -->
 
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { ref } from "vue";
 import { useI18n } from "vue-i18n";
 import type { LetterIndexEntry } from "../lib/sort";
 
@@ -20,11 +20,7 @@ let hideTimer = 0;
 /** Dedupes a tap, whose pointerdown and click both resolve to the same label. */
 let lastPick: { label: string; at: number } | null = null;
 
-const activeTop = computed(() => {
-  const index = props.entries.findIndex((entry) => entry.label === active.value);
-  if (index < 0) return "50%";
-  return `${((index + 0.5) / props.entries.length) * 100}%`;
-});
+const activeTop = ref("50%");
 
 /** Which row of the rail a viewport Y coordinate falls on. */
 function indexFromY(clientY: number): number {
@@ -38,6 +34,8 @@ function indexFromY(clientY: number): number {
 
 function preview(label: string) {
   active.value = label;
+  const index = props.entries.findIndex((entry) => entry.label === label);
+  if (index >= 0) activeTop.value = `${((index + 0.5) / props.entries.length) * 100}%`;
 }
 
 /** Clears the pointer highlight shortly after leaving, unless still scrubbing. */
@@ -114,13 +112,13 @@ function onPointerUp(event: PointerEvent) {
 .track-index {
   position: fixed;
   top: 50%;
-  right: 0.4rem;
+  right: 0.75rem;
   z-index: 15;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 0.03rem;
-  padding: 0.25rem 0.1rem;
+  padding: 0.25rem 0.05rem;
   transform: translateY(-50%);
   touch-action: none;
   user-select: none;
@@ -150,17 +148,6 @@ function onPointerUp(event: PointerEvent) {
 .track-index__item--current {
   color: var(--accent);
   transform: scale(1.25);
-}
-
-.track-index__item--current::before {
-  content: "";
-  position: absolute;
-  left: -0.3rem;
-  top: 50%;
-  width: 2px;
-  height: 0.75rem;
-  background: var(--accent);
-  transform: translateY(-50%);
 }
 
 .track-index__item--empty {
