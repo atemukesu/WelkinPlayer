@@ -14,6 +14,7 @@ import { accents } from "./lib/app";
 import type { Accent, Theme, View } from "./lib/app";
 import { albumKey, primaryArtist } from "./lib/grouping";
 import { trackKey } from "./lib/sources";
+import { flushReadings, loadReadings } from "./lib/readings";
 import { useLibrary } from "./composables/useLibrary";
 import { startDesktopLyrics, stopDesktopLyrics } from "./composables/useDesktopLyrics";
 import { startMediaControl, stopMediaControl } from "./lib/mediaControl";
@@ -226,7 +227,7 @@ function savePlaybackPosition(force = false) {
   playback.record(key, player.position);
   if (force) void playback.flush();
 }
-function savePlaybackPositionOnLeave() { savePlaybackPosition(true); }
+function savePlaybackPositionOnLeave() { savePlaybackPosition(true); void flushReadings(); }
 function onVisibilityChange() { if (document.visibilityState === "hidden") savePlaybackPosition(true); }
 
 watch(() => trackKey(player.currentTrack), (key) => {
@@ -311,6 +312,8 @@ async function checkUpdatesOnBoot() {
 
 async function bootstrap() {
   await sources.hydrate();
+  // Title readings are cheap to read back and make the first title sort instant.
+  await loadReadings();
   const firstRun = await profile.hydrate();
   const seeded = await playback.hydrate({ path: profile.profile.lastTrack, position: profile.profile.lastPosition });
   if (seeded) profile.clearLegacyPlayback();

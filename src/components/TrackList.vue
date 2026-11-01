@@ -17,10 +17,12 @@ import { pushToast } from "../lib/toast";
 import { trackViewMode } from "../lib/ui";
 import { requestMeta } from "../directives/requestMeta";
 import TrackCard from "./TrackCard.vue";
+import TrackIndexRail from "./TrackIndexRail.vue";
+import type { LetterIndexEntry } from "../lib/sort";
 
 const vRequestMeta = requestMeta;
 
-const props = withDefaults(defineProps<{ tracks: Track[]; emptyKey: string; removable?: boolean; selectable?: boolean; selected?: Set<string>; scroller?: HTMLElement | null }>(), { removable: false, selectable: false, scroller: null });
+const props = withDefaults(defineProps<{ tracks: Track[]; emptyKey: string; removable?: boolean; selectable?: boolean; selected?: Set<string>; scroller?: HTMLElement | null; letterIndex?: LetterIndexEntry[] | null }>(), { removable: false, selectable: false, scroller: null, letterIndex: null });
 const emit = defineEmits<{ play: [track: Track]; menu: [event: MouseEvent, track: Track]; remove: [track: Track]; openArtist: [artist: string]; openAlbum: [album: string]; "update:selected": [value: Set<string>] }>();
 const { t } = useI18n();
 const player = usePlayerStore();
@@ -204,6 +206,16 @@ function locateCurrent() {
 function scrollToTop() {
   props.scroller?.scrollTo({ top: 0, behavior: "smooth" });
 }
+
+// The alphabetical rail is only meaningful for a title-sorted list in list
+// mode; it is hidden while selecting so it never overlaps the checkboxes.
+const showIndex = computed(() => !!props.letterIndex?.length && trackViewMode.value === "list" && !props.selectable);
+/** Scroll to the first track of a bucket in the title-sorted list. */
+function jumpToLetter(entry: LetterIndexEntry) {
+  if (!entry.present) return;
+  // The rail only shows in list mode, so an anchor is already a virtual row.
+  listRef.value?.scrollToIndex(entry.anchor, { align: "start" });
+}
 </script>
 
 <template>
@@ -279,6 +291,7 @@ function scrollToTop() {
       </div>
     </template>
     </div>
+    <TrackIndexRail v-if="showIndex" :entries="letterIndex!" @select="jumpToLetter" />
     <div v-if="controlsEnabled" class="pointer-events-none sticky bottom-4 z-30 mt-2 flex flex-col items-end gap-2 px-4">
       <button v-if="showLocate" type="button" class="pointer-events-auto grid h-8 w-8 place-items-center border border-line bg-bg text-dim shadow-sm transition-colors hover:border-accent hover:text-accent" :title="t('library.locateCurrent')" @click="locateCurrent"><LocateFixed :size="14" :stroke-width="2" /></button>
       <button v-if="showTop" type="button" class="pointer-events-auto grid h-8 w-8 place-items-center border border-line bg-bg text-dim shadow-sm transition-colors hover:border-accent hover:text-accent" :title="t('library.backToTop')" @click="scrollToTop"><ArrowUp :size="14" :stroke-width="2" /></button>

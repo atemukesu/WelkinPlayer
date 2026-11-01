@@ -177,6 +177,7 @@ const messages = {
       sortDesc: "降序",
       locateCurrent: "定位当前播放",
       backToTop: "回到顶部",
+      titleIndex: "字母索引",
       openArtist: "查看歌手",
       openAlbum: "查看专辑",
       unavailable: "此设备无此曲目",
@@ -558,7 +559,7 @@ const messages = {
       },
       cache: {
         title: "本地缓存",
-        desc: "流媒体缓冲、整曲缓存以及音频元数据与封面缩略图都存放在下方目录。",
+        desc: "流媒体缓冲、整曲缓存、音频元数据与封面缩略图，以及分页排序用的标题读音都存放在下方目录。",
         dir: "缓存目录",
         save: "保存缓存目录",
         saved: "缓存目录已保存",
@@ -1009,6 +1010,7 @@ const messages = {
       sortDesc: "Descending",
       locateCurrent: "Locate current track",
       backToTop: "Back to top",
+      titleIndex: "Alphabetical index",
       openArtist: "View artist",
       openAlbum: "View album",
       unavailable: "Not on this device",
@@ -1393,7 +1395,7 @@ const messages = {
       },
       cache: {
         title: "Local cache",
-        desc: "Streaming buffers, whole-track cache, and track metadata/cover thumbnails all live in the directory below.",
+        desc: "Streaming buffers, whole-track cache, track metadata/cover thumbnails, and the title readings used for alphabetical sorting all live in the directory below.",
         dir: "Cache directory",
         save: "Save cache directory",
         saved: "Cache directory saved",

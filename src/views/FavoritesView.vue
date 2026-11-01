@@ -10,7 +10,7 @@ import { useI18n } from "vue-i18n";
 import { usePlayerStore } from "../stores/player";
 import type { Track } from "../stores/player";
 import { tracksForPaths, useProfileStore } from "../stores/profile";
-import { sortTracks, useTrackSort } from "../lib/sort";
+import { sortTracks, titleLetterIndex, useTrackSort } from "../lib/sort";
 import TrackList from "../components/TrackList.vue";
 import TrackContextMenu from "../components/TrackContextMenu.vue";
 import TrackSortMenu from "../components/TrackSortMenu.vue";
@@ -35,6 +35,8 @@ const tracks = computed(() => {
   const value = query.value.trim().toLocaleLowerCase();
   return value ? orderedTracks.value.filter((track) => `${track.title} ${track.artist} ${track.album}`.toLocaleLowerCase().includes(value)) : orderedTracks.value;
 });
+/** The A–Z rail, only while sorting by title and not in multi-select mode. */
+const letterIndex = computed(() => (sortKey.value === "title" && !selectMode.value ? titleLetterIndex(tracks.value) : null));
 
 function toggleSelectMode() {
   selectMode.value = !selectMode.value;
@@ -74,7 +76,7 @@ function downloadMetadata(track: Track) { emit("downloadMetadata", track); }
       </header>
 
       <div class="mt-8 min-h-0 flex-1">
-        <TrackList v-model:selected="selected" :tracks="tracks" :scroller="scrollEl" empty-key="favorites.empty" :selectable="selectMode" @play="play" @menu="openContextMenu" @open-artist="emit('openArtist', $event)" @open-album="emit('openAlbum', $event)" />
+        <TrackList v-model:selected="selected" :tracks="tracks" :scroller="scrollEl" :letter-index="letterIndex" empty-key="favorites.empty" :selectable="selectMode" @play="play" @menu="openContextMenu" @open-artist="emit('openArtist', $event)" @open-album="emit('openAlbum', $event)" />
       </div>
 
       <TrackContextMenu v-if="contextTrack" :track="contextTrack" :x="contextPosition.x" :y="contextPosition.y" :selected-paths="[...selected]" :downloading="downloadingTrackId === contextTrack.id" @close="contextTrack = null" @download-metadata="downloadMetadata" @edit-lyrics="emit('editLyrics', $event)" @edit-info="emit('editInfo', $event)" @show-info="emit('showInfo', $event)" />

@@ -56,6 +56,9 @@ importers:
       pinia:
         specifier: ^4.0.3
         version: 4.0.3(@vue/devtools-api@8.2.1)(typescript@6.0.3)(vue@3.5.43(typescript@6.0.3))
+      pinyin-pro:
+        specifier: ^3.29.5
+        version: 3.29.5
       virtua:
         specifier: ^0.52.7
         version: 0.52.7(vue@3.5.43(typescript@6.0.3))
@@ -65,6 +68,9 @@ importers:
       vue-i18n:
         specifier: ^11.4.12
         version: 11.4.12(vue@3.5.43(typescript@6.0.3))
+      wanakana:
+        specifier: ^5.3.1
+        version: 5.3.1
     devDependencies:
       '@tailwindcss/vite':
         specifier: ^4.3.3
@@ -961,6 +967,9 @@ packages:
       typescript:
         optional: true
 
+  pinyin-pro@3.29.5:
+    resolution: {integrity: sha512-Fk5YoRmtdHqJWqAuzYVG/NzvzeCbaG+ZEwbY6Nbps3QAIrvQQEtcm49frcyCM8i2b5najnzPDtYqrHRYTTiuwQ==}
+
   postcss@8.5.28:
     resolution: {integrity: sha512-RRuzqDtt5Y9h3quz5hWhK+TPnsmVs6WwSU6LkJMeY4HstUEDuYTG8UJSdawMRzmzAtV+KEoG8N3Qg2qLy5vM/A==}
     engines: {node: ^10 || ^12 || >=14}
@@ -1169,6 +1178,10 @@ packages:
     peerDependenciesMeta:
       typescript:
         optional: true
+
+  wanakana@5.3.1:
+    resolution: {integrity: sha512-OSDqupzTlzl2LGyqTdhcXcl6ezMiFhcUwLBP8YKaBIbMYW1wAwDvupw2T9G9oVaKT9RmaSpyTXjxddFPUcFFIw==}
+    engines: {node: '>=12'}
 
   why-is-node-running@2.3.0:
     resolution: {integrity: sha512-hUrmaWBdVDcxvYqnyh09zunKzROWjbZTiNy8dBEjkS7ehEDQibXJ7XvlmtbwuTclUiIyN+CyXQD4Vmko8fNm8w==}
@@ -1937,6 +1950,8 @@ snapshots:
     optionalDependencies:
       typescript: 6.0.3
 
+  pinyin-pro@3.29.5: {}
+
   postcss@8.5.28:
     dependencies:
       nanoid: 3.3.19
@@ -2094,6 +2109,8 @@ snapshots:
       '@vue/shared': 3.5.43
     optionalDependencies:
       typescript: 6.0.3
+
+  wanakana@5.3.1: {}
 
   why-is-node-running@2.3.0:
     dependencies:

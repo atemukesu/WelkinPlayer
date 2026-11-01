@@ -12,7 +12,7 @@ import type { Track } from "../stores/player";
 import { tracksForPaths, useProfileStore } from "../stores/profile";
 import { useSourcesStore } from "../stores/sources";
 import { groupKeys, isUnknownGroup, type GroupKind } from "../lib/grouping";
-import { sortTracks, useTrackSort, type TrackSortContext } from "../lib/sort";
+import { sortTracks, titleLetterIndex, useTrackSort, type TrackSortContext } from "../lib/sort";
 import TrackList from "../components/TrackList.vue";
 import TrackContextMenu from "../components/TrackContextMenu.vue";
 import TrackSortMenu from "../components/TrackSortMenu.vue";
@@ -69,6 +69,8 @@ const tracks = computed(() => {
   const value = query.value.trim().toLocaleLowerCase();
   return value ? orderedTracks.value.filter((track) => `${track.title} ${track.artist} ${track.album}`.toLocaleLowerCase().includes(value)) : orderedTracks.value;
 });
+/** The A–Z rail, only on the pages that opted in while sorting by title. */
+const letterIndex = computed(() => (sortKey.value === "title" && !selectMode.value && (sortContext.value === "tracks" || sortContext.value === "playlist") ? titleLetterIndex(tracks.value) : null));
 
 watch([() => props.playlistId, () => props.artist, () => props.album], () => { selectMode.value = false; selected.value = new Set(); });
 
@@ -139,7 +141,7 @@ function downloadMetadata(track: Track) { emit("downloadMetadata", track); }
         <template v-if="loading"><span class="ak-pulse"></span><p class="text-sm font-semibold uppercase tracking-[0.2em] text-muted">{{ t("library.loading") }}</p></template>
         <template v-else><p class="max-w-md text-sm text-muted">{{ t("library.emptyDesc") }}</p></template>
       </div>
-      <div v-else class="min-h-0 flex-1"><TrackList v-model:selected="selected" :tracks="tracks" :scroller="scrollEl" empty-key="library.playlists.noTracks" :selectable="selectMode" @play="play" @menu="openContextMenu" @open-artist="emit('openArtist', $event)" @open-album="emit('openAlbum', $event)" /></div>
+      <div v-else class="min-h-0 flex-1"><TrackList v-model:selected="selected" :tracks="tracks" :scroller="scrollEl" :letter-index="letterIndex" empty-key="library.playlists.noTracks" :selectable="selectMode" @play="play" @menu="openContextMenu" @open-artist="emit('openArtist', $event)" @open-album="emit('openAlbum', $event)" /></div>
 
       <TrackContextMenu v-if="contextTrack" :track="contextTrack" :x="contextPosition.x" :y="contextPosition.y" :selected-paths="[...selected]" :playlist-id="activePlaylist?.id ?? null" :downloading="downloadingTrackId === contextTrack.id" @close="contextTrack = null" @download-metadata="downloadMetadata" @edit-lyrics="emit('editLyrics', $event)" @edit-info="emit('editInfo', $event)" @show-info="emit('showInfo', $event)" />
     </div>

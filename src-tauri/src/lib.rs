@@ -263,6 +263,8 @@ pub fn run() {
             commands::media::cover_path,
             commands::media::get_cache_dir,
             commands::media::set_cache_dir,
+            commands::sort::load_sort_readings,
+            commands::sort::save_sort_readings,
             commands::media::load_library_cache,
             commands::media::save_library_cache,
             commands::media::refresh_source_library,

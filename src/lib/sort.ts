@@ -5,6 +5,8 @@
 
 import { ref, watch, type Ref } from "vue";
 import type { Track } from "../stores/player";
+import { bucketLabel, bucketWeight } from "./reading";
+import { reading } from "./readings";
 
 export type TrackSortKey = "default" | "title" | "artist" | "album" | "duration";
 export type TrackSortDir = "asc" | "desc";
@@ -85,9 +87,26 @@ function compare(a: Track, b: Track, key: Exclude<TrackSortKey, "default">): num
     if (leftKnown !== rightKnown) return leftKnown ? -1 : 1;
     return 0;
   }
-  const field = key === "title" ? a.title : key === "artist" ? a.artist : a.album;
-  const other = key === "title" ? b.title : key === "artist" ? b.artist : b.album;
+  if (key === "title") return compareReadings(a.title, b.title);
+  const field = key === "artist" ? a.artist : a.album;
+  const other = key === "artist" ? b.artist : b.album;
   return collator.compare(field, other);
+}
+
+/**
+ * Title order by romanized reading: hanzi/kana are read (pinyin/romaji) so the
+ * list sorts alphabetically, latin titles stay as-is. Titles with no latin
+ * reading (digits, symbols, other scripts) weight last so they gather under the
+ * trailing `#` in the index rail; other ties fall back to a raw collation so the
+ * order stays stable.
+ */
+function compareReadings(a: string, b: string): number {
+  const left = reading(a);
+  const right = reading(b);
+  const leftWeight = bucketWeight(left);
+  const rightWeight = bucketWeight(right);
+  if (leftWeight !== rightWeight) return leftWeight - rightWeight;
+  return collator.compare(left, right);
 }
 
 /** Returns a new array sorted by the given key/direction; "default" returns the source untouched. */
@@ -99,6 +118,42 @@ export function sortTracks(tracks: Track[], key: TrackSortKey, dir: TrackSortDir
     // Fall back to the original position so equal rows keep their order.
     .sort((a, b) => compare(a.track, b.track, key) * factor || a.index - b.index)
     .map((entry) => entry.track);
+}
+
+/** One entry of the alphabetical index rail. */
+export interface LetterIndexEntry {
+  /** `A`–`Z`, or `#` for titles with no latin reading. */
+  label: string;
+  /** Index of that bucket's first track in the given (title-sorted) list. */
+  anchor: number;
+  /** Whether the list actually has tracks in this bucket. */
+  present: boolean;
+}
+
+/**
+ * Build the alphabetical index rail for a title-sorted list. Every track is
+ * bucketed by its romanized reading; `anchor` points at the first track of each
+ * bucket *in the given (title-sorted) order*, so a caller can scroll to it.
+ * All `A`–`Z` labels plus `#` are always returned; `present` tells the rail
+ * which ones to show.
+ */
+export function titleLetterIndex(tracks: Track[]): LetterIndexEntry[] {
+  if (tracks.length === 0) return [];
+  const anchors = new Map<string, number>();
+  const counts = new Map<string, number>();
+  tracks.forEach((track, index) => {
+    const label = bucketLabel(reading(track.title));
+    if (!anchors.has(label)) anchors.set(label, index);
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  });
+
+  const labels = [...Array.from({ length: 26 }, (_, i) => String.fromCharCode(65 + i)), "#"];
+  return labels.map((label) => ({
+    label,
+    // Anchor at the end so an absent bucket still jumps somewhere sensible.
+    anchor: anchors.get(label) ?? tracks.length,
+    present: (counts.get(label) ?? 0) > 0,
+  }));
 }
 
 // --- Grouped library (歌手 / 专辑 grid) sorting ---
