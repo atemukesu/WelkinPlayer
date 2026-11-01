@@ -32,7 +32,7 @@ import { Virtualizer } from "virtua/vue";
 import type { VirtualizerHandle } from "virtua/vue";
 import type { View } from "../lib/app";
 
-defineProps<{ returnView: View }>();
+const props = defineProps<{ returnView: View }>();
 const emit = defineEmits<{ navigate: [view: View]; queue: []; openArtist: [artist: string]; openAlbum: [album: string] }>();
 const { t } = useI18n();
 const player = usePlayerStore();
@@ -176,6 +176,15 @@ async function toggleFullscreen() {
 }
 
 const fullscreenTitle = computed(() => (isFullscreen.value ? t("controls.exitFullscreen") : t("controls.fullscreen")));
+
+/** Escape folds the page away, same as the return control. */
+function onKeydown(event: KeyboardEvent) {
+  if (event.key !== "Escape") return;
+  bumpControls();
+  event.preventDefault();
+  event.stopPropagation();
+  emit("navigate", props.returnView);
+}
 
 const repeatTitle = computed(() => player.repeat === "one" ? t("controls.repeatOne") : player.repeat === "all" ? t("controls.repeatAll") : t("controls.repeatOff"));
 const shuffleTitle = computed(() => player.shuffle ? t("controls.shuffleOn") : t("controls.shuffleOff"));
@@ -499,6 +508,7 @@ onMounted(() => {
   bumpControls();
   window.setTimeout(updateLyricEdgeFlags, 100);
   void syncFullscreen();
+  window.addEventListener("keydown", onKeydown, true);
   window.addEventListener("pointermove", bumpControls);
   window.addEventListener("pointerdown", bumpControls);
   window.addEventListener("wheel", bumpControls, { passive: true });
@@ -515,6 +525,7 @@ onBeforeUnmount(() => {
   fullscreenRequest += 1;
   cachedWords = null;
   cachedSet = null;
+  window.removeEventListener("keydown", onKeydown, true);
   window.removeEventListener("pointermove", bumpControls);
   window.removeEventListener("pointerdown", bumpControls);
   window.removeEventListener("wheel", bumpControls);
