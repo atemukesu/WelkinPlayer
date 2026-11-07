@@ -29,7 +29,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::core::error::AppError;
 use crate::playback::source::{open_track, ReadSeek};
-use crate::streaming::smart_cache::SmartCache;
+use crate::streaming::manual_cache::ManualCache;
 use crate::streaming::stream_cache::StreamCache;
 
 /// How often the playhead snapshot is pushed to the frontend (milliseconds).
@@ -1103,7 +1103,7 @@ impl Engine {
 }
 
 /// Start the engine (worker + event threads) and return its handle.
-pub fn start(app: AppHandle, cache: Arc<StreamCache>, smart: Arc<SmartCache>) -> Engine {
+pub fn start(app: AppHandle, cache: Arc<StreamCache>, manual: Arc<ManualCache>) -> Engine {
     log::info!("playback: starting worker and event threads");
     let (tx, rx) = mpsc::channel();
     let shared = Arc::new(Shared::new());
@@ -1115,7 +1115,7 @@ pub fn start(app: AppHandle, cache: Arc<StreamCache>, smart: Arc<SmartCache>) ->
     let worker_shutdown = shutdown.clone();
     std::thread::Builder::new()
         .name("welkin-playback-worker".to_string())
-        .spawn(move || worker::run(worker_app, cache, smart, worker_shared, worker_shutdown, rx))
+        .spawn(move || worker::run(worker_app, cache, manual, worker_shared, worker_shutdown, rx))
         .unwrap_or_else(|error| panic!("failed to start playback worker: {error}"));
 
     let events_shared = shared.clone();
@@ -1528,7 +1528,7 @@ mod worker {
     struct Worker {
         app: AppHandle,
         cache: Arc<StreamCache>,
-        smart: Arc<SmartCache>,
+        manual: Arc<ManualCache>,
         shared: Arc<Shared>,
         ring: Ring,
         shutdown: Arc<AtomicBool>,
@@ -1564,7 +1564,7 @@ mod worker {
     pub fn run(
         app: AppHandle,
         cache: Arc<StreamCache>,
-        smart: Arc<SmartCache>,
+        manual: Arc<ManualCache>,
         shared: Arc<Shared>,
         shutdown: Arc<AtomicBool>,
         rx: Receiver<Command>,
@@ -1599,7 +1599,7 @@ mod worker {
         let mut worker = Worker {
             app,
             cache,
-            smart,
+            manual,
             shared,
             shutdown,
             ring: Ring::new(1).0,
@@ -1977,7 +1977,7 @@ mod worker {
             self.shared.set_ended(false);
             let open_started = std::time::Instant::now();
             let (reader, byte_len) =
-                match open_track(&self.app, &self.cache, &self.smart, source_id, path) {
+                match open_track(&self.app, &self.cache, &self.manual, source_id, path) {
                     Ok(opened) => opened,
                     Err(error) => {
                         log::warn!(
@@ -2162,7 +2162,7 @@ mod worker {
                 let source_id = current.source_id.clone();
                 let path = current.path.clone();
                 log::debug!("decoder seek unavailable, rebuilding at {target}s: {error}");
-                match open_track(&self.app, &self.cache, &self.smart, &source_id, &path)
+                match open_track(&self.app, &self.cache, &self.manual, &source_id, &path)
                     .and_then(|(reader, byte_len)| build_decoder(reader, byte_len))
                 {
                     Ok(mut decoder) => {

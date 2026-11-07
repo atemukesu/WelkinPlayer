@@ -3,27 +3,21 @@
  * SPDX-License-Identifier: GPL-3.0-only
  */
 
-import { ref, watch } from "vue";
+import { ref } from "vue";
 import { defineStore } from "pinia";
 import { invoke } from "../api";
 import { i18n } from "../i18n";
 import { sourceProfileId, splitTrackKey, trackKey } from "../lib/sources";
 import { pushToast } from "../lib/toast";
-import { useProfileStore } from "./profile";
-import { useSourcesStore } from "./sources";
 import { usePlayerStore } from "./player";
+import { useSourcesStore } from "./sources";
 
-/** Only tracks played at least this many times are offered for whole caching. */
-const MIN_PLAYS = 5;
-/** Upper bound on ranked candidates sent to Rust (the "top" of the ranking). */
-const MAX_CANDIDATES = 300;
 /** How often the complete/pinned key sets are re-read from Rust. */
 const STATUS_POLL_MS = 5000;
 
 /**
- * Whole-track ("smart") cache state. Rust owns the files; this store mirrors
- * which keys are complete or pinned so lists can badge them, and pushes the
- * ranked play counts that drive automatic caching.
+ * Whole-track cache state for manually pinned tracks. Rust owns the files;
+ * this store mirrors which keys are complete or pinned so lists can badge them.
  */
 export const useCacheStore = defineStore("cache", () => {
   const cached = ref<Set<string>>(new Set());
@@ -68,27 +62,6 @@ export const useCacheStore = defineStore("cache", () => {
     }
   }
 
-  /** Push the ranked, thresholded play counts to Rust. */
-  async function syncCandidates() {
-    const profile = useProfileStore();
-    // Only sources this device knows and can stream from. Play counts are
-    // synced, so keys may reference another device's source id.
-    const sourceStore = useSourcesStore();
-    const knownIds = new Set(sourceStore.sources.filter((source) => source.kind !== "local").map((source) => sourceProfileId(source)));
-    const candidates = Object.entries(profile.profile.playCounts)
-      .filter(([, count]) => count >= MIN_PLAYS)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, MAX_CANDIDATES)
-      .map(([key, count]) => ({ ...splitTrackKey(key), freq: count }))
-      .filter((item) => item.path && knownIds.has(item.sourceId))
-      .map((item) => ({ ...item, sourceId: sourceStore.sources.find((source) => sourceProfileId(source) === item.sourceId)?.id ?? item.sourceId }));
-    try {
-      await invoke("sync_smart_cache", { candidates });
-    } catch {
-      // Ignore: caching is best-effort.
-    }
-  }
-
   // Pinned tracks are explicit user choices: downloaded first, never evicted.
   async function pin(key: string) {
     const { sourceId: profileId, path } = splitTrackKey(key);
@@ -124,21 +97,8 @@ export const useCacheStore = defineStore("cache", () => {
 
   function start() {
     void refresh();
-    void syncCandidates();
-    const profile = useProfileStore();
-    watch(
-      () => JSON.stringify(profile.profile.playCounts),
-      () => void syncCandidates(),
-    );
-    // Re-sync once sources finish loading (or change), so keys with unknown
-    // source ids are not offered before we can resolve them.
-    const sources = useSourcesStore();
-    watch(
-      () => sources.sources.map((source) => source.id).join(","),
-      () => void syncCandidates(),
-    );
     if (!timer) timer = window.setInterval(() => void refresh(), STATUS_POLL_MS);
   }
 
-  return { cached, pinned, isCached, isPinned, refresh, syncCandidates, pin, unpin, togglePin, start };
+  return { cached, pinned, isCached, isPinned, refresh, pin, unpin, togglePin, start };
 });

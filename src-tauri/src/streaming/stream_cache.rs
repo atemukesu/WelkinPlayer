@@ -56,21 +56,12 @@ const SEEK_PROBE_BYTES: u64 = 2 * 1024 * 1024;
 /// for a playhead update while the decoder waits for more header bytes.
 const STARTUP_BYTES: u64 = 16 * 1024 * 1024;
 
-/// `settings.json` key holding the smart cache budget in mebibytes.
-pub const SMART_LIMIT_KEY: &str = "cache.smartLimitMb";
-/// `settings.json` key toggling the automatic (whole-track) cache.
-pub const SMART_ENABLED_KEY: &str = "cache.smartEnabled";
 /// `settings.json` key toggling the read-ahead buffer used while streaming.
 pub const STREAM_ENABLED_KEY: &str = "cache.streamEnabled";
 /// `settings.json` key holding the read-ahead pre-buffer window in seconds.
 pub const LEAD_SECONDS_KEY: &str = "cache.leadSeconds";
-/// Legacy key from before the smart/stream split; read as a fallback only.
-const LEGACY_LIMIT_KEY: &str = "stream.cacheLimitMb";
-/// Default smart cache budget when the user has not chosen one.
-pub const DEFAULT_SMART_LIMIT_MB: u64 = 1024;
 /// Fixed read-ahead budget. This buffer is needed for smooth playback and seek,
-/// so it is independent of the user's smart-cache limit and never spends the
-/// smart-cache budget.
+/// so it has its own budget.
 pub const STREAM_BUDGET_MB: u64 = 256;
 
 /// Outcome of waiting for a track's total size.
@@ -925,39 +916,6 @@ fn mark_complete(entry: &Arc<Entry>, generation: u64) {
 
 fn file_len(path: &std::path::Path) -> u64 {
     std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0)
-}
-
-/// Read the configured smart cache budget (MiB), honouring the legacy key from
-/// before the smart/stream split.
-pub fn read_smart_limit_mb(app: &AppHandle) -> u64 {
-    let Ok(store) = app.store(SETTINGS_FILE) else {
-        return DEFAULT_SMART_LIMIT_MB;
-    };
-    store
-        .get(SMART_LIMIT_KEY)
-        .and_then(|value| value.as_u64())
-        .or_else(|| store.get(LEGACY_LIMIT_KEY).and_then(|value| value.as_u64()))
-        .unwrap_or(DEFAULT_SMART_LIMIT_MB)
-}
-
-/// Persist the smart cache budget (MiB).
-pub fn write_smart_limit_mb(app: &AppHandle, limit_mb: u64) -> Result<(), String> {
-    let store = app
-        .store(SETTINGS_FILE)
-        .map_err(|error| error.to_string())?;
-    store.set(SMART_LIMIT_KEY, serde_json::json!(limit_mb));
-    store.save().map_err(|error| error.to_string())?;
-    Ok(())
-}
-
-/// Whether the automatic smart cache is enabled (defaults to on).
-pub fn read_smart_enabled(app: &AppHandle) -> bool {
-    read_bool(app, SMART_ENABLED_KEY, true)
-}
-
-/// Persist the smart cache enabled flag.
-pub fn write_smart_enabled(app: &AppHandle, enabled: bool) -> Result<(), String> {
-    write_bool(app, SMART_ENABLED_KEY, enabled)
 }
 
 /// Whether the read-ahead stream buffer is enabled (defaults to on).

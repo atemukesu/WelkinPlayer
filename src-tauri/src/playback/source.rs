@@ -4,8 +4,8 @@
 //! Seekable byte sources for the playback engine.
 //!
 //! The decoder needs `Read + Seek` over a whole track. A local file is opened
-//! directly; a WebDAV track is served from disk — the complete "smart" cache
-//! when present, otherwise the read-ahead stream cache, whose background
+//! directly; a WebDAV track is served from disk — the complete manual (pinned)
+//! cache when present, otherwise the read-ahead stream cache, whose background
 //! downloader is rebased on every seek. No loopback HTTP is involved: the
 //! decoder reads the cache file in-process.
 
@@ -21,7 +21,7 @@ use crate::commands::media::asset_hash;
 use crate::core::error::AppError;
 use crate::data::backend::safe_join;
 use crate::data::sources::{find_source, SourceConfig};
-use crate::streaming::smart_cache::SmartCache;
+use crate::streaming::manual_cache::ManualCache;
 use crate::streaming::stream_cache::{CacheReader, Entry, StreamCache, TotalState};
 
 /// Blanket trait so the decoder can be handed any boxed, thread-safe reader.
@@ -36,7 +36,7 @@ impl<T: Read + Seek + Send + Sync> ReadSeek for T {}
 pub fn open_track(
     app: &AppHandle,
     cache: &Arc<StreamCache>,
-    smart: &Arc<SmartCache>,
+    manual: &Arc<ManualCache>,
     source_id: &str,
     path: &str,
 ) -> Result<(Box<dyn ReadSeek>, Option<u64>), AppError> {
@@ -55,8 +55,8 @@ pub fn open_track(
 
     let key = asset_hash(source_id, path);
     // A fully cached track is served straight from disk: perfect random access.
-    if let Some(file) = smart.complete_file(&key) {
-        log::debug!("playback source: smart-cache file for {path}");
+    if let Some(file) = manual.complete_file(&key) {
+        log::debug!("playback source: manual-cache file for {path}");
         let file = File::open(file)?;
         let len = file.metadata().ok().map(|meta| meta.len());
         return Ok((Box::new(file), len));

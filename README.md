@@ -23,7 +23,7 @@
 - **歌词**：AMLL 逐字歌词渲染；在线歌词按顺序从 QQ 音乐、网易云音乐、AMLL 歌词库获取；本地同名字幕优先。
 - **桌面悬浮歌词**：独立的透明歌词窗口（Android 为系统悬浮窗）。
 - **系统媒体控制**：Windows SMTC、macOS Now Playing、Linux MPRIS、Android MediaSession。
-- **Rust 播放引擎**：Symphonia 解码、cpal 输出（桌面 WASAPI / CoreAudio / ALSA，Android Oboe / AAudio），WebDAV 流媒体边下边播并支持精准 seek；按网络状态智能缓存，支持手动置顶。
+- **Rust 播放引擎**：Symphonia 解码、cpal 输出（桌面 WASAPI / CoreAudio / ALSA，Android Oboe / AAudio），WebDAV 流媒体边下边播并支持精准 seek；按网络状态预取，支持手动缓存。
 - **跨设备同步**：昵称、歌单、收藏、播放进度等同步到指定来源。
 - **音乐管理**：元数据/封面读取与编辑、播放统计与排名。
 - **主题**：浅色/深色与多种主题色。
@@ -80,7 +80,7 @@ pnpm tauri android build --apk # 构建 Android APK
 │  └─ lib/              # 通用工具与前端契约
 ├─ src-tauri/           # Rust 后端
 │  ├─ src/playback/     # 播放引擎（解码、音频输出、传输命令）
-│  ├─ src/streaming/    # 流缓存与智能缓存
+│  ├─ src/streaming/    # 流缓存与手动缓存
 │  ├─ src/commands/     # Tauri 命令（媒体、WebDAV、更新等）
 │  ├─ gen/android/      # Android 工程
 │  └─ tauri.conf.json   # 应用配置（版本、更新器等）

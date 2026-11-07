@@ -3,8 +3,8 @@
 
 //! Active-network classification.
 //!
-//! The smart cache and speculative prefetch must not spend a metered (cellular)
-//! connection. Desktop platforms are treated as unmetered; Android asks
+//! Speculative prefetch must not spend a metered (cellular) connection.
+//! Desktop platforms are treated as unmetered; Android asks
 //! `ConnectivityManager`. A failed query errs on the side of "unmetered" so a
 //! missing permission never silently disables streaming.
 
@@ -38,9 +38,4 @@ pub fn status() -> NetworkStatus {
     {
         NetworkStatus::UNMETERED
     }
-}
-
-/// Whether downloads may proceed without spending a metered connection.
-pub fn is_unmetered() -> bool {
-    !status().metered
 }

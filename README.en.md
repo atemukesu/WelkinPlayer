@@ -23,7 +23,7 @@ A cross-platform music player built with [Tauri 3](https://v3.tauri.app/). It re
 - **Lyrics**: AMLL word-by-word rendering; online lyrics fetched in order from QQ Music, NetEase Cloud Music and the AMLL lyrics library; same-named local lyrics win.
 - **Desktop lyrics overlay**: A separate transparent lyrics window (a system overlay on Android).
 - **System media controls**: Windows SMTC, macOS Now Playing, Linux MPRIS, Android MediaSession.
-- **Rust playback engine**: Symphonia decoding and cpal output (WASAPI / CoreAudio / ALSA on desktop, Oboe / AAudio on Android); WebDAV streams play as they download with accurate seeking, caching smartly based on network state, with manual pinning.
+- **Rust playback engine**: Symphonia decoding and cpal output (WASAPI / CoreAudio / ALSA on desktop, Oboe / AAudio on Android); WebDAV streams play as they download with accurate seeking, prefetching based on network state, with manual caching.
 - **Cross-device sync**: Nickname, playlists, favorites and playback progress sync to the chosen source.
 - **Library management**: Read and edit metadata/cover art; playback statistics and rankings.
 - **Themes**: Light/dark and multiple accent colors.
@@ -80,7 +80,7 @@ pnpm tauri android build --apk # Android APK
 │  └─ lib/              # Shared utilities and frontend contracts
 ├─ src-tauri/           # Rust backend
 │  ├─ src/playback/     # Playback engine (decoding, audio output, transport)
-│  ├─ src/streaming/    # Stream and smart caches
+│  ├─ src/streaming/    # Stream and manual caches
 │  ├─ src/commands/     # Tauri commands (media, WebDAV, updates, ...)
 │  ├─ gen/android/      # Android project
 │  └─ tauri.conf.json   # App config (version, updater, ...)
