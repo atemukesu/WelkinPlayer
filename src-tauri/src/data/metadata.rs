@@ -273,6 +273,10 @@ pub fn write_tags(
     }
 
     let mut output = std::io::Cursor::new(bytes.to_vec());
+    // Drop the legacy ID3v1 tag so `lofty` never attempts to write its
+    // fixed-width fields (its `resize_string` panics on multi-byte chars).
+    // ID3v2 keeps the full text and is what modern players read.
+    let _ = tagged.remove(lofty::tag::TagType::Id3v1);
     tagged
         .save_to(&mut output, WriteOptions::default())
         .map_err(|error| AppError::Other(format!("metadata write error: {error}")))?;
