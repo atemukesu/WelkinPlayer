@@ -5,19 +5,16 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { Activity, ChevronLeft, ChevronRight, Heart, HeartHandshake, Library, ListMusic, ListPlus, Menu, Music2, Plus, Settings2, Signal, Wifi, WifiOff, X } from "@lucide/vue";
+import { Activity, ChevronLeft, ChevronRight, Heart, HeartHandshake, Library, ListMusic, ListPlus, Menu, Music2, Settings2, Signal, Wifi, WifiOff, X } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { classificationNavItems, navItems } from "../lib/app";
 import type { View } from "../lib/app";
-import { useProfileStore } from "../stores/profile";
 import { useNetworkStore } from "../stores/network";
 import { useLicenseStore } from "../stores/license";
-import PlaylistCover from "./PlaylistCover.vue";
 
 const props = withDefaults(defineProps<{ activeView: View; placement: "header" | "sidebar" | "mobile"; collapsed?: boolean; activePlaylistId?: string | null; activeArtist?: string | null; activeAlbum?: string | null; activeSource?: string | null }>(), { collapsed: false, activePlaylistId: null, activeArtist: null, activeAlbum: null, activeSource: null });
 const emit = defineEmits<{ navigate: [view: View]; toggle: []; createPlaylist: []; openPlaylist: [id: string] }>();
 const { t } = useI18n();
-const profile = useProfileStore();
 const network = useNetworkStore();
 const license = useLicenseStore();
 const networkLabel = computed(() => (!network.available ? t("nav.networkOffline") : network.metered ? t("nav.networkCellular") : t("nav.networkWifi")));
@@ -35,8 +32,6 @@ const mobileDrawerOpen = ref(false);
 function openMobileDrawer() { mobileDrawerOpen.value = true; }
 function closeMobileDrawer() { mobileDrawerOpen.value = false; }
 function navigateMobile(view: View) { closeMobileDrawer(); emit("navigate", view); }
-function openMobilePlaylist(id: string) { closeMobileDrawer(); emit("openPlaylist", id); }
-function createMobilePlaylist() { closeMobileDrawer(); emit("createPlaylist"); }
 function onMobileTab(key: string) { navigateMobile(key as View); }
 function isMobileTabActive(key: string): boolean {
   if (key === "library") return props.activeView === "library";
@@ -56,7 +51,6 @@ function isClassificationActive(id: View): boolean {
   if (id === "sources") return props.activeView === "sources" || props.activeView === "source-config" || props.activeView === "source-browser" || !!props.activeSource;
   return false;
 }
-function isActivePlaylist(id: string): boolean { return props.activePlaylistId === id; }
 </script>
 
 <template>
@@ -90,19 +84,9 @@ function isActivePlaylist(id: string): boolean { return props.activePlaylistId =
       <Transition name="drawer-backdrop"><div v-if="mobileDrawerOpen" class="fixed inset-0 z-[70] bg-black/50 md:hidden" @pointerdown="closeMobileDrawer"></div></Transition>
       <Transition name="drawer">
         <aside v-if="mobileDrawerOpen" class="fixed inset-y-0 left-0 z-[71] flex w-[84vw] max-w-[320px] flex-col overflow-y-auto overscroll-contain border-r border-line bg-surface pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] shadow-2xl md:hidden" role="dialog" aria-modal="true" :aria-label="t('nav.menu')">
-          <div class="flex items-center gap-3 border-b border-line px-4 py-4">
-            <span class="grid h-9 w-9 shrink-0 place-items-center bg-accent text-accent-fg"><Music2 :size="18" :stroke-width="2.2" /></span>
-            <div class="min-w-0 flex-1">
-              <p class="text-sm font-black uppercase leading-none tracking-[0.25em]">Welkin</p>
-              <button type="button" class="mt-2 w-fit bg-accent px-2 py-1 text-xs font-bold uppercase leading-none tracking-[0.2em] text-accent-fg transition-opacity hover:opacity-80" @click="navigateMobile('sponsor')">{{ editionLabel }}</button>
-            </div>
+          <div class="flex items-center justify-between border-b border-line px-4 py-3">
+            <h2 class="flex items-center gap-3 text-sm font-bold uppercase tracking-[0.25em]"><span class="h-3 w-1 bg-accent"></span>{{ t("nav.menu") }}</h2>
             <button type="button" class="grid h-9 w-9 shrink-0 place-items-center text-dim transition-colors hover:text-fg" :aria-label="t('controls.close')" @click="closeMobileDrawer"><X :size="18" :stroke-width="1.8" /></button>
-          </div>
-          <div class="flex items-center gap-2 border-b border-line px-4 py-2.5 text-[11px] font-semibold uppercase tracking-[0.2em] text-dim">
-            <WifiOff v-if="!network.available" :size="14" :stroke-width="1.8" />
-            <Wifi v-else-if="!network.metered" :size="14" :stroke-width="1.8" />
-            <Signal v-else :size="14" :stroke-width="1.8" />
-            <span>{{ networkLabel }}</span>
           </div>
           <nav class="flex flex-col gap-px border-b border-line px-2 py-3">
             <button v-for="tab in mobileTabs" :key="tab.key" type="button" class="flex h-11 items-center gap-3 px-3 text-left text-[13px] font-semibold uppercase tracking-[0.15em] transition-colors" :class="isMobileTabActive(tab.key) ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg'" @click="onMobileTab(tab.key)"><component :is="tab.icon" :size="16" :stroke-width="1.8" /><span class="truncate">{{ t(tab.labelKey) }}</span></button>
@@ -111,15 +95,6 @@ function isActivePlaylist(id: string): boolean { return props.activePlaylistId =
             <button v-for="item in classificationNavItems" :key="item.id" type="button" class="flex h-11 items-center gap-3 px-3 text-left text-[13px] font-semibold uppercase tracking-[0.15em] transition-colors" :class="isClassificationActive(item.id) ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg'" @click="navigateMobile(item.id)"><component :is="item.icon" :size="16" :stroke-width="1.8" /><span class="truncate">{{ t(item.labelKey) }}</span></button>
             <button type="button" class="flex h-11 items-center gap-3 px-3 text-left text-[13px] font-semibold uppercase tracking-[0.15em] transition-colors" :class="activeView === 'stats' ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg'" @click="navigateMobile('stats')"><Activity :size="16" :stroke-width="1.8" /><span class="truncate">{{ t("nav.stats") }}</span></button>
           </nav>
-          <div class="border-b border-line px-2 py-3">
-            <div class="flex items-center justify-between px-3 pb-2">
-              <span class="text-[11px] font-bold uppercase tracking-[0.25em] text-dim">{{ t("nav.playlists") }}</span>
-              <button type="button" class="grid h-7 w-7 place-items-center text-muted transition-colors hover:text-fg" :aria-label="t('library.playlists.new')" @click="createMobilePlaylist"><Plus :size="15" :stroke-width="2" /></button>
-            </div>
-            <p v-if="profile.playlists.length === 0" class="px-3 py-1 text-xs text-muted">{{ t("library.noPlaylists") }}</p>
-            <button v-for="playlist in profile.playlists" :key="playlist.id" type="button" class="flex min-w-0 items-center gap-3 px-3 py-2 text-left text-[13px] font-semibold transition-colors" :class="isActivePlaylist(playlist.id) ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg'" @click="openMobilePlaylist(playlist.id)"><PlaylistCover :playlist="playlist" class="h-8 w-8" :icon-size="15" /><span class="min-w-0 flex-1 truncate">{{ playlist.name }}</span><span class="shrink-0 font-mono text-[10px] tabular-nums text-dim">{{ t("library.playlists.count", { count: playlist.tracks.length }) }}</span></button>
-            <button type="button" class="mt-1 flex h-10 w-full items-center gap-3 px-3 text-left text-[12px] font-semibold uppercase tracking-[0.15em] text-muted transition-colors hover:bg-fg/5 hover:text-fg" @click="navigateMobile('playlists')"><ListMusic :size="15" :stroke-width="1.8" /><span>{{ t("nav.allPlaylists") }}</span></button>
-          </div>
           <nav class="mt-auto flex flex-col gap-px px-2 py-3">
             <button type="button" class="flex h-11 items-center gap-3 px-3 text-left text-[13px] font-semibold uppercase tracking-[0.15em] transition-colors" :class="activeView === 'settings' ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg'" @click="navigateMobile('settings')"><Settings2 :size="16" :stroke-width="1.8" /><span class="truncate">{{ t("nav.settings") }}</span></button>
             <button type="button" class="flex h-11 items-center gap-3 px-3 text-left text-[13px] font-semibold uppercase tracking-[0.15em] transition-colors" :class="activeView === 'sponsor' ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg'" @click="navigateMobile('sponsor')"><HeartHandshake :size="16" :stroke-width="1.8" /><span class="truncate">{{ t("nav.sponsor") }}</span></button>
