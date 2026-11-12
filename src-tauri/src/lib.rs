@@ -279,6 +279,7 @@ pub fn run() {
             streaming::state::get_cache_config,
             streaming::state::set_stream_cache_enabled,
             streaming::state::set_prefetch_seconds,
+            streaming::state::set_max_concurrent_downloads,
             streaming::state::clear_cache,
             #[cfg(any(desktop, target_os = "android"))]
             playback::commands::audio_load,

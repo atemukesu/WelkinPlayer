@@ -12,19 +12,21 @@
 //! upgrade; the settings "clear cache" action drops any leftover automatic
 //! entries (everything not pinned), which are the only non-pinned entries left.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
+use tauri_plugin_store::StoreExt;
 
 use crate::commands::media::{asset_hash, resolve_cache_dir};
-use crate::data::sources::find_source;
+use crate::data::sources::{find_source, SETTINGS_FILE};
 use crate::streaming::stream_cache::{open_upstream, response_total};
 
 const READ_CHUNK: usize = 64 * 1024;
@@ -35,6 +37,14 @@ const MAX_FAILURES: u32 = 3;
 /// On-disk directory for whole-track caches. Retained from the removed
 /// automatic "smart" cache so existing pins and downloads survive the upgrade.
 const CACHE_DIR: &str = "smart";
+/// Upper bound for the simultaneous-download setting, and the size of the
+/// worker pool created at startup. Workers beyond the configured limit simply
+/// wait, so changing the setting never needs to spawn threads.
+pub const MAX_CONCURRENT_DOWNLOADS: usize = 8;
+pub const MIN_CONCURRENT_DOWNLOADS: usize = 1;
+/// Concurrent whole-track downloads by default.
+pub const DEFAULT_CONCURRENT_DOWNLOADS: usize = 3;
+const CONCURRENT_DOWNLOADS_KEY: &str = "cache.maxConcurrentDownloads";
 
 /// One manual-cache entry, including live download progress.
 #[derive(Debug, Clone, Serialize)]
@@ -79,8 +89,8 @@ struct State {
     entries: HashMap<String, Entry>,
     /// Pinned keys still to download, in priority order.
     queue: Vec<String>,
-    /// Key currently being downloaded, if any.
-    active: Option<String>,
+    /// Keys currently being downloaded by a worker.
+    active: HashSet<String>,
 }
 
 /// Persistent manual (pinned) whole-track cache.
@@ -90,6 +100,8 @@ pub struct ManualCache {
     client: Client,
     state: Mutex<State>,
     cv: Condvar,
+    /// Maximum simultaneous downloads; changing it wakes waiting workers.
+    max_concurrent: AtomicUsize,
 }
 
 impl ManualCache {
@@ -122,7 +134,7 @@ impl ManualCache {
         let state = Mutex::new(State {
             entries,
             queue: Vec::new(),
-            active: None,
+            active: HashSet::new(),
         });
 
         let cache = Arc::new(Self {
@@ -131,12 +143,35 @@ impl ManualCache {
             client,
             state,
             cv: Condvar::new(),
+            max_concurrent: AtomicUsize::new(read_max_concurrent_downloads(app)),
         });
         // Resume any pinned tracks that did not finish last run.
         cache.requeue_pinned();
-        let worker = cache.clone();
-        std::thread::spawn(move || worker.run());
+        // The pool is sized for the maximum setting; each worker checks the
+        // live limit before claiming a task, so changing it needs no respawn.
+        for index in 0..MAX_CONCURRENT_DOWNLOADS {
+            let worker = cache.clone();
+            std::thread::Builder::new()
+                .name(format!("welkin-manual-cache-{index}"))
+                .spawn(move || worker.run())
+                .map_err(|error| format!("无法启动缓存线程：{error}"))?;
+        }
         Ok(cache)
+    }
+
+    /// Current simultaneous-download limit.
+    pub fn max_concurrent(&self) -> usize {
+        self.max_concurrent
+            .load(Ordering::Relaxed)
+            .clamp(MIN_CONCURRENT_DOWNLOADS, MAX_CONCURRENT_DOWNLOADS)
+    }
+
+    /// Update the simultaneous-download limit, waking idle workers so extra
+    /// capacity takes effect immediately.
+    pub fn set_max_concurrent(&self, value: usize) {
+        let value = value.clamp(MIN_CONCURRENT_DOWNLOADS, MAX_CONCURRENT_DOWNLOADS);
+        self.max_concurrent.store(value, Ordering::Relaxed);
+        self.cv.notify_all();
     }
 
     /// Pin a track: downloaded first, never evicted.
@@ -144,6 +179,7 @@ impl ManualCache {
         let key = asset_hash(source_id, path);
         {
             let mut state = self.state.lock().unwrap();
+            let active = state.active.contains(&key);
             let entry = state.entries.entry(key.clone()).or_insert_with(|| Entry {
                 file: self.dir.join(format!("{key}.audio")),
                 key: key.clone(),
@@ -156,7 +192,7 @@ impl ManualCache {
                 failures: 0,
             });
             entry.pinned = true;
-            if !entry.complete {
+            if !entry.complete && !active {
                 state.queue.retain(|item| item != &key);
                 state.queue.insert(0, key.clone());
             }
@@ -229,7 +265,7 @@ impl ManualCache {
                 pinned.push(key.clone());
             }
             items.push(CacheItem {
-                active: state.active.as_deref() == Some(entry.key.as_str()),
+                active: state.active.contains(&entry.key),
                 key,
                 pinned: entry.pinned,
                 complete: entry.complete,
@@ -283,7 +319,7 @@ impl ManualCache {
         self.cv.notify_all();
     }
 
-    /// Background worker: download queued tracks one at a time.
+    /// Background worker: claim queued tracks up to the configured limit.
     fn run(self: Arc<Self>) {
         loop {
             let Some((key, source_id, path, offset)) = self.next_task() else {
@@ -294,23 +330,23 @@ impl ManualCache {
         }
     }
 
-    /// Block until a pinned task is ready.
+    /// Block until a pinned task is ready and a download slot is free.
     fn next_task(&self) -> Option<(String, String, String, u64)> {
         let mut state = self.state.lock().unwrap();
         loop {
-            if state.active.is_some() {
+            if state.active.len() >= self.max_concurrent() {
                 let (guard, _) = self.cv.wait_timeout(state, IDLE_WAIT).unwrap();
                 state = guard;
                 continue;
             }
-            // Drop finished/missing heads so we always look at a real task.
+            // Drop finished/missing/active heads so we always look at a real task.
             while let Some(front) = state.queue.first().cloned() {
                 let done = state
                     .entries
                     .get(&front)
                     .map(|entry| entry.complete)
                     .unwrap_or(true);
-                if done {
+                if done || state.active.contains(&front) {
                     state.queue.remove(0);
                 } else {
                     break;
@@ -331,7 +367,10 @@ impl ManualCache {
             let offset = entry.written;
             let source_id = entry.source_id.clone();
             let path = entry.path.clone();
-            state.active = Some(key.clone());
+            // Claim the task immediately: with several workers the queue head
+            // must not be handed to another thread before it is removed.
+            state.queue.remove(0);
+            state.active.insert(key.clone());
             return Some((key, source_id, path, offset));
         }
     }
@@ -417,7 +456,7 @@ impl ManualCache {
     /// Record the result of a download and advance the queue.
     fn finish(&self, key: &str, result: Result<(), String>) {
         let mut state = self.state.lock().unwrap();
-        state.active = None;
+        state.active.remove(key);
         if let Some(entry) = state.entries.get_mut(key) {
             entry.written = std::fs::metadata(&entry.file)
                 .map(|meta| meta.len())
@@ -492,6 +531,28 @@ impl ManualCache {
             Err(error) => log::warn!("failed to serialize manual cache index: {error}"),
         }
     }
+}
+
+/// Maximum simultaneous manual-cache downloads, clamped to its bounds.
+pub fn read_max_concurrent_downloads(app: &AppHandle) -> usize {
+    app.store(SETTINGS_FILE)
+        .ok()
+        .and_then(|store| store.get(CONCURRENT_DOWNLOADS_KEY))
+        .and_then(|value| value.as_u64())
+        .map(|value| value as usize)
+        .unwrap_or(DEFAULT_CONCURRENT_DOWNLOADS)
+        .clamp(MIN_CONCURRENT_DOWNLOADS, MAX_CONCURRENT_DOWNLOADS)
+}
+
+/// Persist the simultaneous-download limit, clamped to its bounds.
+pub fn write_max_concurrent_downloads(app: &AppHandle, value: usize) -> Result<usize, String> {
+    let value = value.clamp(MIN_CONCURRENT_DOWNLOADS, MAX_CONCURRENT_DOWNLOADS);
+    let store = app
+        .store(SETTINGS_FILE)
+        .map_err(|error| error.to_string())?;
+    store.set(CONCURRENT_DOWNLOADS_KEY, serde_json::json!(value as u64));
+    store.save().map_err(|error| error.to_string())?;
+    Ok(value)
 }
 
 #[derive(Serialize, Deserialize)]

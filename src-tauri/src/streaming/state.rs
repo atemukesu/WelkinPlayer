@@ -16,7 +16,9 @@ use tauri::AppHandle;
 
 use crate::commands::media::asset_hash;
 use crate::data::sources::find_source;
-use crate::streaming::manual_cache::{CacheStatus, ManualCache};
+use crate::streaming::manual_cache::{
+    read_max_concurrent_downloads, write_max_concurrent_downloads, CacheStatus, ManualCache,
+};
 use crate::streaming::stream_cache::{
     read_lead_seconds, read_stream_enabled, write_lead_seconds, write_stream_enabled,
     StreamCache, STREAM_BUDGET_MB,
@@ -180,14 +182,18 @@ pub struct CacheConfig {
     pub stream_enabled: bool,
     /// Read-ahead pre-buffer window in seconds.
     pub prefetch_seconds: u64,
+    /// Maximum simultaneous manual-cache downloads.
+    pub max_concurrent_downloads: u64,
 }
 
-/// Read the read-ahead buffer toggle and the pre-buffer window.
+/// Read the read-ahead buffer toggle, the pre-buffer window and the download
+/// concurrency limit.
 #[tauri::command]
 pub fn get_cache_config(app: AppHandle) -> Result<CacheConfig, crate::core::error::AppError> {
     Ok(CacheConfig {
         stream_enabled: read_stream_enabled(&app),
         prefetch_seconds: read_lead_seconds(&app),
+        max_concurrent_downloads: read_max_concurrent_downloads(&app) as u64,
     })
 }
 
@@ -214,6 +220,20 @@ pub fn set_prefetch_seconds(
     let seconds = write_lead_seconds(&app, seconds).map_err(crate::core::error::AppError::Store)?;
     state.cache.set_lead_seconds(seconds);
     Ok(seconds)
+}
+
+/// Persist the maximum number of simultaneous manual-cache downloads and
+/// apply it live. Any extra pinned tracks wait in the queue.
+#[tauri::command]
+pub fn set_max_concurrent_downloads(
+    state: tauri::State<StreamState>,
+    app: AppHandle,
+    max_concurrent_downloads: u64,
+) -> Result<u64, crate::core::error::AppError> {
+    let value = write_max_concurrent_downloads(&app, max_concurrent_downloads as usize)
+        .map_err(crate::core::error::AppError::Store)?;
+    state.manual.set_max_concurrent(value);
+    Ok(value as u64)
 }
 
 /// Drop the read-ahead buffer and any leftover automatic whole-track entries;

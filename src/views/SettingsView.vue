@@ -92,6 +92,7 @@ const updateSpeedText = computed(() => (update.speed && update.speed > 0 ? forma
 const cacheDir = ref("");
 const streamEnabled = ref(true);
 const prefetchSeconds = ref(120);
+const maxConcurrentDownloads = ref(3);
 const streamBytes = ref(0);
 const streamLimitBytes = ref(256 * 1024 * 1024);
 /** Manually pinned (user-cached) tracks. */
@@ -110,6 +111,8 @@ async function refreshUsage() {
 async function saveCacheDir() { try { cacheDir.value = await invoke<string>("set_cache_dir", { dir: cacheDir.value }); pushToast("success", t("settings.cache.saved")); } catch (error) { emit("friendlyError", error); } }
 /** Persist the read-ahead pre-buffer window; the backend clamps it to 30-200s. */
 async function savePrefetchSeconds() { try { prefetchSeconds.value = await invoke<number>("set_prefetch_seconds", { seconds: prefetchSeconds.value }); pushToast("success", t("settings.cache.prefetchSaved")); } catch (error) { emit("friendlyError", error); } }
+/** Persist how many manual-cache downloads may run at once; extra tracks queue. */
+async function saveMaxConcurrentDownloads() { try { maxConcurrentDownloads.value = await invoke<number>("set_max_concurrent_downloads", { maxConcurrentDownloads: maxConcurrentDownloads.value }); pushToast("success", t("settings.cache.concurrentSaved")); } catch (error) { emit("friendlyError", error); } }
 /** Persist the read-ahead buffer toggle; revert the switch on failure. */
 async function toggleStreamEnabled() {
   const next = !streamEnabled.value;
@@ -180,10 +183,11 @@ async function checkUpdate() {
 }
 onMounted(() => {
   void invoke<string>("get_cache_dir").then((dir) => (cacheDir.value = dir)).catch(() => {});
-  void invoke<{ streamEnabled: boolean; prefetchSeconds: number }>("get_cache_config")
+  void invoke<{ streamEnabled: boolean; prefetchSeconds: number; maxConcurrentDownloads: number }>("get_cache_config")
     .then((config) => {
       streamEnabled.value = config.streamEnabled;
       prefetchSeconds.value = config.prefetchSeconds;
+      maxConcurrentDownloads.value = config.maxConcurrentDownloads;
     })
     .catch(() => {});
   void refreshUsage();
@@ -388,6 +392,8 @@ button.text-dim:hover:not(:disabled) {
               </div>
               <label class="grid gap-2 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.cache.prefetch") }}<input v-model.number="prefetchSeconds" type="number" min="30" max="200" step="10" class="h-10 border border-line bg-bg px-3 text-sm font-normal normal-case tracking-normal text-fg outline-none focus:border-accent" /><span class="text-[11px] font-normal normal-case tracking-normal text-dim">{{ t("settings.cache.prefetchDesc") }}</span></label>
               <div class="flex justify-end"><button type="button" class="ak-clip-tr h-10 border border-line px-5 text-[13px] font-semibold uppercase tracking-[0.25em]" @click="savePrefetchSeconds">{{ t("settings.cache.prefetchSave") }}</button></div>
+              <label class="grid gap-2 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.cache.concurrent") }}<input v-model.number="maxConcurrentDownloads" type="number" min="1" max="8" step="1" class="h-10 border border-line bg-bg px-3 text-sm font-normal normal-case tracking-normal text-fg outline-none focus:border-accent" /><span class="text-[11px] font-normal normal-case tracking-normal text-dim">{{ t("settings.cache.concurrentDesc") }}</span></label>
+              <div class="flex justify-end"><button type="button" class="ak-clip-tr h-10 border border-line px-5 text-[13px] font-semibold uppercase tracking-[0.25em]" @click="saveMaxConcurrentDownloads">{{ t("settings.cache.concurrentSave") }}</button></div>
             </div>
 
             <div class="flex items-baseline justify-between text-[11px] font-semibold uppercase tracking-[0.2em] text-dim"><span>{{ t("settings.cache.pinned") }}</span><span class="tabular-nums">{{ formatBytes(cachePinned) }}</span></div>
