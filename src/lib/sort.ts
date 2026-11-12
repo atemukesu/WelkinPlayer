@@ -12,7 +12,7 @@ export type TrackSortKey = "default" | "title" | "artist" | "album" | "duration"
 export type TrackSortDir = "asc" | "desc";
 
 /** Each page keeps its own sort preference instead of sharing one global choice. */
-export type TrackSortContext = "tracks" | "favorites" | "playlist" | "artist" | "album";
+export type TrackSortContext = "tracks" | "favorites" | "playlist" | "artist" | "album" | "downloaded";
 
 const LEGACY_KEY_STORAGE = "welkin-track-sort-key";
 const LEGACY_DIR_STORAGE = "welkin-track-sort-dir";
@@ -61,6 +61,7 @@ const registry: Record<TrackSortContext, TrackSortState> = {
   playlist: createState("playlist"),
   artist: createState("artist"),
   album: createState("album"),
+  downloaded: createState("downloaded"),
 };
 
 /** Returns the persistent, reactive sort state for a page; the same context shares one instance. */

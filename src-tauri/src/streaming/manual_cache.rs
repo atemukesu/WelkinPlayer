@@ -36,12 +36,30 @@ const MAX_FAILURES: u32 = 3;
 /// automatic "smart" cache so existing pins and downloads survive the upgrade.
 const CACHE_DIR: &str = "smart";
 
+/// One manual-cache entry, including live download progress.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheItem {
+    /// `sourceId::path`, matching the frontend's `trackKey`.
+    pub key: String,
+    pub pinned: bool,
+    pub complete: bool,
+    /// Upstream size once the response headers are known.
+    pub size: Option<u64>,
+    /// Bytes currently written to disk.
+    pub written: u64,
+    /// Whether this entry is the one the worker is downloading right now.
+    pub active: bool,
+}
+
 /// Snapshot of the manual cache handed to the frontend.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CacheStatus {
     pub cached: Vec<String>,
     pub pinned: Vec<String>,
+    /// Every cached/pinned entry with progress, for the download manager.
+    pub items: Vec<CacheItem>,
 }
 
 struct Entry {
@@ -201,16 +219,29 @@ impl ManualCache {
         let state = self.state.lock().unwrap();
         let mut cached = Vec::new();
         let mut pinned = Vec::new();
+        let mut items = Vec::new();
         for entry in state.entries.values() {
             let key = format!("{}::{}", entry.source_id, entry.path);
             if entry.complete {
                 cached.push(key.clone());
             }
             if entry.pinned {
-                pinned.push(key);
+                pinned.push(key.clone());
             }
+            items.push(CacheItem {
+                active: state.active.as_deref() == Some(entry.key.as_str()),
+                key,
+                pinned: entry.pinned,
+                complete: entry.complete,
+                size: entry.size,
+                written: entry.written,
+            });
         }
-        CacheStatus { cached, pinned }
+        CacheStatus {
+            cached,
+            pinned,
+            items,
+        }
     }
 
     /// Remove every non-pinned entry (leftover automatic cache). Pinned tracks

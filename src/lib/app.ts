@@ -4,9 +4,9 @@
  */
 
 import type { Component } from "vue";
-import { Disc3, HardDrive, Heart, Library, ListMusic, Mic2, Settings2 } from "@lucide/vue";
+import { CircleCheck, Disc3, HardDrive, HardDriveDownload, Heart, Library, ListMusic, Mic2, Settings2 } from "@lucide/vue";
 
-export type View = "library" | "tracks" | "favorites" | "stats" | "artists" | "albums" | "sources" | "source-browser" | "source-config" | "playlists" | "playlist-new" | "lyrics-edit" | "track-edit" | "track-info" | "settings" | "sponsor" | "player";
+export type View = "library" | "tracks" | "favorites" | "stats" | "artists" | "albums" | "sources" | "source-browser" | "source-config" | "playlists" | "playlist-new" | "lyrics-edit" | "track-edit" | "track-info" | "downloading" | "downloaded" | "settings" | "sponsor" | "player";
 export type Theme = "light" | "dark";
 export type Accent = "amber" | "orange" | "cyan" | "red" | "green" | "blue";
 
@@ -35,6 +35,12 @@ export const classificationNavItems: NavItem[] = [
   { id: "artists", labelKey: "nav.artists", index: "G", icon: Mic2 },
   { id: "albums", labelKey: "nav.albums", index: "B", icon: Disc3 },
   { id: "sources", labelKey: "nav.sources", index: "S", icon: HardDrive },
+];
+
+/** Manual cache download manager, grouped with the library entries. */
+export const downloadNavItems: NavItem[] = [
+  { id: "downloading", labelKey: "nav.downloading", index: "D", icon: HardDriveDownload },
+  { id: "downloaded", labelKey: "nav.downloaded", index: "C", icon: CircleCheck },
 ];
 
 export const accents: { id: Accent; key: string; swatch: string }[] = [

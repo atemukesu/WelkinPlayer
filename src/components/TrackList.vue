@@ -6,10 +6,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { VList, Virtualizer, type VirtualizerHandle } from "virtua/vue";
-import { ArrowUp, Check, CircleCheck, CloudOff, LoaderCircle, LocateFixed, Pause, Play, Trash2 } from "@lucide/vue";
+import { ArrowUp, Check, CloudOff, LoaderCircle, LocateFixed, Pause, Play, Trash2 } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { usePlayerStore } from "../stores/player";
-import { useCacheStore } from "../stores/cache";
 import type { Track } from "../stores/player";
 import { coverPending, initial, pad } from "../lib/format";
 import { trackKey } from "../lib/sources";
@@ -20,6 +19,7 @@ import { bucketLabel } from "../lib/reading";
 import { reading } from "../lib/readings";
 import TrackCard from "./TrackCard.vue";
 import TrackIndexRail from "./TrackIndexRail.vue";
+import CacheBadge from "./CacheBadge.vue";
 import type { LetterIndexEntry } from "../lib/sort";
 
 const vRequestMeta = requestMeta;
@@ -28,9 +28,7 @@ const props = withDefaults(defineProps<{ tracks: Track[]; emptyKey: string; remo
 const emit = defineEmits<{ play: [track: Track]; menu: [event: MouseEvent, track: Track]; remove: [track: Track]; openArtist: [artist: string]; openAlbum: [album: string]; "update:selected": [value: Set<string>] }>();
 const { t } = useI18n();
 const player = usePlayerStore();
-const cache = useCacheStore();
 const currentId = computed(() => player.currentTrack?.id);
-function isCached(track: Track): boolean { return cache.isCached(trackKey(track)); }
 const playing = computed(() => player.isPlaying);
 
 // The trailing action column only exists when a remove button is shown; without
@@ -281,7 +279,7 @@ function jumpToLetter(entry: LetterIndexEntry) {
               v-request-meta="track"
               role="button"
               tabindex="0"
-              :key="track.id"
+              :key="trackKey(track) ?? track.id"
               class="grid w-full items-center gap-4 border-t border-line px-3 py-2 text-left"
               :title="track.unavailable ? t('library.unavailableHint') : undefined"
               :class="[listGrid, track.unavailable ? 'cursor-not-allowed opacity-50' : (selectable ? (isSelected(track) ? 'cursor-pointer bg-accent/10' : 'cursor-pointer ak-hover') : (track.id === currentId ? 'cursor-pointer ak-select relative z-10 border-transparent' : 'cursor-pointer ak-hover'))]"
@@ -293,7 +291,7 @@ function jumpToLetter(entry: LetterIndexEntry) {
               <span v-if="selectable" class="grid h-5 w-5 place-items-center border-2" :class="isSelected(track) ? 'border-accent bg-accent text-accent-fg' : 'border-line-strong text-transparent'"><Check :size="12" :stroke-width="3" /></span>
               <span v-else class="hidden font-mono text-[13px] tabular-nums text-dim md:block">{{ pad(index + 1) }}</span>
               <span class="grid h-11 w-11 place-items-center overflow-hidden text-lg font-black text-white/90" :style="{ backgroundColor: track.color }"><CloudOff v-if="track.unavailable" :size="18" :stroke-width="2" /><img v-else-if="track.cover" :src="track.cover" alt="" loading="lazy" decoding="async" class="h-full w-full object-cover" /><LoaderCircle v-else-if="coverPending(track)" :size="18" :stroke-width="2" class="animate-spin" /><template v-else>{{ initial(track) }}</template></span>
-              <span class="grid min-w-0 gap-0.5"><span class="flex min-w-0 items-center gap-1.5"><strong class="truncate text-sm font-semibold tracking-wide" :class="track.id === currentId ? 'text-accent' : 'text-fg'">{{ track.title }}</strong><CloudOff v-if="track.unavailable" :size="14" class="shrink-0 text-dim" :aria-label="t('library.unavailable')" /><CircleCheck v-else-if="isCached(track)" :size="14" class="shrink-0 text-accent" :aria-label="t('library.cached')" /></span><span class="flex min-w-0 items-center gap-1 md:hidden"><button v-if="track.artist && !track.unavailable" type="button" class="min-w-0 truncate text-left text-xs text-muted transition-colors hover:text-accent" :title="t('library.openArtist')" @click.stop="emit('openArtist', track.artist)">{{ track.artist }}</button><small v-else-if="track.artist" class="min-w-0 truncate text-xs text-muted">{{ track.artist }}</small><span v-if="track.artist && track.album && !track.unavailable" class="shrink-0 text-xs text-dim">·</span><button v-if="track.album && !track.unavailable" type="button" class="min-w-0 truncate text-left text-xs text-muted transition-colors hover:text-accent" :title="t('library.openAlbum')" @click.stop="emit('openAlbum', track.album)">{{ track.album }}</button><small v-else-if="track.album" class="min-w-0 truncate text-xs text-dim">{{ track.album }}</small></span><button v-if="track.artist && !track.unavailable" type="button" class="hidden min-w-0 truncate text-left text-xs text-muted transition-colors hover:text-accent md:block md:w-fit md:max-w-full" :title="t('library.openArtist')" @click.stop="emit('openArtist', track.artist)">{{ track.artist }}</button><small v-else-if="track.artist" class="hidden truncate text-xs text-muted md:block">{{ track.artist }}</small></span>
+              <span class="grid min-w-0 gap-0.5"><span class="flex min-w-0 items-center gap-1.5"><strong class="truncate text-sm font-semibold tracking-wide" :class="track.id === currentId ? 'text-accent' : 'text-fg'">{{ track.title }}</strong><CloudOff v-if="track.unavailable" :size="14" class="shrink-0 text-dim" :aria-label="t('library.unavailable')" /><CacheBadge v-else :cache-key="trackKey(track)" /></span><span class="flex min-w-0 items-center gap-1 md:hidden"><button v-if="track.artist && !track.unavailable" type="button" class="min-w-0 truncate text-left text-xs text-muted transition-colors hover:text-accent" :title="t('library.openArtist')" @click.stop="emit('openArtist', track.artist)">{{ track.artist }}</button><small v-else-if="track.artist" class="min-w-0 truncate text-xs text-muted">{{ track.artist }}</small><span v-if="track.artist && track.album && !track.unavailable" class="shrink-0 text-xs text-dim">·</span><button v-if="track.album && !track.unavailable" type="button" class="min-w-0 truncate text-left text-xs text-muted transition-colors hover:text-accent" :title="t('library.openAlbum')" @click.stop="emit('openAlbum', track.album)">{{ track.album }}</button><small v-else-if="track.album" class="min-w-0 truncate text-xs text-dim">{{ track.album }}</small></span><button v-if="track.artist && !track.unavailable" type="button" class="hidden min-w-0 truncate text-left text-xs text-muted transition-colors hover:text-accent md:block md:w-fit md:max-w-full" :title="t('library.openArtist')" @click.stop="emit('openArtist', track.artist)">{{ track.artist }}</button><small v-else-if="track.artist" class="hidden truncate text-xs text-muted md:block">{{ track.artist }}</small></span>
               <button v-if="track.album && !track.unavailable" type="button" class="hidden min-w-0 truncate text-left text-xs text-muted transition-colors hover:text-accent md:block md:w-fit md:max-w-full" :title="t('library.openAlbum')" @click.stop="emit('openAlbum', track.album)">{{ track.album }}</button>
               <span v-else-if="track.album" class="hidden truncate text-xs text-dim md:block">{{ track.album }}</span>
               <span v-else class="hidden truncate text-xs text-muted md:block"></span>
