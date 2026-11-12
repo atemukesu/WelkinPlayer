@@ -15,15 +15,12 @@
 //! a mirror: it sends intent commands and renders the `playback:changed` event.
 
 use std::sync::Mutex;
-// `Duration` and `Manager` are only needed by the Android media-control poller
-// below; on desktop they would be unused imports.
+// `Duration` is only needed by the Android media-control poller below.
 #[cfg(target_os = "android")]
 use std::time::Duration;
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
-#[cfg(target_os = "android")]
-use tauri::Manager;
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::playback::engine::{Command, Engine};
 
@@ -90,6 +87,9 @@ pub struct ContextSnapshot {
 /// `next` that lands a playable track always loads it before the caller returns.
 pub struct PlaybackContext {
     engine: Engine,
+    /// Used to resolve sources and the manual cache when filtering a
+    /// cached-only queue; the context may outlive the webview that set it.
+    app: AppHandle,
     inner: Mutex<Inner>,
 }
 
@@ -105,16 +105,51 @@ struct Inner {
     repeat: RepeatMode,
     /// Whether the engine should be playing once a track is loaded.
     playing: bool,
+    /// When true the queue was narrowed to cached/local tracks because the
+    /// user declined cloud playback on a metered connection.
+    cached_only: bool,
     /// Bumped when the same item is reselected, to force an engine restart.
     nonce: u64,
 }
 
 impl PlaybackContext {
-    pub fn new(engine: Engine) -> Self {
+    pub fn new(engine: Engine, app: AppHandle) -> Self {
         Self {
             engine,
+            app,
             inner: Mutex::new(Inner::default()),
         }
+    }
+
+    /// Whether a track can play without fetching bytes over the network: it is
+    /// either in a local source or fully downloaded into the manual cache.
+    /// Local source ids and the manual cache are resolved once per queue so a
+    /// large library does not re-read the settings store per track.
+    fn cached_items(&self, items: Vec<QueueItem>) -> Vec<QueueItem> {
+        let local: std::collections::HashSet<String> =
+            crate::data::sources::load_sources(&self.app)
+                .into_iter()
+                .filter(|source| source.is_local())
+                .map(|source| source.id)
+                .collect();
+        let manual = self.app.try_state::<crate::streaming::state::StreamState>();
+        items
+            .into_iter()
+            .filter(|item| {
+                local.contains(&item.source_id)
+                    || manual
+                        .as_ref()
+                        .map(|state| {
+                            state
+                                .manual
+                                .is_complete(&crate::commands::media::asset_hash(
+                                    &item.source_id,
+                                    &item.path,
+                                ))
+                        })
+                        .unwrap_or(false)
+            })
+            .collect()
     }
 
     /// Build a `QueueItem` list from track keys (`sourceId::path`). Keys that
@@ -147,9 +182,19 @@ impl PlaybackContext {
     }
 
     /// Replace the whole queue (e.g. "play these tracks starting here").
-    pub fn set_queue(&self, keys: Vec<String>, start_key: Option<&str>) {
-        let items = Self::items_from_keys(&keys);
+    ///
+    /// `cached_only` narrows the request to tracks that can play without the
+    /// network (local files or completed manual cache entries). The webview
+    /// already filters the list so the start track is known, but the context
+    /// enforces it again so a backgrounded or dead webview cannot resume cloud
+    /// playback the user declined on a metered connection.
+    pub fn set_queue(&self, keys: Vec<String>, start_key: Option<&str>, cached_only: bool) {
+        let mut items = Self::items_from_keys(&keys);
+        if cached_only {
+            items = self.cached_items(items);
+        }
         let mut inner = self.inner.lock().unwrap();
+        inner.cached_only = cached_only;
         inner.base_queue = items.clone();
         let (queue, index) = if inner.shuffle && !items.is_empty() {
             // Keep the chosen start first, then shuffle the remainder.
@@ -185,8 +230,9 @@ impl PlaybackContext {
         inner.queue = queue;
         inner.index = if inner.queue.is_empty() { -1 } else { index };
         // Starting a queue is an explicit play request from the user, so load and
-        // begin playback immediately.
-        inner.playing = true;
+        // begin playback immediately. A cached-only queue that filtered down to
+        // nothing must not start the engine.
+        inner.playing = !inner.queue.is_empty();
         let snapshot = self.snapshot_locked(&inner);
         drop(inner);
         self.apply_current(true);
@@ -557,6 +603,7 @@ impl PlaybackContext {
             return false;
         }
         let mut inner = self.inner.lock().unwrap();
+        inner.cached_only = false;
         inner.base_queue = items.clone();
         // Restore preserves the stored (possibly shuffled) order verbatim; we do
         // not re-shuffle on restore, because the saved order *is* the user's

@@ -820,6 +820,16 @@ const messages = {
       unsupported: "无法播放：不支持的音频格式",
       seekUnsupported: "当前音频流暂不支持跳转到此位置",
       network: "播放失败：网络错误",
+      metered: {
+        title: "正在使用移动数据",
+        message: "播放队列中有 {count} 首歌曲来自云端来源，继续播放会消耗移动数据流量。",
+        cached: "只播放已缓存的歌曲",
+        cachedCount: "{count} 首可离线播放",
+        cloudCount: "{count} 首需联网",
+        noCached: "没有可离线播放的歌曲",
+        all: "播放所有歌曲（可能消耗流量）",
+        cancel: "取消",
+      },
     },
     wizard: {
       eyebrow: "初次设置 / Setup",
@@ -1690,6 +1700,16 @@ const messages = {
       unsupported: "Cannot play: unsupported audio format",
       seekUnsupported: "This audio stream does not currently support seeking to this position",
       network: "Playback failed: network error",
+      metered: {
+        title: "Using mobile data",
+        message: "{count} tracks in this queue come from cloud sources. Continuing will use mobile data.",
+        cached: "Play cached songs only",
+        cachedCount: "{count} playable offline",
+        cloudCount: "{count} need network",
+        noCached: "No songs are available offline",
+        all: "Play all songs (may use data)",
+        cancel: "Cancel",
+      },
     },
     wizard: {
       eyebrow: "First run / Setup",

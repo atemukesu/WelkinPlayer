@@ -51,6 +51,11 @@ pub fn prefetch_track(
     path: String,
     lead_secs: Option<f64>,
 ) -> Result<(), crate::core::error::AppError> {
+    // Speculative read-ahead must never spend a metered connection. The webview
+    // already checks, but Rust owns playback and must not rely on a live caller.
+    if crate::core::network::status().metered {
+        return Ok(());
+    }
     let source = find_source(&app, &source_id)?;
     if source.is_local() {
         return Ok(());

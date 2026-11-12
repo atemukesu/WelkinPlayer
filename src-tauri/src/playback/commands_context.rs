@@ -16,14 +16,16 @@ use crate::playback::context::PlaybackContext;
 ///
 /// `keys` is the full list of track keys in playback order. When `shuffle` is
 /// on and a `start_key` is given, the start track is pinned first and the rest
-/// are shuffled.
+/// are shuffled. `cached_only` narrows the queue to tracks playable without
+/// the network (used when the user declines cloud playback on mobile data).
 #[tauri::command]
 pub fn playback_set_queue(
     context: State<PlaybackContext>,
     keys: Vec<String>,
     start_key: Option<String>,
+    cached_only: Option<bool>,
 ) -> Result<(), AppError> {
-    context.set_queue(keys, start_key.as_deref());
+    context.set_queue(keys, start_key.as_deref(), cached_only.unwrap_or(false));
     Ok(())
 }
 

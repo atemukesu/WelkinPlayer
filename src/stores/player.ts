@@ -6,7 +6,13 @@
 import { computed, ref, watch } from "vue";
 import { defineStore } from "pinia";
 import { invoke } from "../api";
-import { trackKey, splitTrackKey } from "../lib/sources";
+import { i18n } from "../i18n";
+import { requestMeteredPlayback } from "../lib/meteredPlayback";
+import { sourceProfileId, trackKey, splitTrackKey } from "../lib/sources";
+import { pushToast } from "../lib/toast";
+import { useCacheStore } from "./cache";
+import { useNetworkStore } from "./network";
+import { useSourcesStore } from "./sources";
 
 /**
  * Player store — a *mirror* of the Rust playback context.
@@ -241,23 +247,111 @@ export const usePlayerStore = defineStore("player", () => {
       .filter((key): key is string => !!key);
   }
 
-  /** Start a track while preserving the exact context it was chosen from. */
-  async function playInQueue(items: Track[], track: Track) {
-    if (track.unavailable) return;
-    const valid = items.filter((item) => item.path);
-    if (valid.length === 0) return;
-    const keys = valid.map((item) => trackKey(item)).filter((key): key is string => !!key);
+  /**
+   * Whether a queued track can play without spending mobile data: either it is
+   * fully cached, or it lives in a local (non-WebDAV) source.
+   */
+  function isOfflinePlayable(track: Track): boolean {
+    const key = trackKey(track);
+    if (key && useCacheStore().isCached(key)) return true;
+    const sources = useSourcesStore().sources;
+    const source = sources.find((item) => item.id === track.sourceId || sourceProfileId(item) === track.sourceId);
+    return source?.kind === "local";
+  }
+
+  /**
+   * Identity of a queue's *contents* (not the playing index or shuffle order),
+   * so re-starting the same list does not ask again while a different list does.
+   * An authorized queue must be confirmed only once per selection.
+   */
+  function queueSignature(items: Track[]): string {
+    return items
+      .map((item) => trackKey(item))
+      .filter((key): key is string => !!key)
+      .sort()
+      .join("\n");
+  }
+
+  /** The queue contents the user already allowed to play on mobile data. */
+  let authorizedQueue: { full: string; effective: string; cachedOnly: boolean } | null = null;
+
+  interface QueueAuthorization {
+    /** Whether playback must be restricted to cached/local tracks. */
+    cachedOnly: boolean;
+    /** True when the current queue must be replaced with a narrowed one. */
+    rebuild: boolean;
+  }
+
+  /**
+   * Gate a cloud queue on a metered connection. Returns the policy to apply, or
+   * `null` when the user cancelled. Every *new* queue is confirmed once; the
+   * same list (or the cached subset it was narrowed to) is remembered so
+   * switching tracks inside it does not ask again. The actual filtering happens
+   * in Rust (`playback_set_queue` with `cachedOnly`), which owns playback and
+   * must enforce the choice even after the webview is backgrounded.
+   */
+  async function authorizeQueue(items: Track[]): Promise<QueueAuthorization | null> {
+    if (!useNetworkStore().metered) return { cachedOnly: false, rebuild: false };
+    const signature = queueSignature(items);
+    const allOffline = items.every(isOfflinePlayable);
+    const known = authorizedQueue;
+    if (known && (signature === known.full || signature === known.effective)) {
+      if (!known.cachedOnly) return { cachedOnly: false, rebuild: false };
+      return { cachedOnly: true, rebuild: !allOffline };
+    }
+    if (allOffline) {
+      authorizedQueue = { full: signature, effective: signature, cachedOnly: false };
+      return { cachedOnly: false, rebuild: false };
+    }
+    const offline = items.filter(isOfflinePlayable);
+    const choice = await requestMeteredPlayback({ total: items.length, offline: offline.length });
+    if (choice === "cancel") return null;
+    if (choice === "cached") {
+      if (offline.length === 0) {
+        pushToast("warning", i18n.global.t("playback.metered.noCached"));
+        return null;
+      }
+      authorizedQueue = { full: signature, effective: queueSignature(offline), cachedOnly: true };
+      return { cachedOnly: true, rebuild: true };
+    }
+    authorizedQueue = { full: signature, effective: signature, cachedOnly: false };
+    return { cachedOnly: false, rebuild: false };
+  }
+
+  /**
+   * Replace the Rust queue and start playing it. `cachedOnly` is enforced by
+   * the backend, which drops cloud tracks that are not fully cached.
+   */
+  async function startQueue(items: Track[], track: Track, cachedOnly = false) {
+    const keys = items.map((item) => trackKey(item)).filter((key): key is string => !!key);
     const startKey = trackKey(track) ?? undefined;
     try {
-      await invoke("playback_set_queue", { keys, startKey });
+      await invoke("playback_set_queue", { keys, startKey, cachedOnly });
     } catch (error) {
       console.warn("[welkin] playback_set_queue failed", error);
     }
   }
 
+  /** Start a track while preserving the exact context it was chosen from. */
+  async function playInQueue(items: Track[], track: Track) {
+    if (track.unavailable) return;
+    const valid = items.filter((item) => item.path);
+    if (valid.length === 0) return;
+    const authorized = await authorizeQueue(valid);
+    if (!authorized) return;
+    await startQueue(valid, track, authorized.cachedOnly);
+  }
+
   /** Select a track by its identity, finding its index in the current queue. */
   async function selectTrack(track: Track) {
     if (track.unavailable) return;
+    const items = queue.value.length > 0 ? queue.value : [track];
+    const authorized = await authorizeQueue(items);
+    if (!authorized) return;
+    if (authorized.rebuild) {
+      await startQueue(items, track, authorized.cachedOnly);
+      return;
+    }
     const index = resolveIndex(track);
     if (index < 0) return;
     try {
@@ -315,7 +409,17 @@ export const usePlayerStore = defineStore("player", () => {
   }
 
   async function togglePlayback() {
-    if (!currentTrack.value) return;
+    const track = currentTrack.value;
+    if (!track) return;
+    if (!isPlaying.value) {
+      const items = queue.value.length > 0 ? queue.value : [track];
+      const authorized = await authorizeQueue(items);
+      if (!authorized) return;
+      if (authorized.rebuild) {
+        await startQueue(items, track, authorized.cachedOnly);
+        return;
+      }
+    }
     try {
       await invoke("playback_toggle");
     } catch (error) {
@@ -324,6 +428,17 @@ export const usePlayerStore = defineStore("player", () => {
   }
 
   async function setPlaying(value: boolean) {
+    if (value) {
+      const track = currentTrack.value;
+      if (!track) return;
+      const items = queue.value.length > 0 ? queue.value : [track];
+      const authorized = await authorizeQueue(items);
+      if (!authorized) return;
+      if (authorized.rebuild) {
+        await startQueue(items, track, authorized.cachedOnly);
+        return;
+      }
+    }
     try {
       await invoke(value ? "playback_play" : "playback_pause");
     } catch (error) {

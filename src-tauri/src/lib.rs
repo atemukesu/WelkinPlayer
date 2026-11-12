@@ -136,7 +136,7 @@ pub fn run() {
                     // run `Engine::drop`, which stops the worker).
                     #[cfg(any(desktop, target_os = "android"))]
                     let context =
-                        playback::context::PlaybackContext::new(engine.clone());
+                        playback::context::PlaybackContext::new(engine.clone(), app.handle().clone());
                     #[cfg(any(desktop, target_os = "android"))]
                     if !app.manage(engine) {
                         log::error!(
