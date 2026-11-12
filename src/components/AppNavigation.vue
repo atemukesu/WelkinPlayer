@@ -85,7 +85,8 @@ function isActivePlaylist(id: string): boolean { return props.activePlaylistId =
     <nav class="flex shrink-0 border-t border-line bg-surface pb-[env(safe-area-inset-bottom)] md:hidden">
       <button v-for="tab in mobileTabs" :key="tab.key" type="button" class="flex h-14 flex-1 flex-col items-center justify-center gap-1 text-[10px] font-semibold leading-none transition-colors" :class="isMobileTabActive(tab.key) ? 'ak-select' : 'text-muted'" @click="onMobileTab(tab.key)"><component :is="tab.icon" :size="18" :stroke-width="1.8" /><span class="whitespace-nowrap">{{ t(tab.labelKey) }}</span></button>
     </nav>
-    <Teleport to="body">
+  </template>
+  <Teleport v-if="placement === 'header'" to="body">
       <Transition name="drawer-backdrop"><div v-if="mobileDrawerOpen" class="fixed inset-0 z-[70] bg-black/50 md:hidden" @pointerdown="closeMobileDrawer"></div></Transition>
       <Transition name="drawer">
         <aside v-if="mobileDrawerOpen" class="fixed inset-y-0 left-0 z-[71] flex w-[84vw] max-w-[320px] flex-col overflow-y-auto overscroll-contain border-r border-line bg-surface pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] shadow-2xl md:hidden" role="dialog" aria-modal="true" :aria-label="t('nav.menu')">
@@ -125,8 +126,7 @@ function isActivePlaylist(id: string): boolean { return props.activePlaylistId =
           </nav>
         </aside>
       </Transition>
-    </Teleport>
-  </template>
+  </Teleport>
 </template>
 
 <style scoped>
