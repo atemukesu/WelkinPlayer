@@ -331,6 +331,15 @@ impl ManualCache {
         file.seek(SeekFrom::Start(offset))
             .map_err(|error| error.to_string())?;
 
+        // The user may have unpinned while we were setting up. Stop before
+        // writing a file that is no longer wanted (and may have just been
+        // recreated by `OpenOptions::create`).
+        if !self.has_entry(key) {
+            drop(file);
+            let _ = std::fs::remove_file(&file_path);
+            return Ok(());
+        }
+
         let mut reader = response;
         let mut buffer = vec![0u8; READ_CHUNK];
         let mut offset = offset;
@@ -341,12 +350,24 @@ impl ManualCache {
             if read == 0 {
                 return Ok(());
             }
+            // Unpinning removes the entry; abandon the download and delete the
+            // partial file instead of leaving orphaned bytes behind.
+            if !self.has_entry(key) {
+                drop(file);
+                let _ = std::fs::remove_file(&file_path);
+                return Ok(());
+            }
             file.write_all(&buffer[..read])
                 .map_err(|error| error.to_string())?;
             offset += read as u64;
             let mut state = self.state.lock().unwrap();
             if let Some(entry) = state.entries.get_mut(key) {
                 entry.written = offset;
+            } else {
+                drop(state);
+                drop(file);
+                let _ = std::fs::remove_file(&file_path);
+                return Ok(());
             }
             if let Some(total) = total {
                 if offset >= total {
@@ -354,6 +375,12 @@ impl ManualCache {
                 }
             }
         }
+    }
+
+    /// Whether a key still has an entry (unpinning removes it, which cancels
+    /// an in-flight download).
+    fn has_entry(&self, key: &str) -> bool {
+        self.state.lock().unwrap().entries.contains_key(key)
     }
 
     /// Record the result of a download and advance the queue.

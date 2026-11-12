@@ -80,14 +80,19 @@ export const useCacheStore = defineStore("cache", () => {
   }
 
   async function unpin(key: string) {
+    // Drop both badges right away: the cached check must disappear the moment
+    // the user cancels, not on the next status poll.
     pinned.value = new Set([...pinned.value].filter((item) => item !== key));
+    cached.value = new Set([...cached.value].filter((item) => item !== key));
     const { sourceId: profileId, path } = splitTrackKey(key);
     const sourceId = useSourcesStore().sources.find((item) => sourceProfileId(item) === profileId || item.id === profileId)?.id ?? profileId;
     try {
       await invoke("unpin_track", { sourceId, path });
     } catch {
-      // Ignore.
+      // Ignore; the refresh below re-syncs if the backend kept the entry.
     }
+    // Reconcile with Rust so a failed removal restores the badges.
+    void refresh();
   }
 
   function togglePin(key: string) {
