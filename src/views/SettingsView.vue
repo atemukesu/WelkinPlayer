@@ -4,8 +4,8 @@
 -->
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
-import { Bug, Copy, ExternalLink, GitFork, HardDrive, Moon, Music2, Sun, Users } from "@lucide/vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { Bug, Copy, ExternalLink, GitFork, HardDrive, Info, Mic2, Moon, Music2, Play, SlidersHorizontal, Sun, Users } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { invoke } from "../api";
@@ -22,7 +22,6 @@ import { useWindowBehaviorStore } from "../stores/windowBehavior";
 import { useUpdateStore } from "../stores/update";
 import { useCacheStore } from "../stores/cache";
 import { isDesktop } from "../lib/desktopLyric";
-import { refreshDevices, setDevice, currentDevice, deviceInfo, formatRate } from "../lib/audioQuality";
 import LyricsSettings from "../components/LyricsSettings.vue";
 import DesktopLyricSettings from "../components/DesktopLyricSettings.vue";
 import pkg from "../../package.json";
@@ -32,6 +31,44 @@ const accent = defineModel<Accent>("accent", { required: true });
 const emit = defineEmits<{ sponsor: []; sources: []; friendlyError: [error: unknown] }>();
 const { t, locale } = useI18n();
 const appVersion = pkg.version;
+/** Settings categories. Only the active panel is shown, so the page stays
+ * short on phones instead of stacking every card at once. */
+const tabItems = [
+  { key: "general", labelKey: "settings.tabs.general", icon: SlidersHorizontal },
+  { key: "playback", labelKey: "settings.tabs.playback", icon: Play },
+  { key: "lyrics", labelKey: "settings.tabs.lyrics", icon: Mic2 },
+  { key: "about", labelKey: "settings.tabs.about", icon: Info },
+] as const;
+type SettingsTab = (typeof tabItems)[number]["key"];
+const TAB_STORAGE_KEY = "welkin.settings.tab";
+/** Restore the last used category so a trip to the source manager and back
+ * does not dump the user at the top of the settings page. */
+function readInitialTab(): SettingsTab {
+  try {
+    const saved = localStorage.getItem(TAB_STORAGE_KEY);
+    if (tabItems.some((item) => item.key === saved)) return saved as SettingsTab;
+  } catch { /* storage may be unavailable */ }
+  return "general";
+}
+const activeTab = ref<SettingsTab>(readInitialTab());
+watch(activeTab, (tab) => {
+  try { localStorage.setItem(TAB_STORAGE_KEY, tab); } catch { /* ignore */ }
+});
+function selectTab(tab: SettingsTab) { activeTab.value = tab; }
+/** Roving-tabindex keyboard support for the category bar. */
+function onTabKeydown(event: KeyboardEvent, index: number) {
+  const last = tabItems.length - 1;
+  let next = index;
+  if (event.key === "ArrowRight" || event.key === "ArrowDown") next = index === last ? 0 : index + 1;
+  else if (event.key === "ArrowLeft" || event.key === "ArrowUp") next = index === 0 ? last : index - 1;
+  else if (event.key === "Home") next = 0;
+  else if (event.key === "End") next = last;
+  else return;
+  event.preventDefault();
+  const tab = tabItems[next];
+  activeTab.value = tab.key;
+  requestAnimationFrame(() => document.getElementById(`settings-tab-${tab.key}`)?.focus());
+}
 /** Project links and the user group shown in the community card. */
 const repoUrl = "https://github.com/atemukesu/WelkinPlayer";
 const issuesUrl = "https://github.com/atemukesu/WelkinPlayer/issues";
@@ -98,54 +135,6 @@ async function clearCache() {
     clearingCache.value = false;
   }
 }
-/** Output device picker. The engine polls the device list (once per second on
- * Android via `AudioManager`, on desktop via cpal) and rebuilds the stream on
- * change, so this also recovers playback after a headphone plug. The list shown
- * here lives off `deviceInfo.devices`, which `lib/audio.ts` keeps in sync with
- * the `audio:deviceChanged` event — so plugging in headphones updates the list
- * live without a manual refresh. A manual refresh button is still offered for
- * when the page was opened before a change. */
-const devices = computed(() => deviceInfo.value?.devices ?? []);
-const devicesLoading = ref(false);
-/** The device selected in the UI; `null` means "follow system default". */
-const selectedDevice = ref<string | null>(null);
-async function refreshDevicesList() {
-  devicesLoading.value = true;
-  try {
-    const list = await refreshDevices();
-    selectedDevice.value = currentDevice.value ?? null;
-    if (list.length === 0) {
-      // Backend returned nothing; fall back to the already-cached event data.
-      selectedDevice.value = deviceInfo.value?.currentDevice ?? null;
-    }
-  } finally {
-    devicesLoading.value = false;
-  }
-}
-function selectDevice(id: string | null) {
-  selectedDevice.value = id;
-  void setDevice(id);
-}
-/** Human label for the currently bound device, or the default hint. */
-const currentDeviceLabel = computed(() => {
-  if (selectedDevice.value === null) return t("audio.deviceDefault");
-  return devices.value.find((device) => device.id === selectedDevice.value)?.name ?? selectedDevice.value;
-});
-
-/** Short tag for an Android `AudioDeviceInfo` type so the UI can tell headphones
- * from USB/Bluetooth/speaker without guessing from the product name. */
-function deviceTypeLabel(type: number): string {
-  switch (type) {
-    case 2: return t("audio.typeSpeaker");
-    case 3:
-    case 4: return t("audio.typeWired");
-    case 8: return t("audio.typeBluetooth");
-    case 11:
-    case 22: return t("audio.typeUsb");
-    default: return "";
-  }
-}
-
 /** Open an external link, falling back to a browser tab and finally a toast. */
 async function openLink(url: string) {
   try {
@@ -199,7 +188,6 @@ onMounted(() => {
     .catch(() => {});
   void refreshUsage();
   usageTimer = window.setInterval(() => void refreshUsage(), 3000);
-  void refreshDevicesList();
 });
 onUnmounted(() => { window.clearInterval(usageTimer); });
 </script>
@@ -305,217 +293,202 @@ button.text-dim:hover:not(:disabled) {
 
 <template>
   <div class="mx-auto w-full max-w-4xl p-6 lg:p-8">
-    <header class="border-b border-line pb-6">
+    <header class="pb-4">
       <p class="flex items-center gap-2 text-[13px] font-semibold uppercase tracking-[0.35em] text-accent"><span class="h-2 w-2 bg-accent"></span>{{ t("settings.eyebrow") }}</p>
       <h1 class="mt-4 text-4xl font-black uppercase leading-none tracking-tight sm:text-5xl">{{ t("settings.title") }}</h1>
     </header>
 
-    <section class="ak-frame relative mt-8 border border-line bg-surface">
-      <div v-if="license.isPro" class="pointer-events-none absolute inset-0 overflow-hidden"><div class="absolute inset-0 opacity-[0.18]" style="background: radial-gradient(circle at 90% 4%, var(--accent), transparent 55%)"></div><div class="absolute inset-0 opacity-[0.06]" style="background-image: linear-gradient(var(--fg) 1px, transparent 1px), linear-gradient(90deg, var(--fg) 1px, transparent 1px); background-size: 26px 26px"></div></div>
-      <div class="relative grid gap-8 p-8 lg:grid-cols-[1.5fr_1fr] lg:items-center">
-        <div class="grid gap-6">
-          <div class="flex items-center gap-5"><span class="grid h-24 w-24 shrink-0 place-items-center bg-accent text-accent-fg"><Music2 :size="42" :stroke-width="2" /></span><div class="min-w-0"><h2 class="text-3xl font-black uppercase leading-none tracking-tight sm:text-4xl">{{ t("settings.about.title") }}</h2><p class="mt-3 max-w-lg text-sm leading-[1.7] text-muted">{{ t("settings.about.tagline") }}</p></div></div>
-          <div class="grid gap-1 text-sm leading-relaxed">
-            <p class="flex flex-wrap items-baseline gap-1.5"><span class="font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.about.version") }}</span><span class="text-dim">{{ locale === "zh-CN" ? "：" : ":" }}</span><span class="font-semibold tabular-nums">v{{ appVersion }}</span></p>
-            <p class="flex flex-wrap items-baseline gap-1.5"><span class="font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.about.author") }}</span><span class="text-dim">{{ locale === "zh-CN" ? "：" : ":" }}</span><span class="font-semibold">{{ t("settings.about.authorName") }}</span></p>
-          </div>
-        </div>
-        <div class="ak-tier-dial flex items-center justify-center py-4" :class="{ 'is-pro': license.isPro }">
-          <span class="ak-tier-aura" aria-hidden="true"></span>
-          <span class="ak-tier-disc relative grid h-32 w-32 place-items-center rounded-full border border-line">
-            <span class="ak-tier-inner grid h-[100px] w-[100px] place-items-center rounded-full border-2 border-line-strong text-center text-fg">
-              <button type="button" class="ak-tier-button px-3 text-base font-black uppercase leading-tight tracking-[0.1em]" @click="emit('sponsor')">{{ editionLabel }}</button>
-            </span>
-          </span>
-        </div>
+    <nav class="sticky top-0 z-20 -mx-6 border-b border-line bg-bg/95 px-6 py-2 backdrop-blur lg:-mx-8 lg:px-8" role="tablist" :aria-label="t('settings.tabs.label')">
+      <div class="grid grid-cols-4 gap-1">
+        <button
+          v-for="(item, index) in tabItems"
+          :id="`settings-tab-${item.key}`"
+          :key="item.key"
+          type="button"
+          role="tab"
+          class="relative flex h-11 min-w-0 items-center justify-center gap-1.5 border border-transparent px-1 text-[11px] font-bold uppercase tracking-[0.1em] sm:gap-2 sm:px-3 sm:text-[13px] sm:tracking-[0.18em]"
+          :class="activeTab === item.key ? 'ak-select' : 'border-line text-muted hover:bg-fg/5 hover:text-fg'"
+          :aria-selected="activeTab === item.key"
+          :aria-controls="`settings-panel-${item.key}`"
+          :tabindex="activeTab === item.key ? 0 : -1"
+          @click="selectTab(item.key)"
+          @keydown="onTabKeydown($event, index)"
+        >
+          <component :is="item.icon" class="hidden shrink-0 sm:block" :size="15" :stroke-width="2" />
+          <span class="truncate">{{ t(item.labelKey) }}</span>
+        </button>
       </div>
-    </section>
+    </nav>
 
-    <div class="mt-8 space-y-6">
-      <section class="ak-frame grid gap-6 border border-line bg-surface p-6 lg:grid-cols-[1fr_1.3fr]">
-        <div><h2 class="text-sm font-bold uppercase tracking-[0.2em]">{{ t("settings.update.title") }}</h2><p class="mt-2 text-sm text-muted">{{ t("settings.update.desc") }}</p></div>
-        <div class="grid gap-4">
-          <p class="flex flex-wrap items-baseline gap-1.5 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.update.current") }}<span class="font-semibold tabular-nums text-fg">v{{ appVersion }}</span></p>
-          <div v-if="update.available" class="grid gap-3 border border-line bg-bg p-4">
-            <p class="text-sm font-semibold text-accent">{{ t("settings.update.available", { version: update.info?.version }) }}</p>
-            <div v-if="update.installing" class="grid gap-2.5">
-              <span class="block h-2 w-full overflow-hidden bg-fg/10"><span class="block h-full bg-accent transition-[width]" :style="{ width: `${Math.round((update.progress ?? 0) * 100)}%` }"></span></span>
-              <div class="grid grid-cols-[1fr_5.5rem_2.5rem] items-baseline gap-x-3 text-[11px] tabular-nums text-dim">
-                <span class="truncate">{{ updateSizeText }}</span>
-                <span class="truncate text-right">{{ updateSpeedText ?? "" }}</span>
-                <span class="text-right font-semibold text-fg">{{ Math.round((update.progress ?? 0) * 100) }}%</span>
-              </div>
+    <div class="mt-6">
+      <div v-show="activeTab === 'general'" id="settings-panel-general" role="tabpanel" aria-labelledby="settings-tab-general" class="space-y-6">
+        <section class="ak-frame grid gap-6 border border-line bg-surface p-6 lg:grid-cols-[1fr_1.3fr]">
+          <div><h2 class="text-sm font-bold uppercase tracking-[0.2em]">{{ t("settings.profile.title") }}</h2><p class="mt-2 text-sm text-muted">{{ t("settings.profile.desc") }}</p></div>
+          <div class="grid gap-4">
+            <label class="grid gap-2 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.profile.nickname") }}<input v-model="profile.profile.nickname" maxlength="32" class="h-10 border border-line bg-bg px-3 text-sm font-normal normal-case tracking-normal text-fg outline-none focus:border-accent" :placeholder="t('settings.profile.nicknamePlaceholder')" @change="profile.setNickname(profile.profile.nickname)" /></label>
+            <p v-if="license.isPro" class="text-[11px] font-semibold leading-relaxed text-amber-500">{{ t("settings.profile.nicknameWarning") }}</p>
+            <p class="flex items-center gap-2 text-[11px] normal-case text-dim"><span class="h-2 w-2" :class="sources.hasCloudSync ? 'bg-accent' : 'bg-dim'"></span>{{ sources.hasCloudSync ? t("settings.profile.synced") : t("settings.profile.localOnly") }}</p>
+          </div>
+        </section>
+
+        <section class="ak-frame grid gap-6 border border-line bg-surface p-6 lg:grid-cols-[1fr_1.3fr]">
+          <div><h2 class="text-sm font-bold uppercase tracking-[0.2em]">{{ t("settings.appearance.title") }}</h2><p class="mt-2 text-sm text-muted">{{ t("settings.appearance.desc") }}</p></div>
+          <div class="grid gap-5">
+            <div class="flex items-center justify-between gap-4">
+              <span class="text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("theme.label") }}</span>
+              <div class="inline-flex border border-line"><button type="button" class="flex h-9 items-center gap-2 px-3 text-[13px] font-semibold uppercase tracking-[0.2em]" :class="theme === 'light' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-fg'" @click="theme = 'light'"><Sun :size="14" />{{ t("theme.light") }}</button><button type="button" class="flex h-9 items-center gap-2 border-l border-line px-3 text-[13px] font-semibold uppercase tracking-[0.2em]" :class="theme === 'dark' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-fg'" @click="theme = 'dark'"><Moon :size="14" />{{ t("theme.dark") }}</button></div>
             </div>
-            <button type="button" class="ak-clip-tr flex h-10 items-center justify-center border border-line px-5 text-[13px] font-semibold uppercase tracking-[0.25em] text-fg hover:border-accent hover:text-accent" @click="update.show()">{{ t("settings.update.view") }}</button>
-          </div>
-          <template v-else>
-            <p v-if="update.error" class="text-[12px] leading-relaxed text-rose-500">{{ update.error }}</p>
-            <p v-else-if="update.checked" class="text-sm text-muted">{{ t("settings.update.latest") }}</p>
-          </template>
-          <div class="flex justify-end">
-            <button type="button" class="ak-clip-tr h-10 border border-line px-5 text-[13px] font-semibold uppercase tracking-[0.25em] disabled:opacity-60" :disabled="update.checking || update.installing" @click="checkUpdate">{{ t(update.checking ? "settings.update.checking" : "settings.update.check") }}</button>
-          </div>
-        </div>
-      </section>
-
-      <section class="ak-frame grid gap-6 border border-line bg-surface p-6 lg:grid-cols-[1fr_1.3fr]">
-        <div><h2 class="text-sm font-bold uppercase tracking-[0.2em]">{{ t("settings.community.title") }}</h2><p class="mt-2 text-sm text-muted">{{ t("settings.community.desc") }}</p></div>
-        <div class="grid min-w-0 gap-3">
-          <div class="flex flex-col gap-3 border border-line bg-bg px-4 py-3 overflow-hidden sm:flex-row sm:items-center sm:justify-between">
-            <span class="flex min-w-0 items-center gap-3"><GitFork class="shrink-0 text-accent" :size="18" :stroke-width="2" /><span class="min-w-0"><span class="block text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.community.repo") }}</span><span class="block break-all font-mono text-xs leading-relaxed text-fg">{{ repoUrl }}</span></span></span>
-            <button type="button" class="ak-clip-tr flex min-h-9 w-full shrink-0 items-center justify-center gap-2 py-2 text-center leading-tight whitespace-normal bg-accent px-4 text-[12px] font-bold uppercase tracking-[0.2em] text-accent-fg sm:w-auto" @click="openLink(repoUrl)"><ExternalLink :size="14" />{{ t("settings.community.repoAction") }}</button>
-          </div>
-          <div class="flex flex-col gap-3 border border-line bg-bg px-4 py-3 overflow-hidden sm:flex-row sm:items-center sm:justify-between">
-            <span class="flex min-w-0 items-center gap-3"><Bug class="shrink-0 text-accent" :size="18" :stroke-width="2" /><span class="min-w-0"><span class="block text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.community.issues") }}</span><span class="block break-all font-mono text-xs leading-relaxed text-fg">{{ issuesUrl }}</span></span></span>
-            <button type="button" class="ak-clip-tr flex min-h-9 w-full shrink-0 items-center justify-center gap-2 py-2 text-center leading-tight whitespace-normal border border-line px-4 text-[12px] font-bold uppercase tracking-[0.2em] text-fg sm:w-auto" @click="openLink(issuesUrl)"><ExternalLink :size="14" />{{ t("settings.community.issuesAction") }}</button>
-          </div>
-          <div class="flex flex-col gap-3 border border-line bg-bg px-4 py-3 overflow-hidden sm:flex-row sm:items-center sm:justify-between">
-            <span class="flex min-w-0 items-center gap-3"><Users class="shrink-0 text-accent" :size="18" :stroke-width="2" /><span class="min-w-0"><span class="block text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.community.qq") }}</span><span class="block break-all font-mono text-xs leading-relaxed text-fg">{{ t("settings.community.qqNumber") }}</span></span></span>
-            <button type="button" class="ak-clip-tr flex min-h-9 w-full shrink-0 items-center justify-center gap-2 py-2 text-center leading-tight whitespace-normal border border-line px-4 text-[12px] font-bold uppercase tracking-[0.2em] text-fg sm:w-auto" @click="copyQq"><Copy :size="14" />{{ t("settings.community.qqCopy") }}</button>
-          </div>
-        </div>
-      </section>
-
-      <section class="ak-frame grid gap-6 border border-line bg-surface p-6 lg:grid-cols-[1fr_1.3fr]">
-        <div><h2 class="text-sm font-bold uppercase tracking-[0.2em]">{{ t("settings.profile.title") }}</h2><p class="mt-2 text-sm text-muted">{{ t("settings.profile.desc") }}</p></div>
-        <div class="grid gap-4">
-          <label class="grid gap-2 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.profile.nickname") }}<input v-model="profile.profile.nickname" maxlength="32" class="h-10 border border-line bg-bg px-3 text-sm font-normal normal-case tracking-normal text-fg outline-none focus:border-accent" :placeholder="t('settings.profile.nicknamePlaceholder')" @change="profile.setNickname(profile.profile.nickname)" /></label>
-          <p v-if="license.isPro" class="text-[11px] font-semibold leading-relaxed text-amber-500">{{ t("settings.profile.nicknameWarning") }}</p>
-          <p class="flex items-center gap-2 text-[11px] normal-case text-dim"><span class="h-2 w-2" :class="sources.hasCloudSync ? 'bg-accent' : 'bg-dim'"></span>{{ sources.hasCloudSync ? t("settings.profile.synced") : t("settings.profile.localOnly") }}</p>
-        </div>
-      </section>
-
-      <section class="ak-frame grid gap-6 border border-line bg-surface p-6 lg:grid-cols-[1fr_1.3fr]">
-        <div><h2 class="text-sm font-bold uppercase tracking-[0.2em]">{{ t("settings.appearance.title") }}</h2><p class="mt-2 text-sm text-muted">{{ t("settings.appearance.desc") }}</p></div>
-        <div class="grid gap-5">
-          <div class="flex items-center justify-between gap-4">
-            <span class="text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("theme.label") }}</span>
-            <div class="inline-flex border border-line"><button type="button" class="flex h-9 items-center gap-2 px-3 text-[13px] font-semibold uppercase tracking-[0.2em]" :class="theme === 'light' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-fg'" @click="theme = 'light'"><Sun :size="14" />{{ t("theme.light") }}</button><button type="button" class="flex h-9 items-center gap-2 border-l border-line px-3 text-[13px] font-semibold uppercase tracking-[0.2em]" :class="theme === 'dark' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-fg'" @click="theme = 'dark'"><Moon :size="14" />{{ t("theme.dark") }}</button></div>
-          </div>
-          <div class="flex items-center justify-between gap-4">
-            <span class="text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("accent.label") }}</span>
-            <div class="flex items-center gap-2"><button v-for="item in accents" :key="item.id" type="button" class="h-5 w-5 border-2 transition-transform hover:scale-110" :style="{ backgroundColor: item.swatch, borderColor: accent === item.id ? 'var(--fg)' : 'transparent' }" :title="t(item.key)" @click="accent = item.id"></button></div>
-          </div>
-          <div class="flex items-center justify-between gap-4">
-            <span class="text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("language.label") }}</span>
-            <div class="inline-flex border border-line"><button v-for="(item, index) in localeOptions" :key="item.id" type="button" class="h-9 px-4 text-[13px] font-semibold uppercase tracking-[0.2em]" :class="[index ? 'border-l border-line' : '', locale === item.id ? 'bg-accent text-accent-fg' : 'text-muted hover:text-fg']" @click="locale = item.id">{{ t(item.labelKey) }}</button></div>
-          </div>
-        </div>
-      </section>
-
-      <section v-if="desktop" class="ak-frame grid gap-6 border border-line bg-surface p-6 lg:grid-cols-[1fr_1.3fr]">
-        <div><h2 class="text-sm font-bold uppercase tracking-[0.2em]">{{ t("settings.window.title") }}</h2><p class="mt-2 text-sm text-muted">{{ t("settings.window.desc") }}</p></div>
-        <div class="grid gap-4">
-          <div class="flex items-center justify-between gap-4">
-            <span class="text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.window.action") }}</span>
-            <div class="inline-flex border border-line"><button type="button" class="h-9 px-4 text-[13px] font-semibold uppercase tracking-[0.2em]" :class="!windowBehavior.closeToTray ? 'bg-accent text-accent-fg' : 'text-muted hover:text-fg'" @click="windowBehavior.closeToTray = false">{{ t("settings.window.close") }}</button><button type="button" class="h-9 border-l border-line px-4 text-[13px] font-semibold uppercase tracking-[0.2em]" :class="windowBehavior.closeToTray ? 'bg-accent text-accent-fg' : 'text-muted hover:text-fg'" @click="windowBehavior.closeToTray = true">{{ t("settings.window.tray") }}</button></div>
-          </div>
-          <p class="text-[11px] leading-relaxed text-dim">{{ t("settings.window.hint") }}</p>
-        </div>
-      </section>
-
-      <section class="ak-frame grid gap-6 border border-line bg-surface p-6 lg:grid-cols-[1fr_1.3fr]">
-        <div><h2 class="text-sm font-bold uppercase tracking-[0.2em]">{{ t("audio.title") }}</h2></div>
-        <div class="grid gap-4">
-          <p class="flex flex-wrap items-baseline gap-1.5 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("audio.currentDevice") }}<span class="font-semibold tabular-nums text-fg">{{ currentDeviceLabel }}</span><span v-if="deviceInfo?.currentRate" class="font-semibold tabular-nums text-accent">{{ formatRate(deviceInfo.currentRate) }}</span></p>
-          <div v-if="isDesktop()">
-            <div class="grid gap-2">
-              <div class="flex justify-end">
-                <button
-                  type="button"
-                  class="ak-clip-tr h-8 border border-line px-4 text-[11px] font-semibold uppercase tracking-[0.2em] disabled:opacity-60"
-                  :disabled="devicesLoading"
-                  @click="refreshDevicesList"
-                >{{ t("audio.refresh") }}</button>
-              </div>
-              <div v-if="devicesLoading" class="text-[12px] text-dim">{{ t("audio.loading") }}</div>
-              <div v-else-if="devices.length === 0" class="text-[12px] text-dim">{{ t("audio.noDevices") }}</div>
-              <div v-else class="grid gap-1.5">
-                <button
-                  v-for="device in devices"
-                  :key="device.id"
-                  type="button"
-                  class="flex h-10 items-center justify-between border px-3 text-[13px] font-semibold tracking-wide transition-colors"
-                  :class="selectedDevice === device.id ? 'border-accent text-accent' : 'border-line text-muted hover:border-accent hover:text-fg'"
-                  :aria-pressed="selectedDevice === device.id"
-                  @click="selectDevice(device.id)"
-                >
-                  <span class="flex min-w-0 items-baseline gap-2 truncate"><span class="truncate">{{ device.name }}</span><span v-if="device.deviceType" class="text-[10px] font-normal normal-case tracking-normal text-dim">{{ deviceTypeLabel(device.deviceType) }}</span></span>
-                  <span v-if="selectedDevice === device.id" class="text-[10px] uppercase tracking-[0.2em]">{{ t("audio.active") }}</span>
-                </button>
-                <button
-                  type="button"
-                  class="flex h-10 items-center justify-between border px-3 text-[13px] font-semibold tracking-wide transition-colors"
-                  :class="selectedDevice === null ? 'border-accent text-accent' : 'border-line text-muted hover:border-accent hover:text-fg'"
-                  :aria-pressed="selectedDevice === null"
-                  @click="selectDevice(null)"
-                >
-                  <span class="flex items-baseline gap-2">{{ t("audio.deviceDefault") }}</span>
-                  <span v-if="selectedDevice === null" class="text-[10px] uppercase tracking-[0.2em]">{{ t("audio.active") }}</span>
-                </button>
-              </div>
+            <div class="flex items-center justify-between gap-4">
+              <span class="text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("accent.label") }}</span>
+              <div class="flex items-center gap-2"><button v-for="item in accents" :key="item.id" type="button" class="h-5 w-5 border-2 transition-transform hover:scale-110" :style="{ backgroundColor: item.swatch, borderColor: accent === item.id ? 'var(--fg)' : 'transparent' }" :title="t(item.key)" @click="accent = item.id"></button></div>
+            </div>
+            <div class="flex items-center justify-between gap-4">
+              <span class="text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("language.label") }}</span>
+              <div class="inline-flex border border-line"><button v-for="(item, index) in localeOptions" :key="item.id" type="button" class="h-9 px-4 text-[13px] font-semibold uppercase tracking-[0.2em]" :class="[index ? 'border-l border-line' : '', locale === item.id ? 'bg-accent text-accent-fg' : 'text-muted hover:text-fg']" @click="locale = item.id">{{ t(item.labelKey) }}</button></div>
             </div>
           </div>
-        </div>
-      </section>
+        </section>
 
-      <section class="ak-frame grid gap-6 border border-line bg-surface p-6 lg:grid-cols-[1fr_1.3fr]">
-        <div><h2 class="text-sm font-bold uppercase tracking-[0.2em]">{{ t("settings.cache.title") }}</h2><p class="mt-2 text-sm text-muted">{{ t("settings.cache.desc") }}</p></div>
-        <div class="grid gap-5">
-          <label class="grid gap-2 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.cache.dir") }}<input v-model="cacheDir" class="h-10 border border-line bg-bg px-3 text-sm font-normal normal-case tracking-normal text-fg outline-none focus:border-accent" /></label>
-          <div class="flex justify-end"><button type="button" class="ak-clip-tr h-10 border border-line px-5 text-[13px] font-semibold uppercase tracking-[0.25em]" @click="saveCacheDir">{{ t("settings.cache.save") }}</button></div>
+        <section v-if="desktop" class="ak-frame grid gap-6 border border-line bg-surface p-6 lg:grid-cols-[1fr_1.3fr]">
+          <div><h2 class="text-sm font-bold uppercase tracking-[0.2em]">{{ t("settings.window.title") }}</h2><p class="mt-2 text-sm text-muted">{{ t("settings.window.desc") }}</p></div>
+          <div class="grid gap-4">
+            <div class="flex items-center justify-between gap-4">
+              <span class="text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.window.action") }}</span>
+              <div class="inline-flex border border-line"><button type="button" class="h-9 px-4 text-[13px] font-semibold uppercase tracking-[0.2em]" :class="!windowBehavior.closeToTray ? 'bg-accent text-accent-fg' : 'text-muted hover:text-fg'" @click="windowBehavior.closeToTray = false">{{ t("settings.window.close") }}</button><button type="button" class="h-9 border-l border-line px-4 text-[13px] font-semibold uppercase tracking-[0.2em]" :class="windowBehavior.closeToTray ? 'bg-accent text-accent-fg' : 'text-muted hover:text-fg'" @click="windowBehavior.closeToTray = true">{{ t("settings.window.tray") }}</button></div>
+            </div>
+            <p class="text-[11px] leading-relaxed text-dim">{{ t("settings.window.hint") }}</p>
+          </div>
+        </section>
 
-          <div class="grid gap-4 border border-line bg-bg p-4">
-            <label class="flex items-start justify-between gap-4">
-              <span class="grid gap-1 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.cache.streamTitle") }}<span class="text-[11px] font-normal normal-case tracking-normal text-dim">{{ t("settings.cache.streamDesc") }}</span></span>
-              <input :checked="streamEnabled" class="ak-switch shrink-0" type="checkbox" :aria-label="t('settings.cache.streamEnabled')" @change="toggleStreamEnabled" />
+        <section class="ak-frame grid gap-6 border border-line bg-surface p-6 lg:grid-cols-[1fr_1.3fr]">
+          <div><h2 class="text-sm font-bold uppercase tracking-[0.2em]">{{ t("settings.sources.title") }}</h2><p class="mt-2 text-sm text-muted">{{ t("settings.sources.desc") }}</p></div>
+          <div class="grid gap-4">
+            <p class="text-sm text-muted">{{ t("settings.sources.count", { count: sources.sources.length }) }}</p>
+            <p class="flex items-center gap-2 text-[11px] text-dim"><span class="h-2 w-2" :class="sources.hasCloudSync ? 'bg-accent' : 'bg-dim'"></span>{{ sources.hasCloudSync ? t("settings.sources.cloudAvailable") : t("settings.sources.cloudUnavailable") }}</p>
+            <div class="flex justify-end"><button type="button" class="ak-clip-tr flex h-10 items-center gap-2 bg-accent px-5 text-[13px] font-bold uppercase tracking-[0.25em] text-accent-fg" @click="emit('sources')"><HardDrive :size="15" />{{ t("settings.sources.manage") }}</button></div>
+          </div>
+        </section>
+      </div>
+
+      <div v-show="activeTab === 'playback'" id="settings-panel-playback" role="tabpanel" aria-labelledby="settings-tab-playback" class="space-y-6">
+        <section class="ak-frame grid gap-6 border border-line bg-surface p-6 lg:grid-cols-[1fr_1.3fr]">
+          <div><h2 class="text-sm font-bold uppercase tracking-[0.2em]">{{ t("settings.cache.title") }}</h2><p class="mt-2 text-sm text-muted">{{ t("settings.cache.desc") }}</p></div>
+          <div class="grid gap-5">
+            <label class="grid gap-2 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.cache.dir") }}<input v-model="cacheDir" class="h-10 border border-line bg-bg px-3 text-sm font-normal normal-case tracking-normal text-fg outline-none focus:border-accent" /></label>
+            <div class="flex justify-end"><button type="button" class="ak-clip-tr h-10 border border-line px-5 text-[13px] font-semibold uppercase tracking-[0.25em]" @click="saveCacheDir">{{ t("settings.cache.save") }}</button></div>
+
+            <div class="grid gap-4 border border-line bg-bg p-4">
+              <label class="flex items-start justify-between gap-4">
+                <span class="grid gap-1 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.cache.streamTitle") }}<span class="text-[11px] font-normal normal-case tracking-normal text-dim">{{ t("settings.cache.streamDesc") }}</span></span>
+                <input :checked="streamEnabled" class="ak-switch shrink-0" type="checkbox" :aria-label="t('settings.cache.streamEnabled')" @change="toggleStreamEnabled" />
+              </label>
+              <div class="grid gap-2">
+                <div class="flex items-baseline justify-between text-[11px] font-semibold uppercase tracking-[0.2em] text-dim"><span>{{ t("settings.cache.streamUsed") }}</span><span class="tabular-nums">{{ formatBytes(streamBytes) }} / {{ formatBytes(streamLimitBytes) }}</span></div>
+                <span class="block h-2 w-full overflow-hidden bg-fg/10"><span class="block h-full bg-accent transition-[width]" :style="{ width: `${streamPercent}%` }"></span></span>
+              </div>
+              <label class="grid gap-2 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.cache.prefetch") }}<input v-model.number="prefetchSeconds" type="number" min="30" max="200" step="10" class="h-10 border border-line bg-bg px-3 text-sm font-normal normal-case tracking-normal text-fg outline-none focus:border-accent" /><span class="text-[11px] font-normal normal-case tracking-normal text-dim">{{ t("settings.cache.prefetchDesc") }}</span></label>
+              <div class="flex justify-end"><button type="button" class="ak-clip-tr h-10 border border-line px-5 text-[13px] font-semibold uppercase tracking-[0.25em]" @click="savePrefetchSeconds">{{ t("settings.cache.prefetchSave") }}</button></div>
+            </div>
+
+            <div class="flex items-baseline justify-between text-[11px] font-semibold uppercase tracking-[0.2em] text-dim"><span>{{ t("settings.cache.pinned") }}</span><span class="tabular-nums">{{ formatBytes(cachePinned) }}</span></div>
+
+            <p class="text-[11px] leading-relaxed text-dim">{{ t("settings.cache.clearHint") }}</p>
+            <div class="flex justify-end">
+              <button type="button" class="ak-clip-tr h-10 border border-rose-500/60 px-5 text-[13px] font-semibold uppercase tracking-[0.25em] text-rose-500 disabled:opacity-60" :disabled="clearingCache" @click="clearCache">{{ t(clearingCache ? "settings.cache.clearing" : "settings.cache.clear") }}</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="ak-frame grid gap-6 border border-line bg-surface p-6 lg:grid-cols-[1fr_1.3fr]">
+          <div><h2 class="text-sm font-bold uppercase tracking-[0.2em]">{{ t("settings.waveform.title") }}</h2><p class="mt-2 text-sm text-muted">{{ t("settings.waveform.desc") }}</p></div>
+          <div class="grid gap-5">
+            <label class="flex items-center justify-between gap-4">
+              <span class="grid gap-1 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.waveform.show") }}<span class="text-[11px] font-normal normal-case tracking-normal text-dim">{{ t("settings.waveform.showHint") }}</span></span>
+              <input v-model="showWaveform" class="ak-switch shrink-0" type="checkbox" :aria-label="t('settings.waveform.show')" />
             </label>
-            <div class="grid gap-2">
-              <div class="flex items-baseline justify-between text-[11px] font-semibold uppercase tracking-[0.2em] text-dim"><span>{{ t("settings.cache.streamUsed") }}</span><span class="tabular-nums">{{ formatBytes(streamBytes) }} / {{ formatBytes(streamLimitBytes) }}</span></div>
-              <span class="block h-2 w-full overflow-hidden bg-fg/10"><span class="block h-full bg-accent transition-[width]" :style="{ width: `${streamPercent}%` }"></span></span>
+            <label class="flex items-center justify-between gap-4" :class="{ 'opacity-40': !showWaveform }">
+              <span class="grid gap-1 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.waveform.height") }}<span class="text-[11px] font-normal normal-case tracking-normal text-dim">{{ t("settings.waveform.heightHint") }}</span></span>
+              <span class="flex shrink-0 items-center gap-3">
+                <input v-model.number="waveformScale" class="ak-slider w-40" type="range" min="0.5" max="3" step="0.25" :style="{ '--fill': `${((waveformScale - 0.5) / 2.5) * 100}%` }" :disabled="!showWaveform" :aria-label="t('settings.waveform.height')" />
+                <span class="w-12 text-right font-mono text-sm tabular-nums text-fg">{{ waveformScale }}×</span>
+              </span>
+            </label>
+          </div>
+        </section>
+      </div>
+
+      <div v-show="activeTab === 'lyrics'" id="settings-panel-lyrics" role="tabpanel" aria-labelledby="settings-tab-lyrics" class="space-y-6">
+        <LyricsSettings />
+
+        <DesktopLyricSettings />
+      </div>
+
+      <div v-show="activeTab === 'about'" id="settings-panel-about" role="tabpanel" aria-labelledby="settings-tab-about" class="space-y-6">
+        <section class="ak-frame relative border border-line bg-surface">
+          <div v-if="license.isPro" class="pointer-events-none absolute inset-0 overflow-hidden"><div class="absolute inset-0 opacity-[0.18]" style="background: radial-gradient(circle at 90% 4%, var(--accent), transparent 55%)"></div><div class="absolute inset-0 opacity-[0.06]" style="background-image: linear-gradient(var(--fg) 1px, transparent 1px), linear-gradient(90deg, var(--fg) 1px, transparent 1px); background-size: 26px 26px"></div></div>
+          <div class="relative grid gap-8 p-8 lg:grid-cols-[1.5fr_1fr] lg:items-center">
+            <div class="grid gap-6">
+              <div class="flex items-center gap-5"><span class="grid h-24 w-24 shrink-0 place-items-center bg-accent text-accent-fg"><Music2 :size="42" :stroke-width="2" /></span><div class="min-w-0"><h2 class="text-3xl font-black uppercase leading-none tracking-tight sm:text-4xl">{{ t("settings.about.title") }}</h2><p class="mt-3 max-w-lg text-sm leading-[1.7] text-muted">{{ t("settings.about.tagline") }}</p></div></div>
+              <div class="grid gap-1 text-sm leading-relaxed">
+                <p class="flex flex-wrap items-baseline gap-1.5"><span class="font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.about.version") }}</span><span class="text-dim">{{ locale === "zh-CN" ? "：" : ":" }}</span><span class="font-semibold tabular-nums">v{{ appVersion }}</span></p>
+                <p class="flex flex-wrap items-baseline gap-1.5"><span class="font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.about.author") }}</span><span class="text-dim">{{ locale === "zh-CN" ? "：" : ":" }}</span><span class="font-semibold">{{ t("settings.about.authorName") }}</span></p>
+              </div>
             </div>
-            <label class="grid gap-2 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.cache.prefetch") }}<input v-model.number="prefetchSeconds" type="number" min="30" max="200" step="10" class="h-10 border border-line bg-bg px-3 text-sm font-normal normal-case tracking-normal text-fg outline-none focus:border-accent" /><span class="text-[11px] font-normal normal-case tracking-normal text-dim">{{ t("settings.cache.prefetchDesc") }}</span></label>
-            <div class="flex justify-end"><button type="button" class="ak-clip-tr h-10 border border-line px-5 text-[13px] font-semibold uppercase tracking-[0.25em]" @click="savePrefetchSeconds">{{ t("settings.cache.prefetchSave") }}</button></div>
+            <div class="ak-tier-dial flex items-center justify-center py-4" :class="{ 'is-pro': license.isPro }">
+              <span class="ak-tier-aura" aria-hidden="true"></span>
+              <span class="ak-tier-disc relative grid h-32 w-32 place-items-center rounded-full border border-line">
+                <span class="ak-tier-inner grid h-[100px] w-[100px] place-items-center rounded-full border-2 border-line-strong text-center text-fg">
+                  <button type="button" class="ak-tier-button px-3 text-base font-black uppercase leading-tight tracking-[0.1em]" @click="emit('sponsor')">{{ editionLabel }}</button>
+                </span>
+              </span>
+            </div>
           </div>
+        </section>
 
-          <div class="flex items-baseline justify-between text-[11px] font-semibold uppercase tracking-[0.2em] text-dim"><span>{{ t("settings.cache.pinned") }}</span><span class="tabular-nums">{{ formatBytes(cachePinned) }}</span></div>
-
-          <p class="text-[11px] leading-relaxed text-dim">{{ t("settings.cache.clearHint") }}</p>
-          <div class="flex justify-end">
-            <button type="button" class="ak-clip-tr h-10 border border-rose-500/60 px-5 text-[13px] font-semibold uppercase tracking-[0.25em] text-rose-500 disabled:opacity-60" :disabled="clearingCache" @click="clearCache">{{ t(clearingCache ? "settings.cache.clearing" : "settings.cache.clear") }}</button>
+        <section class="ak-frame grid gap-6 border border-line bg-surface p-6 lg:grid-cols-[1fr_1.3fr]">
+          <div><h2 class="text-sm font-bold uppercase tracking-[0.2em]">{{ t("settings.update.title") }}</h2><p class="mt-2 text-sm text-muted">{{ t("settings.update.desc") }}</p></div>
+          <div class="grid gap-4">
+            <p class="flex flex-wrap items-baseline gap-1.5 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.update.current") }}<span class="font-semibold tabular-nums text-fg">v{{ appVersion }}</span></p>
+            <div v-if="update.available" class="grid gap-3 border border-line bg-bg p-4">
+              <p class="text-sm font-semibold text-accent">{{ t("settings.update.available", { version: update.info?.version }) }}</p>
+              <div v-if="update.installing" class="grid gap-2.5">
+                <span class="block h-2 w-full overflow-hidden bg-fg/10"><span class="block h-full bg-accent transition-[width]" :style="{ width: `${Math.round((update.progress ?? 0) * 100)}%` }"></span></span>
+                <div class="grid grid-cols-[1fr_5.5rem_2.5rem] items-baseline gap-x-3 text-[11px] tabular-nums text-dim">
+                  <span class="truncate">{{ updateSizeText }}</span>
+                  <span class="truncate text-right">{{ updateSpeedText ?? "" }}</span>
+                  <span class="text-right font-semibold text-fg">{{ Math.round((update.progress ?? 0) * 100) }}%</span>
+                </div>
+              </div>
+              <button type="button" class="ak-clip-tr flex h-10 items-center justify-center border border-line px-5 text-[13px] font-semibold uppercase tracking-[0.25em] text-fg hover:border-accent hover:text-accent" @click="update.show()">{{ t("settings.update.view") }}</button>
+            </div>
+            <template v-else>
+              <p v-if="update.error" class="text-[12px] leading-relaxed text-rose-500">{{ update.error }}</p>
+              <p v-else-if="update.checked" class="text-sm text-muted">{{ t("settings.update.latest") }}</p>
+            </template>
+            <div class="flex justify-end">
+              <button type="button" class="ak-clip-tr h-10 border border-line px-5 text-[13px] font-semibold uppercase tracking-[0.25em] disabled:opacity-60" :disabled="update.checking || update.installing" @click="checkUpdate">{{ t(update.checking ? "settings.update.checking" : "settings.update.check") }}</button>
+            </div>
           </div>
-        </div>
-      </section>
+        </section>
 
-      <section class="ak-frame grid gap-6 border border-line bg-surface p-6 lg:grid-cols-[1fr_1.3fr]">
-        <div><h2 class="text-sm font-bold uppercase tracking-[0.2em]">{{ t("settings.sources.title") }}</h2><p class="mt-2 text-sm text-muted">{{ t("settings.sources.desc") }}</p></div>
-        <div class="grid gap-4">
-          <p class="text-sm text-muted">{{ t("settings.sources.count", { count: sources.sources.length }) }}</p>
-          <p class="flex items-center gap-2 text-[11px] text-dim"><span class="h-2 w-2" :class="sources.hasCloudSync ? 'bg-accent' : 'bg-dim'"></span>{{ sources.hasCloudSync ? t("settings.sources.cloudAvailable") : t("settings.sources.cloudUnavailable") }}</p>
-          <div class="flex justify-end"><button type="button" class="ak-clip-tr flex h-10 items-center gap-2 bg-accent px-5 text-[13px] font-bold uppercase tracking-[0.25em] text-accent-fg" @click="emit('sources')"><HardDrive :size="15" />{{ t("settings.sources.manage") }}</button></div>
-        </div>
-      </section>
-
-      <section class="ak-frame grid gap-6 border border-line bg-surface p-6 lg:grid-cols-[1fr_1.3fr]">
-        <div><h2 class="text-sm font-bold uppercase tracking-[0.2em]">{{ t("settings.waveform.title") }}</h2><p class="mt-2 text-sm text-muted">{{ t("settings.waveform.desc") }}</p></div>
-        <div class="grid gap-5">
-          <label class="flex items-center justify-between gap-4">
-            <span class="grid gap-1 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.waveform.show") }}<span class="text-[11px] font-normal normal-case tracking-normal text-dim">{{ t("settings.waveform.showHint") }}</span></span>
-            <input v-model="showWaveform" class="ak-switch shrink-0" type="checkbox" :aria-label="t('settings.waveform.show')" />
-          </label>
-          <label class="flex items-center justify-between gap-4" :class="{ 'opacity-40': !showWaveform }">
-            <span class="grid gap-1 text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.waveform.height") }}<span class="text-[11px] font-normal normal-case tracking-normal text-dim">{{ t("settings.waveform.heightHint") }}</span></span>
-            <span class="flex shrink-0 items-center gap-3">
-              <input v-model.number="waveformScale" class="ak-slider w-40" type="range" min="0.5" max="3" step="0.25" :style="{ '--fill': `${((waveformScale - 0.5) / 2.5) * 100}%` }" :disabled="!showWaveform" :aria-label="t('settings.waveform.height')" />
-              <span class="w-12 text-right font-mono text-sm tabular-nums text-fg">{{ waveformScale }}×</span>
-            </span>
-          </label>
-        </div>
-      </section>
-
-      <LyricsSettings />
-
-      <DesktopLyricSettings />
+        <section class="ak-frame grid gap-6 border border-line bg-surface p-6 lg:grid-cols-[1fr_1.3fr]">
+          <div><h2 class="text-sm font-bold uppercase tracking-[0.2em]">{{ t("settings.community.title") }}</h2><p class="mt-2 text-sm text-muted">{{ t("settings.community.desc") }}</p></div>
+          <div class="grid min-w-0 gap-3">
+            <div class="flex flex-col gap-3 border border-line bg-bg px-4 py-3 overflow-hidden sm:flex-row sm:items-center sm:justify-between">
+              <span class="flex min-w-0 items-center gap-3"><GitFork class="shrink-0 text-accent" :size="18" :stroke-width="2" /><span class="min-w-0"><span class="block text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.community.repo") }}</span><span class="block break-all font-mono text-xs leading-relaxed text-fg">{{ repoUrl }}</span></span></span>
+              <button type="button" class="ak-clip-tr flex min-h-9 w-full shrink-0 items-center justify-center gap-2 py-2 text-center leading-tight whitespace-normal bg-accent px-4 text-[12px] font-bold uppercase tracking-[0.2em] text-accent-fg sm:w-auto" @click="openLink(repoUrl)"><ExternalLink :size="14" />{{ t("settings.community.repoAction") }}</button>
+            </div>
+            <div class="flex flex-col gap-3 border border-line bg-bg px-4 py-3 overflow-hidden sm:flex-row sm:items-center sm:justify-between">
+              <span class="flex min-w-0 items-center gap-3"><Bug class="shrink-0 text-accent" :size="18" :stroke-width="2" /><span class="min-w-0"><span class="block text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.community.issues") }}</span><span class="block break-all font-mono text-xs leading-relaxed text-fg">{{ issuesUrl }}</span></span></span>
+              <button type="button" class="ak-clip-tr flex min-h-9 w-full shrink-0 items-center justify-center gap-2 py-2 text-center leading-tight whitespace-normal border border-line px-4 text-[12px] font-bold uppercase tracking-[0.2em] text-fg sm:w-auto" @click="openLink(issuesUrl)"><ExternalLink :size="14" />{{ t("settings.community.issuesAction") }}</button>
+            </div>
+            <div class="flex flex-col gap-3 border border-line bg-bg px-4 py-3 overflow-hidden sm:flex-row sm:items-center sm:justify-between">
+              <span class="flex min-w-0 items-center gap-3"><Users class="shrink-0 text-accent" :size="18" :stroke-width="2" /><span class="min-w-0"><span class="block text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">{{ t("settings.community.qq") }}</span><span class="block break-all font-mono text-xs leading-relaxed text-fg">{{ t("settings.community.qqNumber") }}</span></span></span>
+              <button type="button" class="ak-clip-tr flex min-h-9 w-full shrink-0 items-center justify-center gap-2 py-2 text-center leading-tight whitespace-normal border border-line px-4 text-[12px] font-bold uppercase tracking-[0.2em] text-fg sm:w-auto" @click="copyQq"><Copy :size="14" />{{ t("settings.community.qqCopy") }}</button>
+            </div>
+          </div>
+        </section>
+      </div>
     </div>
   </div>
 </template>

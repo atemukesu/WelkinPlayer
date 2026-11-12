@@ -345,6 +345,13 @@ const messages = {
     settings: {
       eyebrow: "系统 / 配置",
       title: "设置",
+      tabs: {
+        label: "设置分类",
+        general: "常规",
+        playback: "播放",
+        lyrics: "歌词",
+        about: "关于",
+      },
       about: {
         title: "Welkin",
         tagline: "通过 WebDAV 读取你的音乐收藏，并把资料跨设备同步的桌面播放器。",
@@ -1172,6 +1179,13 @@ const messages = {
     settings: {
       eyebrow: "System / Config",
       title: "Settings",
+      tabs: {
+        label: "Settings sections",
+        general: "General",
+        playback: "Playback",
+        lyrics: "Lyrics",
+        about: "About",
+      },
       about: {
         title: "Welkin",
         tagline: "A desktop player that reads your music collection over WebDAV and syncs your profile across devices.",
