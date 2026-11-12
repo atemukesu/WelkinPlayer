@@ -4,8 +4,8 @@
 -->
 
 <script setup lang="ts">
-import { computed, ref } from "vue";
-import { Activity, ChevronLeft, ChevronRight, Ellipsis, Heart, HeartHandshake, Library, ListMusic, ListPlus, Music2, Plus, Settings2, Signal, Wifi, WifiOff, X } from "@lucide/vue";
+import { computed, ref, watch } from "vue";
+import { Activity, ChevronLeft, ChevronRight, Heart, HeartHandshake, Library, ListMusic, ListPlus, Menu, Music2, Plus, Settings2, Signal, Wifi, WifiOff, X } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { classificationNavItems, navItems } from "../lib/app";
 import type { View } from "../lib/app";
@@ -24,29 +24,32 @@ const networkLabel = computed(() => (!network.available ? t("nav.networkOffline"
 /** Edition shown on the badge that links to the sponsor page. */
 const editionLabel = computed(() => (license.isPro ? t("sponsor.compare.badgePro") : t("nav.freeEdition")));
 const playlistsActive = computed(() => props.activeView === "playlists" || (props.activeView === "tracks" && !!props.activePlaylistId));
-/** Mobile bottom bar: four primary destinations plus a "more" overflow sheet. */
+/** Mobile bottom bar: four primary destinations. Everything else lives in the left drawer. */
 const mobileTabs = [
   { key: "library", labelKey: "nav.library", icon: Library },
   { key: "tracks", labelKey: "nav.tracks", icon: ListMusic },
   { key: "favorites", labelKey: "nav.favorites", icon: Heart },
   { key: "playlists", labelKey: "nav.playlists", icon: ListPlus },
-  { key: "more", labelKey: "nav.more", icon: Ellipsis },
 ];
-type MobileSheet = "playlists" | "more";
-const mobileSheet = ref<MobileSheet | null>(null);
-function toggleMobileSheet(sheet: MobileSheet) { mobileSheet.value = mobileSheet.value === sheet ? null : sheet; }
-function closeMobileSheet() { mobileSheet.value = null; }
-function navigateMobile(view: View) { closeMobileSheet(); emit("navigate", view); }
-function openMobilePlaylist(id: string) { closeMobileSheet(); emit("openPlaylist", id); }
-function createMobilePlaylist() { closeMobileSheet(); emit("createPlaylist"); }
-function onMobileTab(key: string) { if (key === "playlists" || key === "more") toggleMobileSheet(key); else navigateMobile(key as View); }
+const mobileDrawerOpen = ref(false);
+function openMobileDrawer() { mobileDrawerOpen.value = true; }
+function closeMobileDrawer() { mobileDrawerOpen.value = false; }
+function navigateMobile(view: View) { closeMobileDrawer(); emit("navigate", view); }
+function openMobilePlaylist(id: string) { closeMobileDrawer(); emit("openPlaylist", id); }
+function createMobilePlaylist() { closeMobileDrawer(); emit("createPlaylist"); }
+function onMobileTab(key: string) { navigateMobile(key as View); }
 function isMobileTabActive(key: string): boolean {
   if (key === "library") return props.activeView === "library";
   if (key === "tracks") return props.activeView === "tracks" && !props.activePlaylistId && !props.activeArtist && !props.activeAlbum && !props.activeSource;
   if (key === "favorites") return props.activeView === "favorites";
-  if (key === "playlists") return props.activeView === "playlists" || props.activeView === "playlist-new" || (props.activeView === "tracks" && !!props.activePlaylistId);
-  return props.activeView === "stats" || props.activeView === "settings" || props.activeView === "artists" || props.activeView === "albums" || props.activeView === "sources" || props.activeView === "source-config" || props.activeView === "source-browser" || !!props.activeArtist || !!props.activeAlbum || !!props.activeSource;
+  return props.activeView === "playlists" || props.activeView === "playlist-new" || (props.activeView === "tracks" && !!props.activePlaylistId);
 }
+watch(mobileDrawerOpen, (open, _previous, onCleanup) => {
+  if (!open) return;
+  const onKeydown = (event: KeyboardEvent) => { if (event.key === "Escape") closeMobileDrawer(); };
+  window.addEventListener("keydown", onKeydown);
+  onCleanup(() => window.removeEventListener("keydown", onKeydown));
+});
 function isClassificationActive(id: View): boolean {
   if (id === "artists") return props.activeView === "artists" || !!props.activeArtist;
   if (id === "albums") return props.activeView === "albums" || !!props.activeAlbum;
@@ -57,8 +60,8 @@ function isActivePlaylist(id: string): boolean { return props.activePlaylistId =
 </script>
 
 <template>
-  <header v-if="placement === 'header'" class="flex h-[calc(3.5rem_+_env(safe-area-inset-top))] items-center justify-between border-b border-line bg-surface px-4 pt-[env(safe-area-inset-top)] md:hidden">
-    <span class="flex items-center gap-2 text-sm font-black uppercase tracking-[0.25em]"><span class="h-3 w-3 bg-accent"></span>Welkin</span>
+  <header v-if="placement === 'header'" class="flex h-[calc(3.5rem_+_env(safe-area-inset-top))] items-center justify-between border-b border-line bg-surface px-3 pt-[env(safe-area-inset-top)] md:hidden">
+    <span class="flex min-w-0 items-center gap-2"><button type="button" class="grid h-9 w-9 shrink-0 place-items-center text-muted transition-colors hover:text-fg" :aria-label="t('nav.menu')" @click="openMobileDrawer"><Menu :size="20" :stroke-width="1.8" /></button><span class="flex items-center gap-2 text-sm font-black uppercase tracking-[0.25em]"><span class="h-3 w-3 shrink-0 bg-accent"></span>Welkin</span></span>
     <span class="flex items-center gap-3"><span class="grid place-items-center text-dim" :title="networkLabel"><WifiOff v-if="!network.available" :size="16" :stroke-width="1.8" /><Wifi v-else-if="!network.metered" :size="16" :stroke-width="1.8" /><Signal v-else :size="16" :stroke-width="1.8" /></span><button type="button" class="bg-accent px-2 py-1 text-xs font-bold uppercase leading-none tracking-[0.2em] text-accent-fg transition-opacity hover:opacity-80" @click="emit('navigate', 'sponsor')">{{ editionLabel }}</button></span>
   </header>
   <aside v-if="placement === 'sidebar'" class="sidebar-shell hidden min-h-0 shrink-0 flex-col overflow-y-auto overscroll-contain border-r border-line bg-surface md:flex" :class="{ 'is-collapsed': collapsed }">
@@ -83,33 +86,44 @@ function isActivePlaylist(id: string): boolean { return props.activePlaylistId =
       <button v-for="tab in mobileTabs" :key="tab.key" type="button" class="flex h-14 flex-1 flex-col items-center justify-center gap-1 text-[10px] font-semibold leading-none transition-colors" :class="isMobileTabActive(tab.key) ? 'ak-select' : 'text-muted'" @click="onMobileTab(tab.key)"><component :is="tab.icon" :size="18" :stroke-width="1.8" /><span class="whitespace-nowrap">{{ t(tab.labelKey) }}</span></button>
     </nav>
     <Teleport to="body">
-      <Transition name="sheet-backdrop"><div v-if="mobileSheet" class="fixed inset-0 z-[70] bg-black/40 md:hidden" @pointerdown="closeMobileSheet"></div></Transition>
-      <Transition name="sheet">
-        <section v-if="mobileSheet" class="fixed inset-x-0 bottom-0 z-[71] max-h-[70vh] overflow-y-auto overscroll-contain border-t border-line bg-surface pb-[calc(env(safe-area-inset-bottom)_+_0.5rem)] md:hidden" role="dialog" aria-modal="true">
-          <div class="flex items-center justify-between px-5 py-4">
-            <h2 class="flex items-center gap-3 text-sm font-bold uppercase tracking-[0.25em]"><span class="h-3 w-1 bg-accent"></span>{{ t(mobileSheet === 'playlists' ? 'nav.playlists' : 'nav.more') }}</h2>
-            <button type="button" class="text-dim transition-colors hover:text-fg" :aria-label="t('controls.close')" @click="closeMobileSheet"><X :size="16" :stroke-width="1.8" /></button>
-          </div>
-          <template v-if="mobileSheet === 'playlists'">
-            <p v-if="profile.playlists.length === 0" class="px-5 pb-4 text-sm text-muted">{{ t("library.noPlaylists") }}</p>
-            <template v-else>
-              <div class="grid gap-px px-3 pb-2">
-                <button v-for="playlist in profile.playlists" :key="playlist.id" type="button" class="flex min-w-0 items-center gap-3 px-2 py-2 text-left text-[13px] font-semibold transition-colors" :class="isActivePlaylist(playlist.id) ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg'" @click="openMobilePlaylist(playlist.id)"><PlaylistCover :playlist="playlist" class="h-8 w-8" :icon-size="15" /><span class="min-w-0 flex-1 truncate">{{ playlist.name }}</span><span class="shrink-0 font-mono text-[10px] tabular-nums text-dim">{{ t("library.playlists.count", { count: playlist.tracks.length }) }}</span></button>
-              </div>
-            </template>
-            <div class="grid gap-px px-3 pb-2">
-              <button type="button" class="flex h-11 w-full items-center gap-3 px-2 text-left text-[13px] font-semibold uppercase tracking-[0.15em] text-muted transition-colors hover:bg-fg/5 hover:text-fg" @click="createMobilePlaylist"><Plus :size="16" :stroke-width="2" /><span>{{ t("library.playlists.new") }}</span></button>
-              <button type="button" class="flex h-11 w-full items-center gap-3 px-2 text-left text-[13px] font-semibold uppercase tracking-[0.15em] text-muted transition-colors hover:bg-fg/5 hover:text-fg" @click="navigateMobile('playlists')"><ListMusic :size="16" :stroke-width="1.8" /><span>{{ t("nav.allPlaylists") }}</span></button>
+      <Transition name="drawer-backdrop"><div v-if="mobileDrawerOpen" class="fixed inset-0 z-[70] bg-black/50 md:hidden" @pointerdown="closeMobileDrawer"></div></Transition>
+      <Transition name="drawer">
+        <aside v-if="mobileDrawerOpen" class="fixed inset-y-0 left-0 z-[71] flex w-[84vw] max-w-[320px] flex-col overflow-y-auto overscroll-contain border-r border-line bg-surface pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] shadow-2xl md:hidden" role="dialog" aria-modal="true" :aria-label="t('nav.menu')">
+          <div class="flex items-center gap-3 border-b border-line px-4 py-4">
+            <span class="grid h-9 w-9 shrink-0 place-items-center bg-accent text-accent-fg"><Music2 :size="18" :stroke-width="2.2" /></span>
+            <div class="min-w-0 flex-1">
+              <p class="text-sm font-black uppercase leading-none tracking-[0.25em]">Welkin</p>
+              <button type="button" class="mt-2 w-fit bg-accent px-2 py-1 text-xs font-bold uppercase leading-none tracking-[0.2em] text-accent-fg transition-opacity hover:opacity-80" @click="navigateMobile('sponsor')">{{ editionLabel }}</button>
             </div>
-          </template>
-          <div v-else class="grid gap-px px-3 pb-2">
-            <button v-for="item in classificationNavItems" :key="item.id" type="button" class="flex h-11 items-center gap-3 px-2 text-left text-[13px] font-semibold uppercase tracking-[0.15em] transition-colors" :class="isClassificationActive(item.id) ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg'" @click="navigateMobile(item.id)"><component :is="item.icon" :size="16" :stroke-width="1.8" /><span>{{ t(item.labelKey) }}</span></button>
-            <button type="button" class="flex h-11 items-center gap-3 px-2 text-left text-[13px] font-semibold uppercase tracking-[0.15em] transition-colors" :class="activeView === 'stats' ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg'" @click="navigateMobile('stats')"><Activity :size="16" :stroke-width="1.8" /><span>{{ t("nav.stats") }}</span></button>
-            <button type="button" class="flex h-11 items-center gap-3 px-2 text-left text-[13px] font-semibold uppercase tracking-[0.15em] transition-colors" :class="activeView === 'playlist-new' ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg'" @click="createMobilePlaylist"><Plus :size="16" :stroke-width="2" /><span>{{ t("library.playlists.new") }}</span></button>
-            <button type="button" class="flex h-11 items-center gap-3 px-2 text-left text-[13px] font-semibold uppercase tracking-[0.15em] transition-colors" :class="activeView === 'settings' ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg'" @click="navigateMobile('settings')"><Settings2 :size="16" :stroke-width="1.8" /><span>{{ t("nav.settings") }}</span></button>
-            <button type="button" class="flex h-11 items-center gap-3 px-2 text-left text-[13px] font-semibold uppercase tracking-[0.15em] transition-colors" :class="activeView === 'sponsor' ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg'" @click="navigateMobile('sponsor')"><HeartHandshake :size="16" :stroke-width="1.8" /><span>{{ t("nav.sponsor") }}</span></button>
+            <button type="button" class="grid h-9 w-9 shrink-0 place-items-center text-dim transition-colors hover:text-fg" :aria-label="t('controls.close')" @click="closeMobileDrawer"><X :size="18" :stroke-width="1.8" /></button>
           </div>
-        </section>
+          <div class="flex items-center gap-2 border-b border-line px-4 py-2.5 text-[11px] font-semibold uppercase tracking-[0.2em] text-dim">
+            <WifiOff v-if="!network.available" :size="14" :stroke-width="1.8" />
+            <Wifi v-else-if="!network.metered" :size="14" :stroke-width="1.8" />
+            <Signal v-else :size="14" :stroke-width="1.8" />
+            <span>{{ networkLabel }}</span>
+          </div>
+          <nav class="flex flex-col gap-px border-b border-line px-2 py-3">
+            <button v-for="tab in mobileTabs" :key="tab.key" type="button" class="flex h-11 items-center gap-3 px-3 text-left text-[13px] font-semibold uppercase tracking-[0.15em] transition-colors" :class="isMobileTabActive(tab.key) ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg'" @click="onMobileTab(tab.key)"><component :is="tab.icon" :size="16" :stroke-width="1.8" /><span class="truncate">{{ t(tab.labelKey) }}</span></button>
+          </nav>
+          <nav class="flex flex-col gap-px border-b border-line px-2 py-3">
+            <button v-for="item in classificationNavItems" :key="item.id" type="button" class="flex h-11 items-center gap-3 px-3 text-left text-[13px] font-semibold uppercase tracking-[0.15em] transition-colors" :class="isClassificationActive(item.id) ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg'" @click="navigateMobile(item.id)"><component :is="item.icon" :size="16" :stroke-width="1.8" /><span class="truncate">{{ t(item.labelKey) }}</span></button>
+            <button type="button" class="flex h-11 items-center gap-3 px-3 text-left text-[13px] font-semibold uppercase tracking-[0.15em] transition-colors" :class="activeView === 'stats' ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg'" @click="navigateMobile('stats')"><Activity :size="16" :stroke-width="1.8" /><span class="truncate">{{ t("nav.stats") }}</span></button>
+          </nav>
+          <div class="border-b border-line px-2 py-3">
+            <div class="flex items-center justify-between px-3 pb-2">
+              <span class="text-[11px] font-bold uppercase tracking-[0.25em] text-dim">{{ t("nav.playlists") }}</span>
+              <button type="button" class="grid h-7 w-7 place-items-center text-muted transition-colors hover:text-fg" :aria-label="t('library.playlists.new')" @click="createMobilePlaylist"><Plus :size="15" :stroke-width="2" /></button>
+            </div>
+            <p v-if="profile.playlists.length === 0" class="px-3 py-1 text-xs text-muted">{{ t("library.noPlaylists") }}</p>
+            <button v-for="playlist in profile.playlists" :key="playlist.id" type="button" class="flex min-w-0 items-center gap-3 px-3 py-2 text-left text-[13px] font-semibold transition-colors" :class="isActivePlaylist(playlist.id) ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg'" @click="openMobilePlaylist(playlist.id)"><PlaylistCover :playlist="playlist" class="h-8 w-8" :icon-size="15" /><span class="min-w-0 flex-1 truncate">{{ playlist.name }}</span><span class="shrink-0 font-mono text-[10px] tabular-nums text-dim">{{ t("library.playlists.count", { count: playlist.tracks.length }) }}</span></button>
+            <button type="button" class="mt-1 flex h-10 w-full items-center gap-3 px-3 text-left text-[12px] font-semibold uppercase tracking-[0.15em] text-muted transition-colors hover:bg-fg/5 hover:text-fg" @click="navigateMobile('playlists')"><ListMusic :size="15" :stroke-width="1.8" /><span>{{ t("nav.allPlaylists") }}</span></button>
+          </div>
+          <nav class="mt-auto flex flex-col gap-px px-2 py-3">
+            <button type="button" class="flex h-11 items-center gap-3 px-3 text-left text-[13px] font-semibold uppercase tracking-[0.15em] transition-colors" :class="activeView === 'settings' ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg'" @click="navigateMobile('settings')"><Settings2 :size="16" :stroke-width="1.8" /><span class="truncate">{{ t("nav.settings") }}</span></button>
+            <button type="button" class="flex h-11 items-center gap-3 px-3 text-left text-[13px] font-semibold uppercase tracking-[0.15em] transition-colors" :class="activeView === 'sponsor' ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg'" @click="navigateMobile('sponsor')"><HeartHandshake :size="16" :stroke-width="1.8" /><span class="truncate">{{ t("nav.sponsor") }}</span></button>
+          </nav>
+        </aside>
       </Transition>
     </Teleport>
   </template>
@@ -149,23 +163,23 @@ function isActivePlaylist(id: string): boolean { return props.activePlaylistId =
   pointer-events: none;
 }
 
-.sheet-enter-active,
-.sheet-leave-active {
+.drawer-enter-active,
+.drawer-leave-active {
   transition: transform 300ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
-.sheet-enter-from,
-.sheet-leave-to {
-  transform: translateY(100%);
+.drawer-enter-from,
+.drawer-leave-to {
+  transform: translateX(-100%);
 }
 
-.sheet-backdrop-enter-active,
-.sheet-backdrop-leave-active {
+.drawer-backdrop-enter-active,
+.drawer-backdrop-leave-active {
   transition: opacity 220ms ease;
 }
 
-.sheet-backdrop-enter-from,
-.sheet-backdrop-leave-to {
+.drawer-backdrop-enter-from,
+.drawer-backdrop-leave-to {
   opacity: 0;
 }
 </style>
