@@ -60,7 +60,9 @@ const isSelection = computed(() => props.selectedPaths.length > 0);
 const allFavorite = computed(() => paths.value.length > 0 && paths.value.every((key) => profile.isFavorite(key)));
 const favorite = computed(() => !isSelection.value && profile.isFavorite(currentKey.value));
 const lyricsDisabled = computed(() => !isSelection.value && !!currentKey.value && profile.isLyricsDisabled(currentKey.value));
-const pinned = computed(() => cache.isPinned(currentKey.value));
+/** Keys among the menu targets that are already cached or downloading. */
+const cachedPaths = computed(() => paths.value.filter((key) => cache.isPinned(key) || cache.isCached(key)));
+const allCached = computed(() => paths.value.length > 0 && cachedPaths.value.length === paths.value.length);
 
 const playlistPos = computed(() => {
   if (!props.playlistId || !currentKey.value || isSelection.value) return null;
@@ -92,9 +94,20 @@ function toggleFavorite() {
   close();
 }
 function toggleCache() {
-  const key = currentKey.value;
-  if (!key) return;
-  cache.togglePin(key);
+  if (isSelection.value) {
+    // Batch cache every selected track; only offer uncaching when all of them
+    // are already cached so a mixed selection never loses progress silently.
+    if (allCached.value) {
+      void cache.unpinMany([...paths.value]);
+    } else {
+      const targets = paths.value.filter((key) => !cache.isPinned(key) && !cache.isCached(key));
+      if (targets.length > 0) void cache.pinMany(targets);
+    }
+  } else {
+    const key = currentKey.value;
+    if (!key) return;
+    cache.togglePin(key);
+  }
   close();
 }
 function addToPlaylist(id: string) {
@@ -142,7 +155,7 @@ onBeforeUnmount(() => {
           <button v-if="!isSelection && track.path" type="button" role="menuitem" class="track-menu__item" @click="editInfo"><Pencil :size="16" />{{ t("library.menu.edit") }}</button>
           <button v-if="!isSelection && track.path" type="button" role="menuitem" class="track-menu__item" @click="editLyrics"><FileText :size="16" />{{ t("library.menu.editLyrics") }}</button>
           <button v-if="!isSelection && track.path" type="button" role="menuitem" class="track-menu__item" @click="toggleLyrics"><EyeOff v-if="!lyricsDisabled" :size="16" /><Eye v-else :size="16" />{{ lyricsDisabled ? t("library.menu.enableLyrics") : t("library.menu.disableLyrics") }}</button>
-          <button v-if="!isSelection && track.path" type="button" role="menuitem" class="track-menu__item" @click="toggleCache"><CircleX v-if="pinned" :size="16" /><HardDriveDownload v-else :size="16" />{{ pinned ? t("library.menu.uncacheTrack") : t("library.menu.cacheTrack") }}</button>
+          <button v-if="paths.length" type="button" role="menuitem" class="track-menu__item" @click="toggleCache"><CircleX v-if="allCached" :size="16" /><HardDriveDownload v-else :size="16" />{{ allCached ? (isSelection ? t("downloads.uncacheSelectedCount", { count: paths.length }) : t("library.menu.uncacheTrack")) : (isSelection ? t("downloads.cacheSelectedCount", { count: paths.length }) : t("library.menu.cacheTrack")) }}</button>
           <div class="track-menu__divider"></div>
           <button type="button" role="menuitem" class="track-menu__item track-menu__item--last" :disabled="downloading || !track.path" @click="downloadMetadata"><Download :size="16" /><span>{{ downloading ? t("library.menu.downloadingMetadata") : t("library.menu.downloadMetadata") }}</span></button>
         </div>

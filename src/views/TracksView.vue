@@ -5,11 +5,10 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { HardDriveDownload, ListChecks, Pencil, Play, RefreshCw, Search } from "@lucide/vue";
+import { ListChecks, Pencil, Play, RefreshCw, Search } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { usePlayerStore } from "../stores/player";
 import type { Track } from "../stores/player";
-import { useCacheStore } from "../stores/cache";
 import { tracksForPaths, useProfileStore } from "../stores/profile";
 import { useSourcesStore } from "../stores/sources";
 import { groupKeys, isUnknownGroup, type GroupKind } from "../lib/grouping";
@@ -26,13 +25,11 @@ const { t } = useI18n();
 const player = usePlayerStore();
 const profile = useProfileStore();
 const sources = useSourcesStore();
-const cache = useCacheStore();
 const query = ref("");
 const contextTrack = ref<Track | null>(null);
 const contextPosition = ref({ x: 0, y: 0 });
 const selectMode = ref(false);
 const selected = ref<Set<string>>(new Set());
-const selectedCount = computed(() => selected.value.size);
 const scrollEl = ref<HTMLElement | null>(null);
 
 const activePlaylist = computed(() => props.playlistId ? profile.playlists.find((item) => item.id === props.playlistId) ?? null : null);
@@ -80,12 +77,6 @@ watch([() => props.playlistId, () => props.artist, () => props.album], () => { s
 function toggleSelectMode() {
   selectMode.value = !selectMode.value;
   if (!selectMode.value) selected.value = new Set();
-}
-async function cacheSelected() {
-  if (selected.value.size === 0) return;
-  const keys = [...selected.value];
-  selected.value = new Set();
-  await cache.pinMany(keys);
 }
 function play(track: Track) { player.playInQueue(orderedTracks.value, track); }
 function playFirst() {
@@ -139,7 +130,6 @@ function downloadMetadata(track: Track) { emit("downloadMetadata", track); }
               <div class="order-3 flex items-center gap-3">
                 <TrackSortMenu :context="sortContext" />
                 <ViewModeToggle />
-                <button v-if="selectMode" type="button" class="ak-clip-tr flex h-10 shrink-0 items-center gap-2 border border-accent px-4 text-[13px] font-semibold text-accent transition-colors hover:bg-accent/10 disabled:opacity-50" :disabled="selectedCount === 0" @click="cacheSelected"><HardDriveDownload :size="15" />{{ selectedCount ? t("downloads.cacheSelectedCount", { count: selectedCount }) : t("downloads.cacheSelected") }}</button>
                 <button type="button" class="grid h-10 w-10 shrink-0 place-items-center border transition-colors" :class="selectMode ? 'border-accent bg-accent text-accent-fg' : 'border-line text-dim hover:border-accent hover:text-accent'" :title="t('library.selectMode')" @click="toggleSelectMode"><ListChecks :size="16" :stroke-width="2" /></button>
               </div>
             </div>
