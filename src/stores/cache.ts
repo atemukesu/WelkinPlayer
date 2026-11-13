@@ -58,24 +58,52 @@ export const useCacheStore = defineStore("cache", () => {
   let initialized = false;
   /** Previous byte count and timestamp per key, for speed calculation. */
   const samples = new Map<string, { written: number; at: number }>();
+  /**
+   * Keys belonging to the current download batch. Completed tracks stay in the
+   * set so the overall progress covers the whole batch instead of only the
+   * tracks that are still pending.
+   */
+  const batch = ref<Set<string>>(new Set());
 
   const itemMap = computed(() => new Map(items.value.map((item) => [item.key, item])));
   /** Pinned entries that are still downloading or waiting in the queue. */
   const pendingItems = computed(() => items.value.filter((item) => item.pinned && !item.complete));
   /** Completed manual-cache entries. */
   const completedItems = computed(() => items.value.filter((item) => item.complete));
+  /** Every entry that belongs to the current batch, completed or not. */
+  const batchItems = computed(() => {
+    const list: CacheItem[] = [];
+    for (const key of batch.value) {
+      const item = itemMap.value.get(key);
+      if (item) list.push(item);
+    }
+    return list;
+  });
   /** Combined transfer rate of all active downloads. */
   const totalSpeed = computed(() =>
     pendingItems.value.reduce((sum, item) => sum + (item.active ? item.speed : 0), 0),
   );
   const activeCount = computed(() => pendingItems.value.filter((item) => item.active).length);
   const queuedCount = computed(() => pendingItems.value.filter((item) => !item.active).length);
-  /** Aggregate progress (0–1) of the pending queue, or null while sizes are unknown. */
+  /**
+   * Aggregate progress (0–1) of the whole batch, including tracks that already
+   * finished. Queued tracks whose size is not known yet borrow the average
+   * known size so they still count towards the total.
+   */
   const overallProgress = computed<number | null>(() => {
-    const pending = pendingItems.value.filter((item) => item.size && item.size > 0);
-    if (pending.length === 0) return null;
-    const total = pending.reduce((sum, item) => sum + (item.size ?? 0), 0);
-    const written = pending.reduce((sum, item) => sum + Math.min(item.written, item.size ?? item.written), 0);
+    const entries = batchItems.value;
+    if (entries.length === 0) return null;
+    const known = entries
+      .map((item) => item.size ?? 0)
+      .filter((size) => size > 0);
+    const fallback = known.length > 0 ? known.reduce((sum, size) => sum + size, 0) / known.length : 0;
+    let total = 0;
+    let written = 0;
+    for (const item of entries) {
+      const size = item.size && item.size > 0 ? item.size : fallback;
+      total += size;
+      written += item.complete ? size : Math.min(item.written, size || item.written);
+    }
     return total > 0 ? Math.min(1, written / total) : null;
   });
   const pendingWritten = computed(() =>
@@ -171,6 +199,15 @@ export const useCacheStore = defineStore("cache", () => {
       cached.value = next;
       pinned.value = new Set(status.pinned);
       items.value = nextItems;
+      // Include reported queue entries so a batch started before a reload still
+      // contributes to the overall progress. Once nothing is pending the batch
+      // is done and resets for the next one.
+      const pendingKeys = nextItems.filter((item) => item.pinned && !item.complete).map((item) => item.key);
+      if (pendingKeys.length > 0) {
+        batch.value = new Set([...batch.value, ...pendingKeys]);
+      } else {
+        batch.value = new Set();
+      }
       // Drop stale speed samples for keys no longer present.
       for (const key of [...samples.keys()]) {
         if (!nextItems.some((item) => item.key === key)) samples.delete(key);
@@ -196,10 +233,21 @@ export const useCacheStore = defineStore("cache", () => {
     return { key, pinned: true, complete: false, size: null, written: 0, active: false, speed: 0 };
   }
 
+  function trackBatch(keys: string[]) {
+    if (keys.length === 0) return;
+    batch.value = new Set([...batch.value, ...keys]);
+  }
+
+  function untrackBatch(keys: string[]) {
+    if (keys.length === 0) return;
+    batch.value = new Set([...batch.value].filter((key) => !keys.includes(key)));
+  }
+
   // Pinned tracks are explicit user choices: downloaded first, never evicted.
   async function pin(key: string) {
     const target = pinTarget(key);
     if (!target) return;
+    trackBatch([key]);
     pinned.value = new Set(pinned.value).add(key);
     items.value = [...items.value.filter((item) => item.key !== key), optimisticItem(key)];
     const alreadyCached = cached.value.has(key);
@@ -207,6 +255,7 @@ export const useCacheStore = defineStore("cache", () => {
     try {
       await invoke("pin_track", { sourceId: target.sourceId, path: target.path });
     } catch {
+      untrackBatch([key]);
       pinned.value = new Set([...pinned.value].filter((item) => item !== key));
       items.value = items.value.filter((item) => item.key !== key);
     }
@@ -221,6 +270,7 @@ export const useCacheStore = defineStore("cache", () => {
       if (target) targets.push({ key, ...target });
     }
     if (targets.length === 0) return;
+    trackBatch(targets.map((target) => target.key));
     pinned.value = new Set([...pinned.value, ...targets.map((item) => item.key)]);
     items.value = [
       ...items.value.filter((item) => !targets.some((target) => target.key === item.key)),
@@ -232,6 +282,7 @@ export const useCacheStore = defineStore("cache", () => {
     );
     const failed = targets.filter((_, index) => results[index]?.status === "rejected").map((target) => target.key);
     if (failed.length > 0) {
+      untrackBatch(failed);
       pinned.value = new Set([...pinned.value].filter((key) => !failed.includes(key)));
       items.value = items.value.filter((item) => !failed.includes(item.key));
     }
@@ -241,6 +292,7 @@ export const useCacheStore = defineStore("cache", () => {
   async function unpin(key: string) {
     // Drop both badges right away: the cached check must disappear the moment
     // the user cancels, not on the next status poll.
+    untrackBatch([key]);
     pinned.value = new Set([...pinned.value].filter((item) => item !== key));
     cached.value = new Set([...cached.value].filter((item) => item !== key));
     items.value = items.value.filter((item) => item.key !== key);
@@ -260,6 +312,7 @@ export const useCacheStore = defineStore("cache", () => {
   async function unpinMany(keys: string[]) {
     const targets = keys.filter((key) => isPinned(key) || isCached(key));
     if (targets.length === 0) return;
+    untrackBatch(targets);
     pinned.value = new Set([...pinned.value].filter((key) => !targets.includes(key)));
     cached.value = new Set([...cached.value].filter((key) => !targets.includes(key)));
     items.value = items.value.filter((item) => !targets.includes(item.key));
