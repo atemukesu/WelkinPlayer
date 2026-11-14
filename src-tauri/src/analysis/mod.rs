@@ -37,7 +37,7 @@ use crate::streaming::stream_cache::StreamCache;
 /// Seconds decoded from the start *and* the end of each track.
 pub const WINDOW_SECS: f32 = 60.0;
 /// Bump when the analysis pipeline or cost model changes.
-pub const ALGORITHM_VERSION: u32 = 3;
+pub const ALGORITHM_VERSION: u32 = 4;
 /// On-disk document schema.
 pub const SCHEMA_VERSION: u32 = 1;
 /// Prefix that scopes transition documents away from audio and other objects.
@@ -916,65 +916,92 @@ fn mix_in(grid: Option<&BeatGrid>, duration: f32) -> f32 {
 
 /// Latest musical exit point for the outgoing track.
 ///
-/// ClubCraft's fallback: the last 32-beat phrase line at least 30 s before the
-/// end, staying inside the analysed tail window. When no full phrase fits,
-/// drop to 16 beats before the end.
+/// The fade should end with the track, so the Mix Out point sits on the last
+/// bar line before `duration - blend`. The old rule ("last phrase line at
+/// least 30 s before the end") left a long tail unplayed and forced the
+/// envelope to be stretched to fill it.
 fn mix_out(grid: Option<&BeatGrid>, duration: f32, tail_offset: f32) -> f32 {
     let Some(grid) = grid else {
         // No usable tempo: leave a safe two-bar-ish tail.
-        return (duration - 8.0).max(0.0);
+        return (duration - preferred_blend_secs(None)).max(0.0);
     };
     if duration <= 1.0 {
         return 0.0;
     }
-    let line = grid.phrase_at_or_before(duration - 30.0, PHRASE_BEATS);
-    if line >= tail_offset && line > 1.0 {
-        return line.min(duration);
-    }
-    // No full phrase inside the analysed tail: 16 beats before the end,
-    // clamped into the window we actually decoded.
-    let fallback = grid.time_at((grid.beats_at(duration).floor() - 16.0).max(0.0));
-    fallback.clamp(tail_offset.max(0.0).min(duration), duration)
+    let blend = preferred_blend_secs(Some(grid));
+    let line = grid.phrase_at_or_before((duration - blend).max(0.0), BEATS_PER_BAR);
+    line.clamp(tail_offset.max(0.0).min(duration), duration)
 }
 
-/// Pick the largest whole phrase (32, 16, 8 or 4 beats) that still fits before
-/// the outgoing track ends. Returns the fade length in seconds.
+/// Default crossfade target: four bars, shortened to fit the five-second cap.
+const BLEND_BARS: f32 = 4.0;
+/// Hard ceiling for the envelope, even at very slow tempos.
+const MAX_BLEND_SECS: f32 = 5.0;
+/// Below this the transition stops sounding like a mix.
+const MIN_BLEND_SECS: f32 = 2.0;
+
+/// Fade length that fits the track's tempo: four bars, capped at five seconds
+/// so even a 60 BPM track never spends 16 s overlapping. This is the
+/// *intended* length; the actual envelope may shrink when the tail is shorter.
+fn preferred_blend_secs(grid: Option<&BeatGrid>) -> f32 {
+    let Some(grid) = grid else {
+        return 8.0;
+    };
+    let bar = BEATS_PER_BAR * grid.period;
+    if !(bar.is_finite() && bar > 0.0) {
+        return 8.0;
+    }
+    let bars = (MAX_BLEND_SECS / bar).floor().clamp(1.0, BLEND_BARS);
+    (bars * bar).clamp(MIN_BLEND_SECS, MAX_BLEND_SECS)
+}
+
+/// Fade length in seconds: the tempo's preferred four-bar blend, shrunk to
+/// whole bars when the outgoing track has less tail than that.
+///
+/// Deliberately *not* "the largest phrase that fits": stretching the fade to
+/// fill a long tail is what made every 120 BPM track overlap for 16 s.
 fn blend_secs(grid: Option<&BeatGrid>, out_at: f32, duration: f32) -> f32 {
     let remaining = (duration - out_at).max(0.0);
     let Some(grid) = grid else {
         return remaining.clamp(1.5, 8.0);
     };
-    for beats in [PHRASE_BEATS, PHRASE_BEATS / 2.0, PHRASE_BEATS / 4.0, PHRASE_BEATS / 8.0] {
-        let secs = beats * grid.period;
-        if secs <= remaining + 1e-3 {
-            return secs;
-        }
+    let preferred = preferred_blend_secs(Some(grid));
+    if remaining + 1e-3 >= preferred {
+        return preferred;
     }
-    remaining
+    let bar = BEATS_PER_BAR * grid.period;
+    if !(bar.is_finite() && bar > 0.0) {
+        return remaining;
+    }
+    let bars = (remaining / bar).floor();
+    if bars >= 1.0 {
+        (bars * bar).min(remaining)
+    } else {
+        remaining
+    }
 }
 
-/// Phrase lines between `min` and `max`, in ascending order.
-fn phrase_lines(grid: &BeatGrid, min: f32, max: f32) -> Vec<f32> {
+/// Grid lines spaced `span` beats apart between `min` and `max`, ascending.
+fn grid_lines(grid: &BeatGrid, min: f32, max: f32, span: f32) -> Vec<f32> {
     let mut lines = Vec::new();
     if !(min.is_finite() && max.is_finite()) || max <= min {
         return lines;
     }
-    let step = PHRASE_BEATS * grid.period;
+    let step = span * grid.period;
     if !(step.is_finite() && step > 0.0) {
         return lines;
     }
-    let mut line = grid.phrase_at_or_after(min, PHRASE_BEATS);
-    while line <= max + 1e-3 && lines.len() < 8 {
+    let mut line = grid.phrase_at_or_after(min, span);
+    while line <= max + 1e-3 && lines.len() < 16 {
         lines.push(line);
         line += step;
     }
     lines
 }
 
-/// Candidate Mix Out points: phrase lines in the last half-minute, plus the
-/// conservative fallback. Searching instead of taking the first line lets the
-/// planner choose a later cue when the energy/timbre match allows it, so less
-/// of the outgoing track is skipped.
+/// Candidate Mix Out points: bar lines around the ideal start, plus the
+/// fallback. The search may only move a couple of bars: the fade should still
+/// finish at the end of the outgoing track, not thirty seconds early.
 fn mix_out_candidates(grid: Option<&BeatGrid>, duration: f32, tail_offset: f32) -> Vec<f32> {
     let fallback = mix_out(grid, duration, tail_offset);
     let Some(grid) = grid else {
@@ -983,9 +1010,13 @@ fn mix_out_candidates(grid: Option<&BeatGrid>, duration: f32, tail_offset: f32) 
     if duration <= 1.0 {
         return vec![0.0];
     }
-    let min = (duration - 30.0).max(tail_offset.max(0.0)).max(0.0);
-    let max = (duration - 1.0).max(min);
-    let mut lines = phrase_lines(grid, min, max);
+    let bar = BEATS_PER_BAR * grid.period;
+    let blend = preferred_blend_secs(Some(grid));
+    let min = (duration - blend - 2.0 * bar)
+        .max(tail_offset.max(0.0))
+        .max(0.0);
+    let max = (duration - MIN_BLEND_SECS).max(min);
+    let mut lines = grid_lines(grid, min, max, BEATS_PER_BAR);
     if !lines.iter().any(|line| (*line - fallback).abs() < 0.05) {
         lines.push(fallback);
     }
@@ -1008,7 +1039,7 @@ fn mix_in_candidates(grid: Option<&BeatGrid>, duration: f32) -> Vec<f32> {
         return vec![0.0];
     }
     let max = (duration * 0.4).clamp(15.0, 45.0);
-    let mut lines = phrase_lines(grid, 15.0, max);
+    let mut lines = grid_lines(grid, 15.0, max, PHRASE_BEATS);
     lines.retain(|line| line.is_finite() && *line <= duration);
     if lines.is_empty() {
         lines.push(fallback);
@@ -1082,12 +1113,21 @@ fn cue_score(
         (Some(a), Some(b)) => ((a - b).abs() / 18.0).min(1.0),
         _ => 0.0,
     };
-    // Prefer later Mix Out (less of the outgoing track skipped) and earlier
-    // Mix In (less of the intro skipped) when continuity is otherwise equal.
-    let remaining_penalty = ((out.duration - out_at).max(0.0) / 45.0).min(1.0) * 0.05;
+    // Prefer the envelope to finish with the outgoing track: stopping early
+    // leaves a silent tail and skips music. Also avoid a transition so short
+    // that it sounds like a cut.
+    let gap = (out.duration - (out_at + blend)).max(0.0);
+    let gap_penalty = (gap / 8.0).min(1.0) * 0.12;
+    let short_penalty = ((MIN_BLEND_SECS - blend).max(0.0) / MIN_BLEND_SECS) * 0.15;
+    // Prefer an earlier Mix In (less of the intro skipped) when continuity is
+    // otherwise equal.
     let intro_penalty = (in_at.max(0.0) / 45.0).min(1.0) * 0.05;
-    let score =
-        energy_gap * 0.50 + timbre_gap * 0.30 + loud_gap * 0.15 + remaining_penalty + intro_penalty;
+    let score = energy_gap * 0.50
+        + timbre_gap * 0.30
+        + loud_gap * 0.15
+        + gap_penalty
+        + short_penalty
+        + intro_penalty;
     (score, out_db, in_db)
 }
 
@@ -1123,7 +1163,7 @@ fn plan_transition(out: &TrackAnalysis, input: &TrackAnalysis) -> TransitionPlan
             let mut best: Option<(f32, f32, f32, f32, Option<f32>, Option<f32>)> = None;
             for candidate_out in outs {
                 let candidate_blend = blend_secs(Some(out_grid), candidate_out, out.duration);
-                if candidate_blend < 0.35 {
+                if candidate_blend < MIN_BLEND_SECS {
                     continue;
                 }
                 for candidate_in in &ins {
@@ -1493,18 +1533,21 @@ mod tests {
     }
 
     #[test]
-    fn mix_out_uses_the_last_phrase_at_least_30s_before_the_end() {
+    fn mix_out_starts_the_fade_on_the_tracks_final_bar() {
         let g = grid(120.0, 0.0);
-        // Phrase lines at 0, 16, ... 160; 160 is the last one <= 170.
-        assert!((mix_out(Some(&g), 200.0, 120.0) - 160.0).abs() < 1e-3);
+        // Four seconds at 120 BPM = two bars; the last bar line before 196 is 196.
+        assert!((mix_out(Some(&g), 200.0, 120.0) - 196.0).abs() < 1e-3);
     }
 
     #[test]
-    fn blend_uses_whole_phrases_that_fit() {
+    fn blend_is_capped_at_five_seconds() {
         let g = grid(120.0, 0.0);
-        assert!((blend_secs(Some(&g), 184.0, 200.0) - 16.0).abs() < 1e-3);
-        // Only 10 s remain: a 16-beat (8 s) phrase fits, 32 beats do not.
-        assert!((blend_secs(Some(&g), 190.0, 200.0) - 8.0).abs() < 1e-3);
+        // Two bars at 120 BPM = 4 s, under the 5 s ceiling. Never 16 s.
+        assert!((blend_secs(Some(&g), 184.0, 200.0) - 4.0).abs() < 1e-3);
+        assert!((blend_secs(Some(&g), 190.0, 200.0) - 4.0).abs() < 1e-3);
+        assert!((blend_secs(Some(&g), 194.0, 200.0) - 4.0).abs() < 1e-3);
+        // Less tail: shrink to whole bars instead of stretching the envelope.
+        assert!((blend_secs(Some(&g), 197.0, 200.0) - 2.0).abs() < 1e-3);
     }
 
     #[test]
@@ -1524,7 +1567,7 @@ mod tests {
     }
 
     #[test]
-    fn cue_search_moves_the_mix_out_later_when_continuity_allows() {
+    fn cue_search_keeps_the_fade_anchored_to_the_track_end() {
         let mut out = track(120.0, "8A");
         out.tail_offset = 140.0;
         out.tail.beats = vec![0.0, 0.5];
@@ -1540,8 +1583,12 @@ mod tests {
         let plan = plan_transition(&out, &input);
         let fallback = mix_out(Some(&grid(120.0, 140.0)), 200.0, 140.0);
         assert_eq!(plan.mode, "strict");
-        assert!(plan.out_at > fallback);
+        // The envelope stays anchored to the track's end and is capped at five
+        // seconds instead of being stretched to fill the tail.
+        assert!(plan.out_at >= fallback - 1e-3);
         assert!(plan.out_at + plan.blend_secs <= 200.0 + 1e-3);
+        assert!(plan.out_at + plan.blend_secs >= 198.0);
+        assert!(plan.blend_secs <= MAX_BLEND_SECS);
         assert!((plan.in_gain - 1.0).abs() < 1e-3);
         assert!((plan.tempo_ratio - 1.0).abs() < 1e-3);
     }
@@ -1552,6 +1599,8 @@ mod tests {
         assert_eq!(plan.mode, "relaxed");
         assert!(plan.out_at > 0.0);
         assert!(plan.blend_secs > 0.0);
+        // 120 BPM used to pick a 32-beat / 16 s phrase just because it fit.
+        assert!(plan.blend_secs <= MAX_BLEND_SECS);
     }
 
     #[test]
