@@ -48,32 +48,54 @@ export const useSmartTransitionStore = defineStore("smartTransition", () => {
   const summaries = ref<Record<string, SmartTransitionSummary>>({});
   const progress = ref<Record<string, ProgressState>>({});
   const running = ref<Record<string, boolean>>({});
+  const cancelling = ref<Record<string, boolean>>({});
   const loading = ref<Record<string, boolean>>({});
   const errors = ref<Record<string, string | null>>({});
 
-  let unlisten: UnlistenFn | null = null;
+  let unlisten: UnlistenFn[] = [];
   let listening: Promise<void> | null = null;
 
-  /** Subscribe once to the Rust progress events. */
+  /** Subscribe once to the Rust progress and partial-result events. */
   function ensureListener(): Promise<void> {
     if (listening) return listening;
-    listening = listen<AnalysisProgress>("smart-transition:progress", (event) => {
-      const payload = event.payload;
-      if (!payload?.playlistId) return;
-      progress.value = {
-        ...progress.value,
-        [payload.playlistId]: {
-          done: payload.done,
-          total: payload.total,
-          phase: payload.phase,
-        },
-      };
-    })
-      .then((stop) => {
-        unlisten = stop;
+    listening = Promise.all([
+      listen<AnalysisProgress>("smart-transition:progress", (event) => {
+        const payload = event.payload;
+        if (!payload?.playlistId) return;
+        progress.value = {
+          ...progress.value,
+          [payload.playlistId]: {
+            done: payload.done,
+            total: payload.total,
+            phase: payload.phase,
+          },
+        };
+      }),
+      listen<SmartTransitionSummary>("smart-transition:partial", (event) => {
+        const payload = event.payload;
+        if (!payload?.playlistId) return;
+        // Guard against a late snapshot overwriting the finished document of
+        // the same run (both share a revision).
+        const current = summaries.value[payload.playlistId];
+        if (
+          payload.incomplete &&
+          current &&
+          !current.incomplete &&
+          current.revision >= payload.revision
+        ) {
+          return;
+        }
+        // Live snapshots are shown as they arrive; they are marked incomplete
+        // and never update the profile pointer, so they cannot be applied or
+        // used for playback until the analysis finishes.
+        summaries.value = { ...summaries.value, [payload.playlistId]: payload };
+      }),
+    ])
+      .then((stops) => {
+        unlisten = stops;
       })
       .catch((error) => {
-        console.warn("[welkin] smart-transition progress listener failed", error);
+        console.warn("[welkin] smart-transition listener failed", error);
         listening = null;
       });
     return listening;
@@ -81,6 +103,10 @@ export const useSmartTransitionStore = defineStore("smartTransition", () => {
 
   function isBusy(playlistId: string): boolean {
     return running.value[playlistId] === true;
+  }
+
+  function isCancelling(playlistId: string): boolean {
+    return cancelling.value[playlistId] === true;
   }
 
   function summaryFor(playlistId: string): SmartTransitionSummary | null {
@@ -146,6 +172,9 @@ export const useSmartTransitionStore = defineStore("smartTransition", () => {
       const summary = await loadSmartTransition(playlistId);
       if (summary) {
         summaries.value = { ...summaries.value, [playlistId]: summary };
+        // A partial snapshot is only resumable context; it must not mark the
+        // playlist as analysed or flip an existing badge to ready.
+        if (summary.incomplete) return summary;
         const playlist = profile.playlists.find((item) => item.id === playlistId);
         if (playlist) {
           const previous = playlist.smartTransition;
@@ -183,6 +212,7 @@ export const useSmartTransitionStore = defineStore("smartTransition", () => {
     }
     const previous = summaries.value[playlistId]?.previousOrder;
     running.value = { ...running.value, [playlistId]: true };
+    cancelling.value = { ...cancelling.value, [playlistId]: false };
     clearError(playlistId);
     try {
       const summary = await analyzePlaylist(playlistId, playlist.name, inputs, {
@@ -200,18 +230,25 @@ export const useSmartTransitionStore = defineStore("smartTransition", () => {
       });
       return summary;
     } catch (error) {
+      // A user cancellation is not an error: the partial snapshot emitted so
+      // far stays visible and can be resumed later.
+      if (cancelling.value[playlistId]) return null;
       const message = error instanceof Error ? error.message : String(error);
       errors.value = { ...errors.value, [playlistId]: message };
       return null;
     } finally {
       running.value = { ...running.value, [playlistId]: false };
+      cancelling.value = { ...cancelling.value, [playlistId]: false };
     }
   }
 
   async function cancel(playlistId: string): Promise<void> {
+    if (!running.value[playlistId] || cancelling.value[playlistId]) return;
+    cancelling.value = { ...cancelling.value, [playlistId]: true };
     try {
       await cancelSmartTransition(playlistId);
     } catch (error) {
+      cancelling.value = { ...cancelling.value, [playlistId]: false };
       console.warn("[welkin] failed to cancel smart transition", error);
     }
   }
@@ -220,7 +257,7 @@ export const useSmartTransitionStore = defineStore("smartTransition", () => {
   function applyOrder(playlistId: string): boolean {
     const playlist = profile.playlists.find((item) => item.id === playlistId);
     const summary = summaries.value[playlistId];
-    if (!playlist || !summary) return false;
+    if (!playlist || !summary || summary.incomplete) return false;
     const tracks = toPlaylistEntries(playlist, summary.order);
     profile.updatePlaylist(playlistId, {
       tracks,
@@ -239,7 +276,7 @@ export const useSmartTransitionStore = defineStore("smartTransition", () => {
   function enableOnly(playlistId: string): boolean {
     const playlist = profile.playlists.find((item) => item.id === playlistId);
     const summary = summaries.value[playlistId];
-    if (!playlist || !summary) return false;
+    if (!playlist || !summary || summary.incomplete) return false;
     profile.updatePlaylist(playlistId, {
       smartTransition: {
         enabled: true,
@@ -331,8 +368,8 @@ export const useSmartTransitionStore = defineStore("smartTransition", () => {
   );
 
   function dispose() {
-    unlisten?.();
-    unlisten = null;
+    unlisten.forEach((stop) => stop());
+    unlisten = [];
     listening = null;
   }
 
@@ -340,10 +377,12 @@ export const useSmartTransitionStore = defineStore("smartTransition", () => {
     summaries,
     progress,
     running,
+    cancelling,
     loading,
     enabledCount,
     ensureListener,
     isBusy,
+    isCancelling,
     summaryFor,
     progressFor,
     errorFor,

@@ -4,7 +4,7 @@
 -->
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, watch } from "vue";
+import { computed, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { AudioLines, LoaderCircle, Sparkles, RotateCcw, Trash2, X } from "@lucide/vue";
 import { useProfileStore, tracksForPaths } from "../stores/profile";
@@ -26,6 +26,8 @@ const playlist = computed(() => profile.playlists.find((item) => item.id === pro
 const summary = computed(() => smart.summaryFor(props.playlistId));
 const progress = computed(() => smart.progressFor(props.playlistId));
 const busy = computed(() => smart.isBusy(props.playlistId));
+const cancelling = computed(() => smart.isCancelling(props.playlistId));
+const incomplete = computed(() => summary.value?.incomplete === true);
 const error = computed(() => smart.errorFor(props.playlistId));
 const percent = computed(() => {
   const value = progress.value;
@@ -55,6 +57,10 @@ const transitionRows = computed(() => summary.value?.transitions.slice(0, 10) ??
 
 function start() {
   void smart.analyze(props.playlistId);
+}
+
+function cancelRun() {
+  void smart.cancel(props.playlistId);
 }
 
 function apply() {
@@ -98,10 +104,6 @@ watch(
   },
   { immediate: true },
 );
-
-onBeforeUnmount(() => {
-  if (busy.value) void smart.cancel(props.playlistId);
-});
 </script>
 
 <template>
@@ -129,13 +131,17 @@ onBeforeUnmount(() => {
               <div class="h-full bg-accent transition-[width] duration-300" :style="{ width: `${percent}%` }" />
             </div>
             <p class="text-xs text-dim">{{ t("library.playlists.smart.analyzingHint") }}</p>
+            <p class="border border-accent/30 bg-accent/5 px-3 py-2 text-xs text-accent">{{ t("library.playlists.smart.backgroundHint") }}</p>
           </div>
 
-          <div v-else-if="error" class="border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-400">
+          <div v-if="error && !busy" class="border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-400">
             {{ error === "no-playable-tracks" ? t("library.playlists.smart.noTracks") : error }}
           </div>
 
-          <template v-else-if="summary">
+          <template v-if="summary">
+            <div v-if="incomplete && !busy" class="mb-3 border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-400">
+              {{ t("library.playlists.smart.partial", { analyzed: summary.stats.analyzed, total: progress?.total ?? (summary.previousOrder.length || summary.order.length) }) }}
+            </div>
             <div class="flex flex-wrap items-center gap-2 text-xs text-dim">
               <span class="border border-line px-2 py-1 font-mono uppercase tracking-wider">{{ t("library.playlists.smart.stats", { analyzed: summary.stats.analyzed, transitions: summary.transitions.length }) }}</span>
               <span v-if="summary.stats.reused" class="border border-line px-2 py-1 font-mono uppercase tracking-wider">{{ t("library.playlists.smart.reused", { count: summary.stats.reused }) }}</span>
@@ -168,21 +174,24 @@ onBeforeUnmount(() => {
             </section>
           </template>
 
-          <div v-else class="grid place-items-center gap-3 border border-dashed border-line px-4 py-10 text-center">
+          <div v-if="!busy && !error && !summary" class="grid place-items-center gap-3 border border-dashed border-line px-4 py-10 text-center">
             <Sparkles :size="22" class="text-accent" />
             <p class="max-w-sm text-sm text-muted">{{ t("library.playlists.smart.emptyHint") }}</p>
           </div>
         </div>
 
         <footer class="flex flex-wrap items-center gap-2 border-t border-line px-5 py-3">
-          <button v-if="busy" type="button" class="ak-clip-tr flex h-9 items-center gap-2 border border-line px-3 text-xs font-semibold transition-colors hover:border-accent hover:text-accent" @click="smart.cancel(props.playlistId)">{{ t("library.playlists.smart.cancel") }}</button>
+          <button v-if="busy" type="button" :disabled="cancelling" class="ak-clip-tr flex h-9 items-center gap-2 border border-line px-3 text-xs font-semibold transition-colors hover:border-accent hover:text-accent disabled:cursor-wait disabled:opacity-60" @click="cancelRun">
+            <LoaderCircle v-if="cancelling" :size="13" class="animate-spin" />
+            {{ cancelling ? t("library.playlists.smart.cancelling") : t("library.playlists.smart.cancel") }}
+          </button>
           <template v-else>
             <button type="button" class="ak-clip-tr flex h-9 items-center gap-2 bg-accent px-4 text-xs font-bold text-accent-fg transition-transform hover:scale-[1.02] active:scale-95" @click="start">
-              <Sparkles :size="14" />{{ summary ? t("library.playlists.smart.reanalyze") : t("library.playlists.smart.start") }}
+              <Sparkles :size="14" />{{ incomplete ? t("library.playlists.smart.resume") : summary ? t("library.playlists.smart.reanalyze") : t("library.playlists.smart.start") }}
             </button>
-            <button v-if="summary" type="button" class="ak-clip-tr flex h-9 items-center gap-2 border border-line px-3 text-xs font-semibold transition-colors hover:border-accent hover:text-accent" @click="apply">{{ t("library.playlists.smart.apply") }}</button>
-            <button v-if="summary" type="button" class="ak-clip-tr flex h-9 items-center gap-2 border border-line px-3 text-xs font-semibold transition-colors hover:border-accent hover:text-accent" @click="enableOnly">{{ t("library.playlists.smart.enableOnly") }}</button>
-            <button v-if="summary && summary.previousOrder.length" type="button" class="ak-clip-tr flex h-9 items-center gap-2 border border-line px-3 text-xs font-semibold transition-colors hover:border-accent hover:text-accent" @click="undo"><RotateCcw :size="14" />{{ t("library.playlists.smart.undo") }}</button>
+            <button v-if="summary && !incomplete" type="button" class="ak-clip-tr flex h-9 items-center gap-2 border border-line px-3 text-xs font-semibold transition-colors hover:border-accent hover:text-accent" @click="apply">{{ t("library.playlists.smart.apply") }}</button>
+            <button v-if="summary && !incomplete" type="button" class="ak-clip-tr flex h-9 items-center gap-2 border border-line px-3 text-xs font-semibold transition-colors hover:border-accent hover:text-accent" @click="enableOnly">{{ t("library.playlists.smart.enableOnly") }}</button>
+            <button v-if="summary && !incomplete && summary.previousOrder.length" type="button" class="ak-clip-tr flex h-9 items-center gap-2 border border-line px-3 text-xs font-semibold transition-colors hover:border-accent hover:text-accent" @click="undo"><RotateCcw :size="14" />{{ t("library.playlists.smart.undo") }}</button>
             <button v-if="summary" type="button" class="ml-auto grid h-9 w-9 place-items-center border border-line text-dim transition-colors hover:border-red-500/60 hover:text-red-400" :title="t('library.playlists.smart.remove')" @click="remove"><Trash2 :size="14" /></button>
           </template>
         </footer>

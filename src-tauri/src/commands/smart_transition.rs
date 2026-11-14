@@ -85,8 +85,19 @@ fn local_path(app: &AppHandle, file: &str) -> PathBuf {
     transitions_dir(app).join(file)
 }
 
+/// In-progress snapshots live next to the final document but with a
+/// `.partial` suffix, so a cancelled re-analysis never clobbers a finished
+/// analysis and can still be resumed.
+fn partial_path(app: &AppHandle, playlist_id: &str) -> PathBuf {
+    transitions_dir(app).join(format!("{}.partial", file_for_playlist(playlist_id)))
+}
+
 fn read_local(app: &AppHandle, file: &str) -> Option<String> {
     std::fs::read_to_string(local_path(app, file)).ok()
+}
+
+fn read_partial(app: &AppHandle, playlist_id: &str) -> Option<String> {
+    std::fs::read_to_string(partial_path(app, playlist_id)).ok()
 }
 
 fn write_local(app: &AppHandle, file: &str, text: &str) -> Result<(), AppError> {
@@ -94,6 +105,22 @@ fn write_local(app: &AppHandle, file: &str, text: &str) -> Result<(), AppError> 
     std::fs::create_dir_all(&dir)?;
     std::fs::write(dir.join(file), text)?;
     Ok(())
+}
+
+fn write_partial(app: &AppHandle, playlist_id: &str, text: &str) -> Result<(), AppError> {
+    let dir = transitions_dir(app);
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(partial_path(app, playlist_id), text)?;
+    Ok(())
+}
+
+fn remove_partial(app: &AppHandle, playlist_id: &str) {
+    let path = partial_path(app, playlist_id);
+    if path.exists() {
+        if let Err(error) = std::fs::remove_file(&path) {
+            log::warn!("smart-transition: failed to remove partial snapshot: {error}");
+        }
+    }
 }
 
 fn parse_document(text: &str) -> Option<AnalysisDocument> {
@@ -104,6 +131,37 @@ fn parse_document(text: &str) -> Option<AnalysisDocument> {
     Some(document)
 }
 
+/// Merge a finished document with a partial snapshot, keeping the newest
+/// entry for each track so a resumed run reuses every feature it already has.
+fn merge_cached(
+    full: Option<AnalysisDocument>,
+    partial: Option<AnalysisDocument>,
+) -> Option<AnalysisDocument> {
+    match (full, partial) {
+        (Some(mut full), Some(partial)) => {
+            let mut positions: HashMap<String, usize> = full
+                .tracks
+                .iter()
+                .enumerate()
+                .map(|(index, track)| (track.key.clone(), index))
+                .collect();
+            for track in partial.tracks {
+                match positions.get(&track.key) {
+                    Some(index) => full.tracks[*index] = track,
+                    None => {
+                        positions.insert(track.key.clone(), full.tracks.len());
+                        full.tracks.push(track);
+                    }
+                }
+            }
+            full.revision = full.revision.max(partial.revision);
+            Some(full)
+        }
+        (None, partial) => partial,
+        (full, None) => full,
+    }
+}
+
 /// Read a playlist's document, local cache first. The remote copy is preferred
 /// when its revision/updated-at is newer, then written back to the cache.
 async fn load_document(
@@ -111,7 +169,20 @@ async fn load_document(
     playlist_id: &str,
 ) -> Result<Option<(AnalysisDocument, String)>, AppError> {
     let file = file_for_playlist(playlist_id);
-    let local = read_local(app, &file).and_then(|text| parse_document(&text));
+    let full = read_local(app, &file).and_then(|text| parse_document(&text));
+    let partial = read_partial(app, playlist_id).and_then(|text| parse_document(&text));
+    // A partial snapshot with a newer revision means the last run was
+    // cancelled or is still running; prefer it so the UI reflects that.
+    let local = match (full, partial) {
+        (Some(full), Some(partial)) => {
+            if partial.revision >= full.revision {
+                Some(partial)
+            } else {
+                Some(full)
+            }
+        }
+        (full, partial) => full.or(partial),
+    };
     let client = match sync_backend(app) {
         Ok(client) => client,
         Err(error) => {
@@ -213,7 +284,9 @@ pub async fn smart_transition_analyze(
     let flag = jobs.begin(&playlist_id);
     let cancel = flag.clone();
     let file = file_for_playlist(&playlist_id);
-    let cached = read_local(&app, &file).and_then(|text| parse_document(&text));
+    let full = read_local(&app, &file).and_then(|text| parse_document(&text));
+    let partial = read_partial(&app, &playlist_id).and_then(|text| parse_document(&text));
+    let cached = merge_cached(full, partial);
     let revision = cached
         .as_ref()
         .map(|document| document.revision + 1)
@@ -236,8 +309,9 @@ pub async fn smart_transition_analyze(
         let playlist_name = playlist_name.clone();
         let fixed_first = fixed_first.clone();
         tauri::async_runtime::spawn_blocking(move || {
-            let progress_app = emit_app;
-            let progress_id = emit_id;
+            let progress_app = emit_app.clone();
+            let progress_id = emit_id.clone();
+            let partial_app = emit_app;
             analyze_playlist(
                 &app,
                 &cache,
@@ -265,6 +339,31 @@ pub async fn smart_transition_analyze(
                         },
                     );
                 },
+                &move |document| {
+                    // Persist the in-progress snapshot locally so a cancel or a
+                    // closed dialog can resume without re-analysing. It is not
+                    // uploaded and is marked `incomplete`, so it is never
+                    // applied or used for playback.
+                    let file = file_for_playlist(&document.playlist_id);
+                    match serde_json::to_string(document) {
+                        Ok(text) => {
+                            if let Err(error) =
+                                write_partial(&partial_app, &document.playlist_id, &text)
+                            {
+                                log::warn!(
+                                    "smart-transition: failed to write partial snapshot: {error}"
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            log::warn!("smart-transition: partial snapshot encode failed: {error}");
+                        }
+                    }
+                    let _ = partial_app.emit(
+                        "smart-transition:partial",
+                        document.summary(file, "local"),
+                    );
+                },
             )
         })
     };
@@ -276,6 +375,7 @@ pub async fn smart_transition_analyze(
     // Keep the revision monotonic even if the task was cancelled midway.
     document.revision = revision;
     let (file, source) = store_document(&app, &document).await?;
+    remove_partial(&app, &playlist_id);
     Ok(document.summary(file, &source))
 }
 
@@ -307,6 +407,9 @@ pub async fn smart_transition_plans(
     let Some(document) = read_local(&app, &file).and_then(|text| parse_document(&text)) else {
         return Ok(Vec::new());
     };
+    if document.incomplete {
+        return Ok(Vec::new());
+    }
     Ok(document.transitions)
 }
 
@@ -320,6 +423,7 @@ pub async fn smart_transition_delete(app: AppHandle, playlist_id: String) -> Res
             log::warn!("smart-transition: failed to remove local {file}: {error}");
         }
     }
+    remove_partial(&app, &playlist_id);
     if let Ok(Some(client)) = sync_backend(&app) {
         if let Err(error) = client.delete(&file).await {
             log::warn!("smart-transition: failed to remove remote {file}: {error}");

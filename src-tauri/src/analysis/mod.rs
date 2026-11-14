@@ -216,6 +216,10 @@ pub struct AnalysisDocument {
     #[serde(default)]
     pub transitions: Vec<TransitionPlan>,
     pub stats: AnalysisStats,
+    /// `true` for an in-progress snapshot: it holds the tracks analysed so far
+    /// and must never be applied or uploaded, only resumed from.
+    #[serde(default)]
+    pub incomplete: bool,
 }
 
 /// Summary returned to the webview after analysis/load.
@@ -230,6 +234,8 @@ pub struct AnalysisSummary {
     pub previous_order: Vec<String>,
     pub transitions: Vec<TransitionPreview>,
     pub stats: AnalysisStats,
+    /// `true` when this is a partial snapshot rather than a finished analysis.
+    pub incomplete: bool,
     /// `remote`, `local` or `none` — where the document came from.
     pub source: String,
 }
@@ -273,6 +279,7 @@ impl AnalysisDocument {
             previous_order: self.previous_order.clone(),
             transitions,
             stats: self.stats.clone(),
+            incomplete: self.incomplete,
             source: source.to_string(),
         }
     }
@@ -361,16 +368,33 @@ fn read_frames(
     samples
 }
 
+fn cancelled(cancel: &AtomicBool) -> bool {
+    cancel.load(Ordering::Relaxed)
+}
+
+fn cancel_error() -> AppError {
+    AppError::Other("分析已取消".to_string())
+}
+
 /// Decode the head and tail windows of one track and analyse each with `automix`.
+///
+/// `cancel` is polled between the expensive stages (fetch, head decode, tail
+/// decode, each `automix` pass) so a running job stops within a few hundred
+/// milliseconds instead of waiting for the whole track.
 fn analyse_track(
     app: &AppHandle,
     cache: &Arc<StreamCache>,
     manual: &Arc<ManualCache>,
     input: &TrackInput,
+    cancel: &AtomicBool,
 ) -> Result<TrackAnalysis, AppError> {
+    if cancelled(cancel) {
+        return Err(cancel_error());
+    }
     let Some((source_id, path)) = split_key(&input.key) else {
         return Err(AppError::invalid_argument("key", "不是有效的曲目键"));
     };
+    let started = std::time::Instant::now();
     let (reader, byte_len) = open_track_for_analysis(
         app,
         cache,
@@ -381,6 +405,10 @@ fn analyse_track(
         // tail seek rebases the downloader onto the final minute after this.
         WINDOW_SECS as f64 + 10.0,
     )?;
+    if cancelled(cancel) {
+        return Err(cancel_error());
+    }
+    let fetch_elapsed = started.elapsed();
     let mut decoder = build_decoder(reader, byte_len)?;
     let channels = decoder.channels().max(1);
     let rate = decoder.sample_rate().max(1);
@@ -395,6 +423,10 @@ fn analyse_track(
     if head_samples.is_empty() {
         return Err(AppError::other("无法解码音频"));
     }
+    if cancelled(cancel) {
+        return Err(cancel_error());
+    }
+    let head_elapsed = started.elapsed();
 
     // Tail: seek to duration - window and decode the rest. When the track is
     // shorter than the window the head already covers it.
@@ -413,6 +445,10 @@ fn analyse_track(
     } else {
         head_samples.clone()
     };
+    if cancelled(cancel) {
+        return Err(cancel_error());
+    }
+    let decode_elapsed = started.elapsed();
     // A failed seek still leaves a usable (if less precise) tail.
     let tail_samples = if tail_samples.is_empty() {
         head_samples.clone()
@@ -431,12 +467,28 @@ fn analyse_track(
         sample_rate: rate as i32,
         channels: channels as i32,
     };
+    if cancelled(cancel) {
+        return Err(cancel_error());
+    }
     let head_features = analyzer
         .analyze(&head_buffer)
         .map_err(|error| AppError::other(error.to_string()))?;
+    if cancelled(cancel) {
+        return Err(cancel_error());
+    }
     let tail_features = analyzer
         .analyze(&tail_buffer)
         .map_err(|error| AppError::other(error.to_string()))?;
+
+    log::info!(
+        "smart-transition: analysed {} in {}ms (fetch {}ms, head {}ms, decode {}ms, dsp {}ms)",
+        input.key,
+        started.elapsed().as_millis(),
+        fetch_elapsed.as_millis(),
+        head_elapsed.as_millis() - fetch_elapsed.as_millis(),
+        decode_elapsed.as_millis() - head_elapsed.as_millis(),
+        started.elapsed().as_millis() - decode_elapsed.as_millis(),
+    );
 
     let head = EdgeFeatures::from_features(&head_features);
     let tail = EdgeFeatures::from_features(&tail_features);
@@ -700,110 +752,55 @@ fn plan_transition(out: &TrackAnalysis, input: &TrackAnalysis) -> TransitionPlan
     }
 }
 
-/// Analyse a playlist, reusing cached per-track features where possible.
+/// Build the analysis document for a set of tracks.
 ///
-/// `cached` is a previously stored document for the same playlist; tracks whose
-/// key already appears there are not decoded again. The order is recomputed
-/// from the feature set, so an order-only change is a pure in-memory operation.
+/// `smart_order` selects the Held-Karp ordering (finished analysis) versus the
+/// input order used by in-progress snapshots, which keeps partial updates cheap
+/// even for large playlists.
 #[allow(clippy::too_many_arguments)]
-pub fn analyze_playlist(
-    app: &AppHandle,
-    cache: &Arc<StreamCache>,
-    manual: &Arc<ManualCache>,
+fn assemble_document(
     playlist_id: &str,
     playlist_name: &str,
-    inputs: &[TrackInput],
-    previous_order: Vec<String>,
-    cached: Option<&AnalysisDocument>,
-    fixed_first: Option<&str>,
     revision: u64,
-    cancel: &AtomicBool,
-    progress: &dyn Fn(usize, usize),
-) -> Result<AnalysisDocument, AppError> {
-    let mut reusable: HashMap<String, TrackAnalysis> = cached
-        .map(|document| {
-            document
-                .tracks
-                .iter()
-                .map(|track| (track.key.clone(), track.clone()))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let total = inputs.len();
-    let mut tracks = Vec::with_capacity(total);
-    let mut stats = AnalysisStats::default();
-    for (index, input) in inputs.iter().enumerate() {
-        if cancel.load(Ordering::Relaxed) {
-            return Err(AppError::Other("分析已取消".to_string()));
-        }
-        progress(index, total);
-        if let Some(track) = reusable.remove(&input.key) {
-            if track.usable() {
-                // Refresh the title in case it was edited.
-                let mut track = track;
-                track.title = input.title.clone();
-                stats.reused += 1;
-                stats.analyzed += 1;
-                tracks.push(track);
-                continue;
-            }
-        }
-        match analyse_track(app, cache, manual, input) {
-            Ok(track) => {
-                if track.status != "ok" {
-                    stats.low_confidence += 1;
-                }
-                stats.analyzed += 1;
-                tracks.push(track);
-            }
-            Err(error) => {
-                log::warn!("smart-transition: {} failed: {error}", input.key);
-                stats.skipped += 1;
-                tracks.push(TrackAnalysis {
-                    key: input.key.clone(),
-                    title: input.title.clone(),
-                    duration: 0.0,
-                    bpm: 0.0,
-                    key_camelot: String::new(),
-                    energy: 0.0,
-                    head: EdgeFeatures::default(),
-                    tail: EdgeFeatures::default(),
-                    status: "skipped".into(),
-                    error: Some(error.to_string()),
-                });
-            }
-        }
-    }
-    progress(total, total);
-
-    // Usable tracks take part in ordering; skipped ones are appended in input
-    // order so the playlist never loses an entry.
-    let usable_indices: Vec<usize> = tracks
-        .iter()
-        .enumerate()
-        .filter(|(_, track)| track.usable())
-        .map(|(index, _)| index)
-        .collect();
-    let usable_refs: Vec<&TrackAnalysis> =
-        usable_indices.iter().map(|index| &tracks[*index]).collect();
-    let matrix = cost_matrix(&usable_refs);
-    let fixed_index = fixed_first.and_then(|key| {
-        usable_indices
+    inputs: &[TrackInput],
+    tracks: Vec<TrackAnalysis>,
+    previous_order: Vec<String>,
+    stats: AnalysisStats,
+    fixed_first: Option<&str>,
+    smart_order: bool,
+) -> AnalysisDocument {
+    let order: Vec<String> = if smart_order {
+        // Usable tracks take part in ordering; skipped ones are appended in
+        // input order so the playlist never loses an entry.
+        let usable_indices: Vec<usize> = tracks
             .iter()
-            .position(|index| tracks[*index].key == key)
-    });
-    let order_indices = best_order(&matrix, fixed_index);
-
-    let mut order: Vec<String> = order_indices
-        .iter()
-        .map(|index| tracks[usable_indices[*index]].key.clone())
-        .collect();
-    for track in tracks.iter() {
-        if !track.usable() {
-            order.push(track.key.clone());
+            .enumerate()
+            .filter(|(_, track)| track.usable())
+            .map(|(index, _)| index)
+            .collect();
+        let usable_refs: Vec<&TrackAnalysis> =
+            usable_indices.iter().map(|index| &tracks[*index]).collect();
+        let matrix = cost_matrix(&usable_refs);
+        let fixed_index = fixed_first.and_then(|key| {
+            usable_indices
+                .iter()
+                .position(|index| tracks[*index].key == key)
+        });
+        let order_indices = best_order(&matrix, fixed_index);
+        let mut order: Vec<String> = order_indices
+            .iter()
+            .map(|index| tracks[usable_indices[*index]].key.clone())
+            .collect();
+        for track in tracks.iter() {
+            if !track.usable() {
+                order.push(track.key.clone());
+            }
         }
-    }
+        order
+    } else {
+        // In-progress snapshot: keep the input order, no TSP solve.
+        tracks.iter().map(|track| track.key.clone()).collect()
+    };
 
     // Generate a transition for each adjacent usable pair.
     let by_key: HashMap<&str, &TrackAnalysis> = tracks
@@ -821,7 +818,6 @@ pub fn analyze_playlist(
         }
     }
 
-    let track_inputs: Vec<TrackInput> = inputs.to_vec();
     let mut document = AnalysisDocument {
         schema: SCHEMA_VERSION,
         algorithm_version: ALGORITHM_VERSION,
@@ -829,20 +825,147 @@ pub fn analyze_playlist(
         playlist_name: playlist_name.to_string(),
         updated_at: now_ms(),
         revision,
-        track_set_hash: track_set_hash(&track_inputs),
+        track_set_hash: track_set_hash(inputs),
         order_hash: order_hash(&order),
         tracks,
         order,
         previous_order,
         transitions,
         stats,
+        incomplete: !smart_order,
     };
     // Keep `previousOrder` meaningfully pointing at the pre-analysis order.
     if document.previous_order.is_empty() {
         document.previous_order = inputs.iter().map(|input| input.key.clone()).collect();
     }
-    Ok(document)
+    document
 }
+
+/// Analyse a playlist, reusing cached per-track features where possible.
+///
+/// `cached` is a previously stored document for the same playlist; tracks whose
+/// key already appears there are not decoded again. The order is recomputed
+/// from the feature set, so an order-only change is a pure in-memory operation.
+///
+/// `partial` is called after every track with the tracks analysed so far, so the
+/// UI can show live results and a cancelled run still leaves a resumable file.
+#[allow(clippy::too_many_arguments)]
+pub fn analyze_playlist(
+    app: &AppHandle,
+    cache: &Arc<StreamCache>,
+    manual: &Arc<ManualCache>,
+    playlist_id: &str,
+    playlist_name: &str,
+    inputs: &[TrackInput],
+    previous_order: Vec<String>,
+    cached: Option<&AnalysisDocument>,
+    fixed_first: Option<&str>,
+    revision: u64,
+    cancel: &AtomicBool,
+    progress: &dyn Fn(usize, usize),
+    partial: &dyn Fn(&AnalysisDocument),
+) -> Result<AnalysisDocument, AppError> {
+    let mut reusable: HashMap<String, TrackAnalysis> = cached
+        .map(|document| {
+            document
+                .tracks
+                .iter()
+                .map(|track| (track.key.clone(), track.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let total = inputs.len();
+    let mut tracks = Vec::with_capacity(total);
+    let mut stats = AnalysisStats::default();
+    progress(0, total);
+    for (index, input) in inputs.iter().enumerate() {
+        if cancelled(cancel) {
+            return Err(cancel_error());
+        }
+        if let Some(track) = reusable.remove(&input.key) {
+            if track.usable() {
+                // Refresh the title in case it was edited.
+                let mut track = track;
+                track.title = input.title.clone();
+                stats.reused += 1;
+                stats.analyzed += 1;
+                tracks.push(track);
+                progress(index + 1, total);
+                partial(&assemble_document(
+                    playlist_id,
+                    playlist_name,
+                    revision,
+                    inputs,
+                    tracks.clone(),
+                    previous_order.clone(),
+                    stats.clone(),
+                    None,
+                    false,
+                ));
+                continue;
+            }
+        }
+        match analyse_track(app, cache, manual, input, cancel) {
+            Ok(track) => {
+                if track.status != "ok" {
+                    stats.low_confidence += 1;
+                }
+                stats.analyzed += 1;
+                tracks.push(track);
+            }
+            Err(error) => {
+                if cancelled(cancel) {
+                    return Err(cancel_error());
+                }
+                log::warn!("smart-transition: {} failed: {error}", input.key);
+                stats.skipped += 1;
+                tracks.push(TrackAnalysis {
+                    key: input.key.clone(),
+                    title: input.title.clone(),
+                    duration: 0.0,
+                    bpm: 0.0,
+                    key_camelot: String::new(),
+                    energy: 0.0,
+                    head: EdgeFeatures::default(),
+                    tail: EdgeFeatures::default(),
+                    status: "skipped".into(),
+                    error: Some(error.to_string()),
+                });
+            }
+        }
+        // Snapshot after every track so the UI shows live results and a
+        // cancellation keeps the work done so far.
+        progress(index + 1, total);
+        partial(&assemble_document(
+            playlist_id,
+            playlist_name,
+            revision,
+            inputs,
+            tracks.clone(),
+            previous_order.clone(),
+            stats.clone(),
+            None,
+            false,
+        ));
+    }
+    if cancelled(cancel) {
+        return Err(cancel_error());
+    }
+    progress(total, total);
+    Ok(assemble_document(
+        playlist_id,
+        playlist_name,
+        revision,
+        inputs,
+        tracks,
+        previous_order,
+        stats,
+        fixed_first,
+        true,
+    ))
+}
+
 
 #[cfg(test)]
 mod tests {

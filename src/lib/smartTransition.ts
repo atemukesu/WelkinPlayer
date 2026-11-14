@@ -54,6 +54,8 @@ export interface SmartTransitionSummary {
   previousOrder: string[];
   transitions: TransitionPreview[];
   stats: AnalysisStats;
+  /** `true` when this is an in-progress snapshot, not a finished analysis. */
+  incomplete: boolean;
   /** `remote`, `local` or `none`. */
   source: string;
 }
@@ -109,7 +111,7 @@ export function deleteSmartTransition(playlistId: string): Promise<void> {
   return invoke("smart_transition_delete", { playlistId });
 }
 
-/** Ask a running analysis to stop after the current track. */
+/** Ask a running analysis to stop; the current track is abandoned quickly. */
 export function cancelSmartTransition(playlistId: string): Promise<void> {
   return invoke("smart_transition_cancel", { playlistId });
 }

@@ -155,3 +155,10 @@ strip = true
 # just this dependency optimized even in `cargo run` / `tauri dev`.
 [profile.dev.package.wsola]
 opt-level = 3
+
+# The smart-transition analyser is the same story: `automix` runs the onset /
+# Goertzel / MFCC loops over two 60-second buffers per track. Unoptimised it
+# takes tens of seconds per track, which looks like a hang. Optimise it (and
+# only it) in the dev profile so analysis stays interactive.
+[profile.dev.package.automix]
+opt-level = 3
