@@ -999,9 +999,10 @@ fn grid_lines(grid: &BeatGrid, min: f32, max: f32, span: f32) -> Vec<f32> {
     lines
 }
 
-/// Candidate Mix Out points: bar lines around the ideal start, plus the
-/// fallback. The search may only move a couple of bars: the fade should still
-/// finish at the end of the outgoing track, not thirty seconds early.
+/// Candidate Mix Out points: bar lines across the last half-minute, plus the
+/// fallback. The fade itself is capped at five seconds; the *start* is chosen
+/// musically (energy/timbre continuity and the step down into an outro), so it
+/// is not forced to the very last bar of the file.
 fn mix_out_candidates(grid: Option<&BeatGrid>, duration: f32, tail_offset: f32) -> Vec<f32> {
     let fallback = mix_out(grid, duration, tail_offset);
     let Some(grid) = grid else {
@@ -1010,11 +1011,7 @@ fn mix_out_candidates(grid: Option<&BeatGrid>, duration: f32, tail_offset: f32) 
     if duration <= 1.0 {
         return vec![0.0];
     }
-    let bar = BEATS_PER_BAR * grid.period;
-    let blend = preferred_blend_secs(Some(grid));
-    let min = (duration - blend - 2.0 * bar)
-        .max(tail_offset.max(0.0))
-        .max(0.0);
+    let min = (duration - 30.0).max(tail_offset.max(0.0)).max(0.0);
     let max = (duration - MIN_BLEND_SECS).max(min);
     let mut lines = grid_lines(grid, min, max, BEATS_PER_BAR);
     if !lines.iter().any(|line| (*line - fallback).abs() < 0.05) {
@@ -1113,11 +1110,21 @@ fn cue_score(
         (Some(a), Some(b)) => ((a - b).abs() / 18.0).min(1.0),
         _ => 0.0,
     };
-    // Prefer the envelope to finish with the outgoing track: stopping early
-    // leaves a silent tail and skips music. Also avoid a transition so short
-    // that it sounds like a cut.
-    let gap = (out.duration - (out_at + blend)).max(0.0);
-    let gap_penalty = (gap / 8.0).min(1.0) * 0.12;
+    // Reward a step down into a quieter section: that is where an outro
+    // starts and where a DJ would mix out. A gradual fade-out at the very end
+    // has a much smaller step, so this does not simply pull the cue to the
+    // last bar again.
+    let before = out
+        .tail
+        .energy_between((out_at - 4.0 - out.tail_offset).max(0.0), 4.0);
+    let drop = match before {
+        Some(before) if before > 0.02 => ((before - out_energy).max(0.0) / before).min(1.0),
+        _ => 0.0,
+    };
+    // Mildly prefer not to skip too much of the outgoing track, and avoid a
+    // transition so short that it sounds like a cut.
+    let skip = (out.duration - (out_at + blend)).max(0.0);
+    let skip_penalty = (skip / 30.0).min(1.0) * 0.05;
     let short_penalty = ((MIN_BLEND_SECS - blend).max(0.0) / MIN_BLEND_SECS) * 0.15;
     // Prefer an earlier Mix In (less of the intro skipped) when continuity is
     // otherwise equal.
@@ -1125,9 +1132,10 @@ fn cue_score(
     let score = energy_gap * 0.50
         + timbre_gap * 0.30
         + loud_gap * 0.15
-        + gap_penalty
+        + skip_penalty
         + short_penalty
-        + intro_penalty;
+        + intro_penalty
+        - drop * 0.10;
     (score, out_db, in_db)
 }
 
@@ -1154,47 +1162,46 @@ fn plan_transition(out: &TrackAnalysis, input: &TrackAnalysis) -> TransitionPlan
     let mut out_db = out.tail.loudness_between(out_at - out.tail_offset, blend);
     let mut in_db = input.head.loudness_between(in_at, blend);
 
-    // With two real beat grids, try every sensible phrase pair and keep the
-    // most continuous one. Without beats the fixed fallbacks are safer.
-    if out_has_beats && in_has_beats {
-        if let (Some(out_grid), Some(in_grid)) = (out_grid.as_ref(), in_grid.as_ref()) {
-            let outs = mix_out_candidates(Some(out_grid), out.duration, out.tail_offset);
-            let ins = mix_in_candidates(Some(in_grid), input.duration);
-            let mut best: Option<(f32, f32, f32, f32, Option<f32>, Option<f32>)> = None;
-            for candidate_out in outs {
-                let candidate_blend = blend_secs(Some(out_grid), candidate_out, out.duration);
-                if candidate_blend < MIN_BLEND_SECS {
+    // Whenever both sides have a tempo grid, try every sensible bar/phrase
+    // pair and keep the most musical one. Only a truly tempo-less pair uses
+    // the fixed fallbacks.
+    if let (Some(out_grid), Some(in_grid)) = (out_grid.as_ref(), in_grid.as_ref()) {
+        let outs = mix_out_candidates(Some(out_grid), out.duration, out.tail_offset);
+        let ins = mix_in_candidates(Some(in_grid), input.duration);
+        let mut best: Option<(f32, f32, f32, f32, Option<f32>, Option<f32>)> = None;
+        for candidate_out in outs {
+            let candidate_blend = blend_secs(Some(out_grid), candidate_out, out.duration);
+            if candidate_blend < MIN_BLEND_SECS {
+                continue;
+            }
+            for candidate_in in &ins {
+                if *candidate_in > input.duration.max(0.0) {
                     continue;
                 }
-                for candidate_in in &ins {
-                    if *candidate_in > input.duration.max(0.0) {
-                        continue;
-                    }
-                    let (score, db_out, db_in) =
-                        cue_score(out, input, candidate_out, *candidate_in, candidate_blend);
-                    if best
-                        .as_ref()
-                        .map(|current| score < current.0)
-                        .unwrap_or(true)
-                    {
-                        best = Some((
-                            score,
-                            candidate_out,
-                            *candidate_in,
-                            candidate_blend,
-                            db_out,
-                            db_in,
-                        ));
-                    }
+                let (score, db_out, db_in) =
+                    cue_score(out, input, candidate_out, *candidate_in, candidate_blend);
+                if best
+                    .as_ref()
+                    .map(|current| score < current.0)
+                    .unwrap_or(true)
+                {
+                    best = Some((
+                        score,
+                        candidate_out,
+                        *candidate_in,
+                        candidate_blend,
+                        db_out,
+                        db_in,
+                    ));
                 }
             }
-            if let Some((_, best_out, best_in, best_blend, best_out_db, best_in_db)) = best {
-                out_at = best_out;
-                in_at = best_in;
-                blend = best_blend;
-                out_db = best_out_db;
-                in_db = best_in_db;
-            }
+        }
+        if let Some((_, best_out, best_in, best_blend, best_out_db, best_in_db)) = best {
+            out_at = best_out;
+            in_at = best_in;
+            blend = best_blend;
+            out_db = best_out_db;
+            in_db = best_in_db;
         }
     }
 
@@ -1567,7 +1574,7 @@ mod tests {
     }
 
     #[test]
-    fn cue_search_keeps_the_fade_anchored_to_the_track_end() {
+    fn cue_search_prefers_the_end_when_there_is_no_outro() {
         let mut out = track(120.0, "8A");
         out.tail_offset = 140.0;
         out.tail.beats = vec![0.0, 0.5];
@@ -1591,6 +1598,35 @@ mod tests {
         assert!(plan.blend_secs <= MAX_BLEND_SECS);
         assert!((plan.in_gain - 1.0).abs() < 1e-3);
         assert!((plan.tempo_ratio - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn cue_search_moves_to_the_outro_when_energy_drops() {
+        let mut out = track(120.0, "8A");
+        out.tail_offset = 140.0;
+        out.tail.beats = vec![0.0, 0.5];
+        // 60 s tail at 0.5 s resolution: full energy until 180 s, then a quiet
+        // 20 s outro. The mix-out should land on the step down, not the file end.
+        let mut energy = vec![0.8; 120];
+        energy[80..].fill(0.2);
+        out.tail.energy_curve = energy;
+        out.tail.loudness_curve_db = vec![-12.0; 600];
+        out.tail.loudness_curve_resolution_seconds = 0.1;
+        let mut input = track(120.0, "8A");
+        input.head.beats = vec![0.0, 0.5];
+        input.head.energy_curve = vec![0.2; 120];
+        input.head.loudness_curve_db = vec![-12.0; 600];
+        input.head.loudness_curve_resolution_seconds = 0.1;
+
+        let plan = plan_transition(&out, &input);
+        assert_eq!(plan.mode, "strict");
+        assert!(
+            (178.0..=184.0).contains(&plan.out_at),
+            "expected the outro start, got {}",
+            plan.out_at
+        );
+        assert!(plan.out_at + plan.blend_secs <= 200.0 + 1e-3);
+        assert!(plan.blend_secs <= MAX_BLEND_SECS);
     }
 
     #[test]
@@ -1630,3 +1666,4 @@ mod tests {
         assert!(!unknown.plan_ready());
     }
 }
+
