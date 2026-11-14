@@ -36,9 +36,12 @@ use crate::streaming::stream_cache::StreamCache;
 
 /// Seconds decoded from the start *and* the end of each track.
 pub const WINDOW_SECS: f32 = 60.0;
-/// Bump when the analysis pipeline or cost model changes.
+/// Bump when the planning model changes. Stored per-track features are kept
+/// across this version and only the transitions are recomputed; bump
+/// [`SCHEMA_VERSION`] instead when the extracted features change.
 pub const ALGORITHM_VERSION: u32 = 4;
-/// On-disk document schema.
+/// On-disk document schema (also invalidates cached per-track features when the
+/// feature set or DSP pipeline changes).
 pub const SCHEMA_VERSION: u32 = 1;
 /// Prefix that scopes transition documents away from audio and other objects.
 pub const FILE_PREFIX: &str = "welkin-transition-";
@@ -540,42 +543,60 @@ fn analyse_track(
     // A failed seek still leaves a usable (if less precise) tail. Record where
     // the tail window really starts so its beat times and energy curve can be
     // mapped back onto the absolute timeline.
-    let tail_offset = if tail_samples.is_empty() {
-        0.0
-    } else if duration > WINDOW_SECS + 0.5 {
+    let tail_offset = if !tail_samples.is_empty() && duration > WINDOW_SECS + 0.5 {
         (duration - WINDOW_SECS).max(0.0)
     } else {
         0.0
     };
-    let tail_samples = if tail_samples.is_empty() {
+    // When the track is no longer than the analysis window, or the tail seek
+    // failed, the two windows are the same audio. Analysing it once halves the
+    // DSP cost of every short track.
+    let tail_is_head = tail_samples.is_empty() || tail_offset <= 0.0;
+    let tail_samples = if tail_is_head {
         head_samples.clone()
     } else {
         tail_samples
     };
 
-    let mut analyzer = Analyzer::new();
+    if cancelled(cancel) {
+        return Err(cancel_error());
+    }
     let head_buffer = AudioBuffer {
         samples: head_samples,
         sample_rate: rate as i32,
         channels: channels as i32,
     };
-    let tail_buffer = AudioBuffer {
-        samples: tail_samples,
-        sample_rate: rate as i32,
-        channels: channels as i32,
+    let (head_features, tail_features) = if tail_is_head {
+        let features = Analyzer::new()
+            .analyze(&head_buffer)
+            .map_err(|error| AppError::other(error.to_string()))?;
+        (features.clone(), features)
+    } else {
+        let tail_buffer = AudioBuffer {
+            samples: tail_samples,
+            sample_rate: rate as i32,
+            channels: channels as i32,
+        };
+        // The two windows are independent, so run their DSP concurrently: a
+        // full playlist now takes about half as long on a multi-core machine.
+        let (head, tail) = std::thread::scope(|scope| {
+            let head = scope.spawn(|| Analyzer::new().analyze(&head_buffer));
+            let tail = scope.spawn(|| Analyzer::new().analyze(&tail_buffer));
+            let head = head
+                .join()
+                .map_err(|_| AppError::other("分析线程异常退出"))?
+                .map_err(|error| AppError::other(error.to_string()))?;
+            let tail = tail
+                .join()
+                .map_err(|_| AppError::other("分析线程异常退出"))?
+                .map_err(|error| AppError::other(error.to_string()))?;
+            Ok::<_, AppError>((head, tail))
+        })?;
+        (head, tail)
     };
     if cancelled(cancel) {
         return Err(cancel_error());
     }
-    let head_features = analyzer
-        .analyze(&head_buffer)
-        .map_err(|error| AppError::other(error.to_string()))?;
-    if cancelled(cancel) {
-        return Err(cancel_error());
-    }
-    let tail_features = analyzer
-        .analyze(&tail_buffer)
-        .map_err(|error| AppError::other(error.to_string()))?;
 
     log::info!(
         "smart-transition: analysed {} in {}ms (fetch {}ms, head {}ms, decode {}ms, dsp {}ms)",
@@ -718,13 +739,15 @@ fn path_cost(path: &[usize], matrix: &[Vec<f64>]) -> f64 {
     path.windows(2).map(|pair| matrix[pair[0]][pair[1]]).sum()
 }
 
-/// Exact solver for small playlists (Held-Karp), greedy + 2-opt above 19 tracks.
+/// Exact solver for small playlists (Held-Karp), greedy + 2-opt above 15 tracks.
+/// The exact solver is exponential: 19 tracks already spends seconds in a dev
+/// build for no audible gain over the greedy path.
 fn best_order(matrix: &[Vec<f64>], fixed_first: Option<usize>) -> Vec<usize> {
     let n = matrix.len();
     if n <= 1 {
         return (0..n).collect();
     }
-    if n <= 19 {
+    if n <= 15 {
         // Add a dummy node 0 with zero-cost return, turning the open path into
         // a cycle the TSP solver can handle. A fixed first track is enforced by
         // making the dummy's edge to every other track prohibitively expensive.
@@ -1239,6 +1262,40 @@ fn plan_transition(out: &TrackAnalysis, input: &TrackAnalysis) -> TransitionPlan
     }
 }
 
+/// Generate a transition for each adjacent usable pair in `order`.
+fn build_transitions(tracks: &[TrackAnalysis], order: &[String]) -> Vec<TransitionPlan> {
+    let by_key: HashMap<&str, &TrackAnalysis> = tracks
+        .iter()
+        .map(|track| (track.key.as_str(), track))
+        .collect();
+    let mut transitions = Vec::new();
+    for pair in order.windows(2) {
+        if let (Some(out), Some(input)) =
+            (by_key.get(pair[0].as_str()), by_key.get(pair[1].as_str()))
+        {
+            if out.plan_ready() && input.plan_ready() {
+                transitions.push(plan_transition(out, input));
+            }
+        }
+    }
+    transitions
+}
+
+/// Recompute only the transition plans from the cached per-track features.
+///
+/// A change to the planning model must not force every track to be decoded
+/// again: decoding and the DSP passes dominate the run time, while planning is
+/// a cheap pass over the stored features. Call this after loading a document
+/// whose [`ALGORITHM_VERSION`] is older than the current one. Changes to the
+/// extracted features themselves are invalidated through [`SCHEMA_VERSION`].
+pub fn refresh_plans(document: &mut AnalysisDocument) {
+    if document.algorithm_version == ALGORITHM_VERSION {
+        return;
+    }
+    document.transitions = build_transitions(&document.tracks, &document.order);
+    document.algorithm_version = ALGORITHM_VERSION;
+}
+
 /// Build the analysis document for a set of tracks.
 ///
 /// `smart_order` selects the Held-Karp ordering (finished analysis) versus the
@@ -1289,21 +1346,7 @@ fn assemble_document(
         tracks.iter().map(|track| track.key.clone()).collect()
     };
 
-    // Generate a transition for each adjacent usable pair.
-    let by_key: HashMap<&str, &TrackAnalysis> = tracks
-        .iter()
-        .map(|track| (track.key.as_str(), track))
-        .collect();
-    let mut transitions = Vec::new();
-    for pair in order.windows(2) {
-        if let (Some(out), Some(input)) =
-            (by_key.get(pair[0].as_str()), by_key.get(pair[1].as_str()))
-        {
-            if out.plan_ready() && input.plan_ready() {
-                transitions.push(plan_transition(out, input));
-            }
-        }
-    }
+    let transitions = build_transitions(&tracks, &order);
 
     let mut document = AnalysisDocument {
         schema: SCHEMA_VERSION,
@@ -1507,6 +1550,39 @@ mod tests {
             vec![0.1, 0.9, 0.0],
         ];
         assert_eq!(best_order(&matrix, None), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn refresh_plans_reuses_features_across_algorithm_versions() {
+        let mut out = track(120.0, "8A");
+        out.key = "a".into();
+        out.head.loudness_curve_db = vec![-12.0];
+        out.tail.loudness_curve_db = vec![-12.0];
+        let mut input = track(120.0, "8A");
+        input.key = "b".into();
+        input.head.loudness_curve_db = vec![-12.0];
+        input.tail.loudness_curve_db = vec![-12.0];
+        let mut document = AnalysisDocument {
+            schema: SCHEMA_VERSION,
+            algorithm_version: 0,
+            playlist_id: "p".into(),
+            playlist_name: "P".into(),
+            updated_at: 0,
+            revision: 7,
+            track_set_hash: String::new(),
+            order_hash: String::new(),
+            order: vec![out.key.clone(), input.key.clone()],
+            tracks: vec![out, input],
+            previous_order: Vec::new(),
+            transitions: Vec::new(),
+            stats: AnalysisStats::default(),
+            incomplete: false,
+        };
+        refresh_plans(&mut document);
+        assert_eq!(document.algorithm_version, ALGORITHM_VERSION);
+        assert_eq!(document.transitions.len(), 1);
+        // Refreshing the plans must not touch the stored revision.
+        assert_eq!(document.revision, 7);
     }
 
     #[test]

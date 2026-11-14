@@ -24,8 +24,8 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::analysis::{
-    analyze_playlist, file_for_playlist, AnalysisDocument, AnalysisSummary, TrackInput,
-    TransitionPlan, ALGORITHM_VERSION, SCHEMA_VERSION,
+    analyze_playlist, file_for_playlist, refresh_plans, AnalysisDocument, AnalysisSummary,
+    TrackInput, TransitionPlan, SCHEMA_VERSION,
 };
 use crate::commands::media::resolve_cache_dir;
 use crate::core::error::AppError;
@@ -124,10 +124,13 @@ fn remove_partial(app: &AppHandle, playlist_id: &str) {
 }
 
 fn parse_document(text: &str) -> Option<AnalysisDocument> {
-    let document: AnalysisDocument = serde_json::from_str(text).ok()?;
-    if document.schema != SCHEMA_VERSION || document.algorithm_version != ALGORITHM_VERSION {
+    let mut document: AnalysisDocument = serde_json::from_str(text).ok()?;
+    if document.schema != SCHEMA_VERSION {
         return None;
     }
+    // A planning-only version change must not discard the stored per-track
+    // features: recomputing the plans is cheap, decoding every track is not.
+    refresh_plans(&mut document);
     Some(document)
 }
 
