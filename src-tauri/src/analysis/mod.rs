@@ -5,8 +5,9 @@
 //!
 //! Rather than hand-writing DSP, this module reuses two existing crates:
 //!
-//! * [`automix`] — BPM / key / energy / loudness analysis, smart crossfade
-//!   point selection and mixing primitives (pure DSP, no C dependency);
+//! * [`automix`] — BPM / key / energy / loudness / beat analysis (pure DSP, no
+//!   C dependency). Its loudness-only `TransitionPointFinder` is *not* used:
+//!   mix points come from the beat/phrase grid below instead;
 //! * [`held_karp_core`] — an exact Held-Karp TSP solver, used to order a
 //!   playlist so every adjacent pair has a good transition.
 //!
@@ -22,9 +23,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use automix::{
-    Analyzer, AudioBuffer, CurveType, SmartCrossfadeAnalysis, TrackFeatures, TransitionPointFinder,
-};
+use automix::{Analyzer, AudioBuffer, TrackFeatures};
 use rodio::{Decoder, Source};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -38,7 +37,7 @@ use crate::streaming::stream_cache::StreamCache;
 /// Seconds decoded from the start *and* the end of each track.
 pub const WINDOW_SECS: f32 = 60.0;
 /// Bump when the analysis pipeline or cost model changes.
-pub const ALGORITHM_VERSION: u32 = 1;
+pub const ALGORITHM_VERSION: u32 = 2;
 /// On-disk document schema.
 pub const SCHEMA_VERSION: u32 = 1;
 /// Prefix that scopes transition documents away from audio and other objects.
@@ -95,25 +94,7 @@ impl EdgeFeatures {
         self.loudness_curve_db.is_empty()
     }
 
-    /// Rebuild the `automix` feature set. `duration` is the real track length so
-    /// the matcher's absolute ramp-out position is correct even though the
-    /// loudness curve only covers the tail window.
-    fn to_features(&self, duration: f32) -> TrackFeatures {
-        TrackFeatures {
-            bpm: self.bpm,
-            beats: self.beats.clone(),
-            key: self.key.clone(),
-            mfcc: self.mfcc.clone(),
-            chroma: self.chroma.clone(),
-            energy_curve: self.energy_curve.clone(),
-            duration,
-            loudness_lufs: None,
-            genre: None,
-            loudness_curve_db: self.loudness_curve_db.clone(),
-            loudness_curve_resolution_seconds: self.loudness_curve_resolution_seconds,
-        }
-    }
-
+    /// Mean RMS energy across the window (used for continuity costs).
     fn mean_energy(&self) -> f32 {
         if self.energy_curve.is_empty() {
             return 0.0;
@@ -134,6 +115,11 @@ pub struct TrackAnalysis {
     pub energy: f32,
     pub head: EdgeFeatures,
     pub tail: EdgeFeatures,
+    /// Absolute second where the tail window starts. Zero when the tail was
+    /// taken from the head (short track or a failed seek), so beat times and
+    /// energy curves can be mapped back onto the real timeline.
+    #[serde(default)]
+    pub tail_offset: f32,
     /// `ok` or `skipped`; skipped tracks never take part in ordering.
     pub status: String,
     #[serde(default)]
@@ -449,7 +435,16 @@ fn analyse_track(
         return Err(cancel_error());
     }
     let decode_elapsed = started.elapsed();
-    // A failed seek still leaves a usable (if less precise) tail.
+    // A failed seek still leaves a usable (if less precise) tail. Record where
+    // the tail window really starts so its beat times and energy curve can be
+    // mapped back onto the absolute timeline.
+    let tail_offset = if tail_samples.is_empty() {
+        0.0
+    } else if duration > WINDOW_SECS + 0.5 {
+        (duration - WINDOW_SECS).max(0.0)
+    } else {
+        0.0
+    };
     let tail_samples = if tail_samples.is_empty() {
         head_samples.clone()
     } else {
@@ -502,6 +497,7 @@ fn analyse_track(
         energy: round((head.mean_energy() + tail.mean_energy()) / 2.0),
         head,
         tail,
+        tail_offset: round(tail_offset),
         status: if confidence_ok {
             "ok".into()
         } else {
@@ -708,47 +704,201 @@ fn improve_path(order: &mut [usize], matrix: &[Vec<f64>], fixed_first: bool) {
     }
 }
 
-fn curve_name(curve: CurveType) -> &'static str {
-    match curve {
-        CurveType::LinearFast => "linearFast",
-        CurveType::LinearMedium => "linearMedium",
-        CurveType::LinearSlow => "linearSlow",
-        CurveType::BungeeFast => "bungeeFast",
-        CurveType::BungeeMedium => "bungeeMedium",
-        CurveType::BungeeSlow => "bungeeSlow",
+/// Beats per bar in the 4/4 grids we assume for dance/electronic material.
+const BEATS_PER_BAR: f32 = 4.0;
+/// Bars per musical phrase. 8 bars is the common DJ cue length.
+const PHRASE_BARS: f32 = 8.0;
+/// Beats in one phrase line (32 by default).
+const PHRASE_BEATS: f32 = BEATS_PER_BAR * PHRASE_BARS;
+
+/// A beat grid anchored on the first detected beat.
+///
+/// Only the head/tail windows are decoded, so the anchor is the first beat of
+/// that window (mapped to absolute time via [`TrackAnalysis::tail_offset`] for
+/// the tail). Phrase lines land every `PHRASE_BEATS` beats from the anchor.
+/// This mirrors ClubCraft's `analysis/beatgrid.rs` + `analysis/cues.rs` rules
+/// (MIT/Apache-2.0), reimplemented here without pulling in a new dependency.
+#[derive(Debug, Clone, Copy)]
+struct BeatGrid {
+    anchor: f32,
+    period: f32,
+}
+
+impl BeatGrid {
+    /// Build a grid from a tempo. When no beat was detected the grid still
+    /// exists (anchored at zero) so phrase math degenerates to a regular
+    /// BPM-only grid — this is our `relaxed` mode.
+    fn new(bpm: f32, first_beat: Option<f32>) -> Option<Self> {
+        if !(bpm.is_finite() && bpm > 1.0) {
+            return None;
+        }
+        let period = 60.0 / bpm;
+        if !(period.is_finite() && (0.02..=3.0).contains(&period)) {
+            return None;
+        }
+        let anchor = first_beat
+            .filter(|value| value.is_finite())
+            .unwrap_or(0.0)
+            .max(0.0);
+        Some(Self { anchor, period })
+    }
+
+    fn beats_at(&self, secs: f32) -> f32 {
+        (secs - self.anchor) / self.period
+    }
+
+    fn time_at(&self, beats: f32) -> f32 {
+        self.anchor + beats * self.period
+    }
+
+    /// First phrase line at or after `min` (with a small tolerance so a line
+    /// that sits exactly on `min` counts as "at or after").
+    fn phrase_at_or_after(&self, min: f32, span: f32) -> f32 {
+        let index = (self.beats_at(min) / span - 1e-3).ceil().max(0.0);
+        self.time_at(index * span)
+    }
+
+    /// Last phrase line at or before `max`.
+    fn phrase_at_or_before(&self, max: f32, span: f32) -> f32 {
+        let index = (self.beats_at(max) / span + 1e-3).floor().max(0.0);
+        self.time_at(index * span)
     }
 }
 
-fn mode_name(analysis: &SmartCrossfadeAnalysis) -> &'static str {
-    match analysis.search_mode {
-        automix::SmartMixSearchMode::Strict => "strict",
-        automix::SmartMixSearchMode::Relaxed => "relaxed",
-        automix::SmartMixSearchMode::Fallback => "fallback",
+/// Tempo to build the grid from, preferring the window's own estimate.
+fn grid_bpm(edge_bpm: f32, track_bpm: f32) -> f32 {
+    if edge_bpm > 1.0 {
+        edge_bpm
+    } else {
+        track_bpm
     }
+}
+
+/// Absolute time of the outgoing grid's anchor.
+fn tail_grid(track: &TrackAnalysis) -> Option<BeatGrid> {
+    BeatGrid::new(
+        grid_bpm(track.tail.bpm, track.bpm),
+        // Tail beat times are relative to the tail window; lift them onto the
+        // absolute timeline before using them as the anchor.
+        track
+            .tail
+            .beats
+            .first()
+            .map(|beat| beat + track.tail_offset),
+    )
+}
+
+fn head_grid(track: &TrackAnalysis) -> Option<BeatGrid> {
+    BeatGrid::new(
+        grid_bpm(track.head.bpm, track.bpm),
+        track.head.beats.first().copied(),
+    )
+}
+
+/// Earliest musical entry point for the incoming track.
+///
+/// ClubCraft's fallback: the first 32-beat phrase line at least 15 s in,
+/// unless that would skip more than 40 % of a short track — then start at 0.
+fn mix_in(grid: Option<&BeatGrid>, duration: f32) -> f32 {
+    let Some(grid) = grid else {
+        return 0.0;
+    };
+    let line = grid.phrase_at_or_after(15.0, PHRASE_BEATS);
+    if duration > 1.0 && line > duration * 0.4 {
+        0.0
+    } else {
+        line.clamp(0.0, duration.max(0.0))
+    }
+}
+
+/// Latest musical exit point for the outgoing track.
+///
+/// ClubCraft's fallback: the last 32-beat phrase line at least 30 s before the
+/// end, staying inside the analysed tail window. When no full phrase fits,
+/// drop to 16 beats before the end.
+fn mix_out(grid: Option<&BeatGrid>, duration: f32, tail_offset: f32) -> f32 {
+    let Some(grid) = grid else {
+        // No usable tempo: leave a safe two-bar-ish tail.
+        return (duration - 8.0).max(0.0);
+    };
+    if duration <= 1.0 {
+        return 0.0;
+    }
+    let line = grid.phrase_at_or_before(duration - 30.0, PHRASE_BEATS);
+    if line >= tail_offset && line > 1.0 {
+        return line.min(duration);
+    }
+    // No full phrase inside the analysed tail: 16 beats before the end,
+    // clamped into the window we actually decoded.
+    let fallback = grid.time_at((grid.beats_at(duration).floor() - 16.0).max(0.0));
+    fallback.clamp(tail_offset.max(0.0).min(duration), duration)
+}
+
+/// Pick the largest whole phrase (32, 16, 8 or 4 beats) that still fits before
+/// the outgoing track ends. Returns the fade length in seconds.
+fn blend_secs(grid: Option<&BeatGrid>, out_at: f32, duration: f32) -> f32 {
+    let remaining = (duration - out_at).max(0.0);
+    let Some(grid) = grid else {
+        return remaining.clamp(1.5, 8.0);
+    };
+    for beats in [PHRASE_BEATS, PHRASE_BEATS / 2.0, PHRASE_BEATS / 4.0, PHRASE_BEATS / 8.0] {
+        let secs = beats * grid.period;
+        if secs <= remaining + 1e-3 {
+            return secs;
+        }
+    }
+    remaining
 }
 
 fn plan_transition(out: &TrackAnalysis, input: &TrackAnalysis) -> TransitionPlan {
-    let out_features = out.tail.to_features(out.duration);
-    let in_features = input.head.to_features(input.duration);
-    let analysis = TransitionPointFinder.analyze(&out_features, &in_features);
+    let out_grid = tail_grid(out);
+    let in_grid = head_grid(input);
 
-    let out_at =
-        (analysis.parameters.ramp_out_start_ms as f32 / 1000.0).clamp(0.0, out.duration.max(0.0));
-    let in_at =
-        (analysis.parameters.ramp_in_start_ms as f32 / 1000.0).clamp(0.0, input.duration.max(0.0));
-    // `automix` chooses where the outgoing ramp begins; the fade runs from
-    // there to the end of the track, capped at a musical 8 seconds.
-    let blend = (out.duration - out_at).clamp(1.5, 8.0);
+    let out_at = mix_out(out_grid.as_ref(), out.duration, out.tail_offset);
+    let in_at = mix_in(in_grid.as_ref(), input.duration);
+    let blend = blend_secs(out_grid.as_ref(), out_at, out.duration);
+
+    // `strict` means both windows carried real beat detections; `relaxed` means
+    // at least one grid had to fall back to the BPM alone; `fallback` is a
+    // tempo-less pair with no musical grid at all.
+    let out_has_beats = !out.tail.beats.is_empty();
+    let in_has_beats = !input.head.beats.is_empty();
+    let mode = if out_has_beats && in_has_beats {
+        "strict"
+    } else if out_grid.is_some() || in_grid.is_some() {
+        "relaxed"
+    } else {
+        "fallback"
+    };
+
+    // Energy continuity + timbre similarity, plus a small penalty when the
+    // grid had to be approximated. Lower is a better mix point.
+    let energy_gap = (out.tail.mean_energy() - input.head.mean_energy())
+        .abs()
+        .min(1.0);
+    let timbre_gap = (1.0 - cosine(&out.tail.chroma, &input.head.chroma)).clamp(0.0, 1.0);
+    let mode_penalty = match mode {
+        "strict" => 0.0,
+        "relaxed" => 0.12,
+        _ => 0.25,
+    };
+    let score = (energy_gap * 0.55 + timbre_gap * 0.30 + mode_penalty).min(1.0);
+
+    let curve = if blend >= 4.0 {
+        "linearMedium"
+    } else {
+        "linearFast"
+    };
     TransitionPlan {
         from: out.key.clone(),
         to: input.key.clone(),
         out_at: round(out_at),
         in_at: round(in_at),
         blend_secs: round(blend),
-        fade_out_curve: curve_name(analysis.parameters.fade_out_curve).to_string(),
-        fade_in_curve: curve_name(analysis.parameters.fade_in_curve).to_string(),
-        mode: mode_name(&analysis).to_string(),
-        score: round(analysis.score),
+        fade_out_curve: curve.to_string(),
+        fade_in_curve: curve.to_string(),
+        mode: mode.to_string(),
+        score: round(score),
     }
 }
 
@@ -929,6 +1079,7 @@ pub fn analyze_playlist(
                     energy: 0.0,
                     head: EdgeFeatures::default(),
                     tail: EdgeFeatures::default(),
+                    tail_offset: 0.0,
                     status: "skipped".into(),
                     error: Some(error.to_string()),
                 });
@@ -991,6 +1142,7 @@ mod tests {
                 energy_curve: vec![0.5],
                 ..Default::default()
             },
+            tail_offset: 0.0,
             status: "ok".into(),
             error: None,
         }
@@ -1028,5 +1180,59 @@ mod tests {
         let order = best_order(&matrix, Some(1));
         assert_eq!(order.first(), Some(&1));
         assert_eq!(order.len(), 3);
+    }
+
+    fn grid(bpm: f32, anchor: f32) -> BeatGrid {
+        BeatGrid::new(bpm, Some(anchor)).unwrap()
+    }
+
+    #[test]
+    fn mix_in_snaps_to_the_first_phrase_after_15s() {
+        // 120 BPM => 0.5 s per beat, a 32-beat phrase is 16 s.
+        let g = grid(120.0, 0.0);
+        assert!((mix_in(Some(&g), 200.0) - 16.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn mix_in_starts_at_zero_when_it_would_skip_most_of_a_short_track() {
+        let g = grid(120.0, 0.0);
+        // 16 s is 80 % of a 20 s track: outside the 40 % guard.
+        assert_eq!(mix_in(Some(&g), 20.0), 0.0);
+    }
+
+    #[test]
+    fn mix_out_uses_the_last_phrase_at_least_30s_before_the_end() {
+        let g = grid(120.0, 0.0);
+        // Phrase lines at 0, 16, ... 160; 160 is the last one <= 170.
+        assert!((mix_out(Some(&g), 200.0, 120.0) - 160.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn blend_uses_whole_phrases_that_fit() {
+        let g = grid(120.0, 0.0);
+        assert!((blend_secs(Some(&g), 184.0, 200.0) - 16.0).abs() < 1e-3);
+        // Only 10 s remain: a 16-beat (8 s) phrase fits, 32 beats do not.
+        assert!((blend_secs(Some(&g), 190.0, 200.0) - 8.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn plan_is_relaxed_without_beats_but_with_tempo() {
+        let plan = plan_transition(&track(120.0, "8A"), &track(120.0, "8A"));
+        assert_eq!(plan.mode, "relaxed");
+        assert!(plan.out_at > 0.0);
+        assert!(plan.blend_secs > 0.0);
+    }
+
+    #[test]
+    fn plan_is_strict_when_both_windows_have_beats() {
+        let mut out = track(120.0, "8A");
+        out.tail.beats = vec![0.5, 1.0, 1.5];
+        out.tail_offset = 120.0;
+        let mut input = track(120.0, "8A");
+        input.head.beats = vec![0.1, 0.6, 1.1];
+        let plan = plan_transition(&out, &input);
+        assert_eq!(plan.mode, "strict");
+        assert!(plan.in_at >= 0.0);
+        assert!(plan.out_at > 0.0);
     }
 }

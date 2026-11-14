@@ -55,6 +55,14 @@ const orderedRows = computed(() => {
 
 const transitionRows = computed(() => summary.value?.transitions.slice(0, 10) ?? []);
 
+/** Format an absolute second as `m:ss.d` for the cue-point readout. */
+function cuePoint(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "0:00";
+  const whole = Math.floor(seconds);
+  const tenth = Math.floor((seconds - whole) * 10);
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}.${tenth}`;
+}
+
 function start() {
   void smart.analyze(props.playlistId);
 }
@@ -167,6 +175,7 @@ watch(
               <ul class="mt-2 space-y-1.5">
                 <li v-for="(plan, index) in transitionRows" :key="`${plan.from}-${plan.to}-${index}`" class="flex items-center gap-2 border border-line px-3 py-2 text-xs">
                   <span class="min-w-0 flex-1 truncate">{{ plan.fromTitle }} <span class="text-dim">→</span> {{ plan.toTitle }}</span>
+                  <span class="shrink-0 font-mono text-[11px] text-dim">{{ cuePoint(plan.outAt) }} → {{ cuePoint(plan.inAt) }}</span>
                   <span class="shrink-0 font-mono text-[11px] text-dim">{{ plan.blendSecs.toFixed(1) }}s</span>
                   <span class="shrink-0 border px-1.5 py-0.5 font-mono text-[10px] uppercase" :class="plan.mode === 'fallback' ? 'border-amber-500/40 text-amber-400' : 'border-accent/40 text-accent'">{{ plan.mode }}</span>
                 </li>

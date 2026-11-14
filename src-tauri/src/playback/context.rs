@@ -46,6 +46,10 @@ pub struct PlaybackTransition {
     pub to: String,
     /// Absolute seconds in the outgoing track where the fade starts.
     pub out_at: f64,
+    /// Absolute seconds in the incoming track to drop the playhead at, so the
+    /// new track enters on its musical Mix In point.
+    #[serde(default)]
+    pub in_at: f64,
     /// Fade length in seconds.
     pub blend_secs: f64,
 }
@@ -59,6 +63,8 @@ enum FadePhase {
         to: String,
         started: Instant,
         duration: f64,
+        /// Mix In point of the incoming track, applied after the advance.
+        in_at: f64,
     },
     /// Fading the incoming track up from silence. `started` is `None` while the
     /// queue is still waiting for the outgoing track to end and advance.
@@ -753,10 +759,11 @@ impl PlaybackContext {
         };
         let position = state.position_ms / 1000.0;
         let track_duration = state.duration_ms / 1000.0;
-        // Never truncate the outgoing track. If the analysed ramp point sits
-        // further than this from the end, wait and fade only the final stretch,
-        // so the fade reaches silence exactly as the track ends.
-        const MAX_FADE_SECS: f64 = 8.0;
+        // When the fade completes early (musical Mix Out before the file's
+        // final samples) we advance ourselves and then drop the next track at
+        // its Mix In point. This is recorded here and applied after the lock is
+        // released so queue loading never runs under the transition mutex.
+        let mut advance_to: Option<f64> = None;
 
         let mut runtime = self.transition.lock().unwrap();
         let phase = std::mem::replace(&mut runtime.phase, FadePhase::Idle);
@@ -774,22 +781,24 @@ impl PlaybackContext {
                 });
                 match trigger {
                     Some(plan) => {
-                        let start = if track_duration > 0.5 {
-                            plan.out_at.max(track_duration - MAX_FADE_SECS).max(0.0)
-                        } else {
-                            plan.out_at.max(0.0)
-                        };
+                        let start = plan.out_at.max(0.0);
                         if position + 0.02 >= start {
-                            let remaining = if track_duration > 0.5 {
-                                track_duration - position
-                            } else {
+                            // If the user seeks past the Mix Out point, shrink
+                            // the fade to whatever time is actually left so it
+                            // never runs past the file's end.
+                            let duration = if track_duration > 0.5 {
                                 plan.blend_secs
+                                    .min((track_duration - position).max(0.0))
+                                    .clamp(0.35, 30.0)
+                            } else {
+                                plan.blend_secs.clamp(0.35, 30.0)
                             };
                             FadePhase::Out {
                                 from: plan.from,
                                 to: plan.to,
                                 started: Instant::now(),
-                                duration: remaining.clamp(0.35, MAX_FADE_SECS),
+                                duration,
+                                in_at: plan.in_at.max(0.0),
                             }
                         } else {
                             FadePhase::Idle
@@ -803,6 +812,7 @@ impl PlaybackContext {
                 to,
                 started,
                 duration,
+                in_at,
             } => {
                 if current.as_deref() == Some(to.as_str()) {
                     // The track ended and the queue advanced before the envelope
@@ -822,10 +832,11 @@ impl PlaybackContext {
                 } else {
                     let t = (started.elapsed().as_secs_f64() / duration).clamp(0.0, 1.0);
                     if t >= 1.0 {
-                        // The fade lands on the track's end, so let the natural
-                        // `ended` handling advance the queue: advancing here too
-                        // would skip a track when both fire on the same tick.
+                        // The outgoing track is now silent. Advance immediately
+                        // instead of waiting for its natural end, so the next
+                        // track enters on the musical Mix In point.
                         shared.set_transition_gain(0.0);
+                        advance_to = Some(in_at);
                         FadePhase::In {
                             from,
                             to,
@@ -841,6 +852,7 @@ impl PlaybackContext {
                             to,
                             started,
                             duration,
+                            in_at,
                         }
                     }
                 }
@@ -888,6 +900,18 @@ impl PlaybackContext {
             }
         };
         drop(runtime);
+
+        if let Some(in_at) = advance_to {
+            // Safe to load: the outgoing track is inaudible (gain 0). Loading
+            // and then seeking happen on the engine worker in command order,
+            // so the seek lands on the freshly loaded incoming track.
+            self.on_ended();
+            if in_at > 0.05 {
+                let _ = self.engine.send(Command::Seek {
+                    position_secs: in_at,
+                });
+            }
+        }
     }
 
     /// Called by the engine events thread when the current track ends. Advances
