@@ -101,6 +101,79 @@ impl EdgeFeatures {
         }
         self.energy_curve.iter().copied().sum::<f32>() / self.energy_curve.len() as f32
     }
+
+    /// Mean loudness of the whole window in dB. Silence (`-120 dB`) is kept
+    /// because it is a real level and the mean is only used as a fallback.
+    fn mean_loudness_db(&self) -> Option<f32> {
+        let values: Vec<f32> = self
+            .loudness_curve_db
+            .iter()
+            .copied()
+            .filter(|value| value.is_finite())
+            .collect();
+        if values.is_empty() {
+            None
+        } else {
+            Some(values.iter().sum::<f32>() / values.len() as f32)
+        }
+    }
+
+    /// Mean energy over `span` seconds starting at `offset` (relative to the
+    /// decoded window). Falls back to the whole-window mean when the region is
+    /// outside the analysed data.
+    fn energy_between(&self, offset: f32, span: f32) -> Option<f32> {
+        mean_between(&self.energy_curve, ENERGY_RESOLUTION_SECS, offset, span).or_else(|| {
+            if self.energy_curve.is_empty() {
+                None
+            } else {
+                Some(self.mean_energy())
+            }
+        })
+    }
+
+    /// Mean loudness in dB over `span` seconds starting at `offset` (relative
+    /// to the decoded window). Falls back to the whole-window mean.
+    fn loudness_between(&self, offset: f32, span: f32) -> Option<f32> {
+        mean_between(
+            &self.loudness_curve_db,
+            self.loudness_curve_resolution_seconds,
+            offset,
+            span,
+        )
+        .or_else(|| self.mean_loudness_db())
+    }
+}
+
+/// Resolution of `automix`'s energy curve. The crate does not expose it in
+/// `TrackFeatures`, so it is mirrored here (see `Analyzer::compute_energy_curve`).
+const ENERGY_RESOLUTION_SECS: f32 = 0.5;
+
+/// Mean of a curve over a time region, mapped through its sample resolution.
+fn mean_between(values: &[f32], resolution: f32, offset: f32, span: f32) -> Option<f32> {
+    if values.is_empty() || !(resolution.is_finite() && resolution > 0.0) {
+        return None;
+    }
+    let resolution = resolution.max(0.01);
+    let start = (offset.max(0.0) / resolution).floor() as usize;
+    if start >= values.len() {
+        return None;
+    }
+    let count = ((span.max(0.0) / resolution).ceil() as usize).max(1);
+    let end = (start + count).min(values.len());
+    let slice = &values[start..end];
+    let mut sum = 0.0f32;
+    let mut used = 0usize;
+    for value in slice {
+        if value.is_finite() {
+            sum += *value;
+            used += 1;
+        }
+    }
+    if used == 0 {
+        None
+    } else {
+        Some(sum / used as f32)
+    }
 }
 
 /// Per-track analysis result.
@@ -165,6 +238,15 @@ pub struct TransitionPlan {
     pub fade_in_curve: String,
     /// `strict`, `relaxed` or `fallback`.
     pub mode: String,
+    /// Playback-rate multiplier the incoming deck should use so its beats line
+    /// up with the outgoing track (octave-folded, `1.0` when unknown or when
+    /// the difference is too large to correct musically).
+    #[serde(default = "unity")]
+    pub tempo_ratio: f32,
+    /// Linear gain applied to the incoming deck during the overlap so the two
+    /// tracks meet at a similar loudness (`1.0` when unknown).
+    #[serde(default = "unity")]
+    pub in_gain: f32,
     /// Lower is better: energy/timbre continuity plus a grid-confidence penalty.
     pub score: f32,
 }
@@ -298,6 +380,11 @@ fn round(value: f32) -> f32 {
     } else {
         0.0
     }
+}
+
+/// Serde default for the transition tuning fields: no correction.
+fn unity() -> f32 {
+    1.0
 }
 
 fn now_ms() -> u64 {
@@ -866,13 +953,147 @@ fn blend_secs(grid: Option<&BeatGrid>, out_at: f32, duration: f32) -> f32 {
     remaining
 }
 
+/// Phrase lines between `min` and `max`, in ascending order.
+fn phrase_lines(grid: &BeatGrid, min: f32, max: f32) -> Vec<f32> {
+    let mut lines = Vec::new();
+    if !(min.is_finite() && max.is_finite()) || max <= min {
+        return lines;
+    }
+    let step = PHRASE_BEATS * grid.period;
+    if !(step.is_finite() && step > 0.0) {
+        return lines;
+    }
+    let mut line = grid.phrase_at_or_after(min, PHRASE_BEATS);
+    while line <= max + 1e-3 && lines.len() < 8 {
+        lines.push(line);
+        line += step;
+    }
+    lines
+}
+
+/// Candidate Mix Out points: phrase lines in the last half-minute, plus the
+/// conservative fallback. Searching instead of taking the first line lets the
+/// planner choose a later cue when the energy/timbre match allows it, so less
+/// of the outgoing track is skipped.
+fn mix_out_candidates(grid: Option<&BeatGrid>, duration: f32, tail_offset: f32) -> Vec<f32> {
+    let fallback = mix_out(grid, duration, tail_offset);
+    let Some(grid) = grid else {
+        return vec![fallback];
+    };
+    if duration <= 1.0 {
+        return vec![0.0];
+    }
+    let min = (duration - 30.0).max(tail_offset.max(0.0)).max(0.0);
+    let max = (duration - 1.0).max(min);
+    let mut lines = phrase_lines(grid, min, max);
+    if !lines.iter().any(|line| (*line - fallback).abs() < 0.05) {
+        lines.push(fallback);
+    }
+    lines.retain(|line| line.is_finite() && *line >= 0.0 && *line <= duration);
+    if lines.is_empty() {
+        vec![fallback]
+    } else {
+        lines
+    }
+}
+
+/// Candidate Mix In points: the first few phrase lines after 15 s, so the
+/// incoming track can enter a little later when that improves continuity.
+fn mix_in_candidates(grid: Option<&BeatGrid>, duration: f32) -> Vec<f32> {
+    let fallback = mix_in(grid, duration);
+    let Some(grid) = grid else {
+        return vec![fallback];
+    };
+    if duration <= 1.0 {
+        return vec![0.0];
+    }
+    let max = (duration * 0.4).clamp(15.0, 45.0);
+    let mut lines = phrase_lines(grid, 15.0, max);
+    lines.retain(|line| line.is_finite() && *line <= duration);
+    if lines.is_empty() {
+        lines.push(fallback);
+    }
+    lines
+}
+
+/// Fold a tempo ratio into one octave and only keep it when the correction is
+/// small enough to be musical. Large differences are left to drift instead of
+/// sounding like a chipmunk.
+fn fold_tempo_ratio(out_bpm: f32, in_bpm: f32) -> f32 {
+    if !(out_bpm.is_finite() && in_bpm.is_finite()) || out_bpm <= 1.0 || in_bpm <= 1.0 {
+        return 1.0;
+    }
+    let mut ratio = out_bpm / in_bpm;
+    if !(ratio.is_finite() && ratio > 0.0) {
+        return 1.0;
+    }
+    while ratio < std::f32::consts::FRAC_1_SQRT_2 {
+        ratio *= 2.0;
+    }
+    while ratio >= std::f32::consts::SQRT_2 {
+        ratio /= 2.0;
+    }
+    if (0.90..=1.10).contains(&ratio) {
+        ratio
+    } else {
+        1.0
+    }
+}
+
+/// Linear gain that brings the incoming window to the outgoing window's level.
+/// Attenuation is capped at -12 dB and boost at +12 dB; differences below
+/// 0.25 dB are ignored so normal masters are not touched.
+fn loudness_gain(out_db: Option<f32>, in_db: Option<f32>) -> f32 {
+    match (out_db, in_db) {
+        (Some(out), Some(input)) if out.is_finite() && input.is_finite() => {
+            let db = (out - input).clamp(-12.0, 12.0);
+            let gain = 10f32.powf(db / 20.0).clamp(0.25, 4.0);
+            if (gain - 1.0).abs() < 0.03 {
+                1.0
+            } else {
+                gain
+            }
+        }
+        _ => 1.0,
+    }
+}
+
+/// Continuity score for one candidate cue pair. Lower is better.
+fn cue_score(
+    out: &TrackAnalysis,
+    input: &TrackAnalysis,
+    out_at: f32,
+    in_at: f32,
+    blend: f32,
+) -> (f32, Option<f32>, Option<f32>) {
+    let out_energy = out
+        .tail
+        .energy_between(out_at - out.tail_offset, blend)
+        .unwrap_or_else(|| out.tail.mean_energy());
+    let in_energy = input
+        .head
+        .energy_between(in_at, blend)
+        .unwrap_or_else(|| input.head.mean_energy());
+    let energy_gap = (out_energy - in_energy).abs().min(1.0);
+    let timbre_gap = (1.0 - cosine(&out.tail.chroma, &input.head.chroma)).clamp(0.0, 1.0);
+    let out_db = out.tail.loudness_between(out_at - out.tail_offset, blend);
+    let in_db = input.head.loudness_between(in_at, blend);
+    let loud_gap = match (out_db, in_db) {
+        (Some(a), Some(b)) => ((a - b).abs() / 18.0).min(1.0),
+        _ => 0.0,
+    };
+    // Prefer later Mix Out (less of the outgoing track skipped) and earlier
+    // Mix In (less of the intro skipped) when continuity is otherwise equal.
+    let remaining_penalty = ((out.duration - out_at).max(0.0) / 45.0).min(1.0) * 0.05;
+    let intro_penalty = (in_at.max(0.0) / 45.0).min(1.0) * 0.05;
+    let score =
+        energy_gap * 0.50 + timbre_gap * 0.30 + loud_gap * 0.15 + remaining_penalty + intro_penalty;
+    (score, out_db, in_db)
+}
+
 fn plan_transition(out: &TrackAnalysis, input: &TrackAnalysis) -> TransitionPlan {
     let out_grid = tail_grid(out);
     let in_grid = head_grid(input);
-
-    let out_at = mix_out(out_grid.as_ref(), out.duration, out.tail_offset);
-    let in_at = mix_in(in_grid.as_ref(), input.duration);
-    let blend = blend_secs(out_grid.as_ref(), out_at, out.duration);
 
     // `strict` means both windows carried real beat detections; `relaxed` means
     // at least one grid had to fall back to the BPM alone; `fallback` is a
@@ -887,18 +1108,69 @@ fn plan_transition(out: &TrackAnalysis, input: &TrackAnalysis) -> TransitionPlan
         "fallback"
     };
 
-    // Energy continuity + timbre similarity, plus a small penalty when the
-    // grid had to be approximated. Lower is a better mix point.
-    let energy_gap = (out.tail.mean_energy() - input.head.mean_energy())
-        .abs()
-        .min(1.0);
-    let timbre_gap = (1.0 - cosine(&out.tail.chroma, &input.head.chroma)).clamp(0.0, 1.0);
+    let mut out_at = mix_out(out_grid.as_ref(), out.duration, out.tail_offset);
+    let mut in_at = mix_in(in_grid.as_ref(), input.duration);
+    let mut blend = blend_secs(out_grid.as_ref(), out_at, out.duration);
+    let mut out_db = out.tail.loudness_between(out_at - out.tail_offset, blend);
+    let mut in_db = input.head.loudness_between(in_at, blend);
+
+    // With two real beat grids, try every sensible phrase pair and keep the
+    // most continuous one. Without beats the fixed fallbacks are safer.
+    if out_has_beats && in_has_beats {
+        if let (Some(out_grid), Some(in_grid)) = (out_grid.as_ref(), in_grid.as_ref()) {
+            let outs = mix_out_candidates(Some(out_grid), out.duration, out.tail_offset);
+            let ins = mix_in_candidates(Some(in_grid), input.duration);
+            let mut best: Option<(f32, f32, f32, f32, Option<f32>, Option<f32>)> = None;
+            for candidate_out in outs {
+                let candidate_blend = blend_secs(Some(out_grid), candidate_out, out.duration);
+                if candidate_blend < 0.35 {
+                    continue;
+                }
+                for candidate_in in &ins {
+                    if *candidate_in > input.duration.max(0.0) {
+                        continue;
+                    }
+                    let (score, db_out, db_in) =
+                        cue_score(out, input, candidate_out, *candidate_in, candidate_blend);
+                    if best
+                        .as_ref()
+                        .map(|current| score < current.0)
+                        .unwrap_or(true)
+                    {
+                        best = Some((
+                            score,
+                            candidate_out,
+                            *candidate_in,
+                            candidate_blend,
+                            db_out,
+                            db_in,
+                        ));
+                    }
+                }
+            }
+            if let Some((_, best_out, best_in, best_blend, best_out_db, best_in_db)) = best {
+                out_at = best_out;
+                in_at = best_in;
+                blend = best_blend;
+                out_db = best_out_db;
+                in_db = best_in_db;
+            }
+        }
+    }
+
+    let tempo_ratio = fold_tempo_ratio(
+        grid_bpm(out.tail.bpm, out.bpm),
+        grid_bpm(input.head.bpm, input.bpm),
+    );
+    let in_gain = loudness_gain(out_db, in_db);
+
+    let (cue, _, _) = cue_score(out, input, out_at, in_at, blend);
     let mode_penalty = match mode {
         "strict" => 0.0,
         "relaxed" => 0.12,
         _ => 0.25,
     };
-    let score = (energy_gap * 0.55 + timbre_gap * 0.30 + mode_penalty).min(1.0);
+    let score = (cue + mode_penalty).min(1.0);
 
     let curve = if blend >= 4.0 {
         "linearMedium"
@@ -914,6 +1186,8 @@ fn plan_transition(out: &TrackAnalysis, input: &TrackAnalysis) -> TransitionPlan
         fade_out_curve: curve.to_string(),
         fade_in_curve: curve.to_string(),
         mode: mode.to_string(),
+        tempo_ratio: round(tempo_ratio),
+        in_gain: round(in_gain),
         score: round(score),
     }
 }
@@ -1231,6 +1505,45 @@ mod tests {
         assert!((blend_secs(Some(&g), 184.0, 200.0) - 16.0).abs() < 1e-3);
         // Only 10 s remain: a 16-beat (8 s) phrase fits, 32 beats do not.
         assert!((blend_secs(Some(&g), 190.0, 200.0) - 8.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn tempo_ratio_folds_octaves_and_ignores_far_tempos() {
+        assert!((fold_tempo_ratio(90.0, 180.0) - 1.0).abs() < 1e-3);
+        assert!((fold_tempo_ratio(124.0, 128.0) - 0.96875).abs() < 1e-3);
+        assert_eq!(fold_tempo_ratio(100.0, 128.0), 1.0);
+        assert_eq!(fold_tempo_ratio(0.0, 128.0), 1.0);
+    }
+
+    #[test]
+    fn loudness_gain_matches_a_quieter_incoming_track() {
+        let gain = loudness_gain(Some(-10.0), Some(-16.0));
+        assert!(gain > 1.5 && gain < 2.1);
+        // A negligible difference leaves the master untouched.
+        assert_eq!(loudness_gain(Some(-10.0), Some(-10.05)), 1.0);
+    }
+
+    #[test]
+    fn cue_search_moves_the_mix_out_later_when_continuity_allows() {
+        let mut out = track(120.0, "8A");
+        out.tail_offset = 140.0;
+        out.tail.beats = vec![0.0, 0.5];
+        out.tail.energy_curve = vec![0.2; 120];
+        out.tail.loudness_curve_db = vec![-12.0; 600];
+        out.tail.loudness_curve_resolution_seconds = 0.1;
+        let mut input = track(120.0, "8A");
+        input.head.beats = vec![0.0, 0.5];
+        input.head.energy_curve = vec![0.2; 120];
+        input.head.loudness_curve_db = vec![-12.0; 600];
+        input.head.loudness_curve_resolution_seconds = 0.1;
+
+        let plan = plan_transition(&out, &input);
+        let fallback = mix_out(Some(&grid(120.0, 140.0)), 200.0, 140.0);
+        assert_eq!(plan.mode, "strict");
+        assert!(plan.out_at > fallback);
+        assert!(plan.out_at + plan.blend_secs <= 200.0 + 1e-3);
+        assert!((plan.in_gain - 1.0).abs() < 1e-3);
+        assert!((plan.tempo_ratio - 1.0).abs() < 1e-3);
     }
 
     #[test]

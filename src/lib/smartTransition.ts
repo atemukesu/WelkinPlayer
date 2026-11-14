@@ -71,6 +71,10 @@ export interface PlaybackTransition {
   fadeInCurve: string;
   mode: string;
   score: number;
+  /** Playback-rate multiplier for the incoming deck (beat matching). */
+  tempoRatio: number;
+  /** Linear gain for the incoming deck during the overlap (loudness match). */
+  inGain: number;
 }
 
 export interface AnalysisProgress {

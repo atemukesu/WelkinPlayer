@@ -283,6 +283,11 @@ pub async fn smart_transition_analyze(
 
     let flag = jobs.begin(&playlist_id);
     let cancel = flag.clone();
+    // Pull the sync source first: another device may have a newer revision,
+    // and bumping from a stale local copy would overwrite it on upload.
+    if let Err(error) = load_document(&app, &playlist_id).await {
+        log::warn!("smart-transition: could not refresh before analysis: {error}");
+    }
     let file = file_for_playlist(&playlist_id);
     let full = read_local(&app, &file).and_then(|text| parse_document(&text));
     let partial = read_partial(&app, &playlist_id).and_then(|text| parse_document(&text));

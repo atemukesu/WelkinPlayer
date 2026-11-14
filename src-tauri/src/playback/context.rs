@@ -52,6 +52,16 @@ pub struct PlaybackTransition {
     pub in_at: f64,
     /// Fade length in seconds.
     pub blend_secs: f64,
+    /// Playback-rate multiplier for the incoming deck (beat matching).
+    #[serde(default = "unity")]
+    pub tempo_ratio: f32,
+    /// Linear gain for the incoming deck during the overlap (loudness match).
+    #[serde(default = "unity")]
+    pub in_gain: f32,
+}
+
+fn unity() -> f32 {
+    1.0
 }
 
 /// How long before the Mix Out point the incoming deck is opened and prefilled.
@@ -71,6 +81,8 @@ enum FadePhase {
         out_at: f64,
         in_at: f64,
         blend_secs: f64,
+        tempo_ratio: f32,
+        in_gain: f32,
         token: u64,
         failed: bool,
     },
@@ -80,23 +92,29 @@ enum FadePhase {
         to: String,
         in_at: f64,
         blend_secs: f64,
+        in_gain: f32,
         token: u64,
     },
     /// Fading the outgoing track down to silence.
     Out {
         from: String,
         to: String,
-        started: Instant,
+        /// Fade time accumulated while the transport was actually playing.
+        elapsed: f64,
+        /// Previous tick, used to add only playing time. A pause between ticks
+        /// is clamped away instead of jumping the envelope forward.
+        last_tick: Instant,
         duration: f64,
         /// Mix In point of the incoming track, applied after the advance.
         in_at: f64,
     },
-    /// Fading the incoming track up from silence. `started` is `None` while the
-    /// queue is still waiting for the outgoing track to end and advance.
+    /// Fading the incoming track up from silence. `last_tick` is `None` while
+    /// the queue is still waiting for the outgoing track to end and advance.
     In {
         from: String,
         to: String,
-        started: Option<Instant>,
+        elapsed: f64,
+        last_tick: Option<Instant>,
         duration: f64,
     },
 }
@@ -918,7 +936,8 @@ impl PlaybackContext {
                             FadePhase::Out {
                                 from: plan.from,
                                 to: plan.to,
-                                started: Instant::now(),
+                                elapsed: 0.0,
+                                last_tick: Instant::now(),
                                 duration,
                                 in_at: plan.in_at.max(0.0),
                             }
@@ -936,6 +955,7 @@ impl PlaybackContext {
                                         source_id,
                                         path,
                                         in_at: plan.in_at.max(0.0),
+                                        tempo_ratio: plan.tempo_ratio,
                                     });
                                 }
                                 token
@@ -948,6 +968,8 @@ impl PlaybackContext {
                                 out_at: start,
                                 in_at: plan.in_at.max(0.0),
                                 blend_secs: plan.blend_secs,
+                                tempo_ratio: plan.tempo_ratio,
+                                in_gain: plan.in_gain,
                                 token,
                                 failed: false,
                             }
@@ -959,6 +981,8 @@ impl PlaybackContext {
                                 out_at: start,
                                 in_at: plan.in_at.max(0.0),
                                 blend_secs: plan.blend_secs,
+                                tempo_ratio: plan.tempo_ratio,
+                                in_gain: plan.in_gain,
                                 token: 0,
                                 failed: true,
                             }
@@ -973,6 +997,8 @@ impl PlaybackContext {
                 out_at,
                 in_at,
                 blend_secs,
+                tempo_ratio,
+                in_gain,
                 token,
                 mut failed,
             } => {
@@ -991,12 +1017,14 @@ impl PlaybackContext {
                             let _ = self.engine.send(Command::StartCrossfade {
                                 token,
                                 blend_secs,
+                                in_gain,
                             });
                             FadePhase::Crossfading {
                                 from,
                                 to,
                                 in_at,
                                 blend_secs,
+                                in_gain,
                                 token,
                             }
                         } else {
@@ -1014,7 +1042,8 @@ impl PlaybackContext {
                             FadePhase::Out {
                                 from,
                                 to,
-                                started: Instant::now(),
+                                elapsed: 0.0,
+                                last_tick: Instant::now(),
                                 duration,
                                 in_at,
                             }
@@ -1037,6 +1066,7 @@ impl PlaybackContext {
                                     source_id,
                                     path,
                                     in_at,
+                                    tempo_ratio,
                                 });
                             }
                             FadePhase::Preparing {
@@ -1045,6 +1075,8 @@ impl PlaybackContext {
                                 out_at,
                                 in_at,
                                 blend_secs,
+                                tempo_ratio,
+                                in_gain,
                                 token,
                                 failed: false,
                             }
@@ -1056,6 +1088,8 @@ impl PlaybackContext {
                                 out_at,
                                 in_at,
                                 blend_secs,
+                                tempo_ratio,
+                                in_gain,
                                 token: 0,
                                 failed: true,
                             }
@@ -1066,6 +1100,8 @@ impl PlaybackContext {
                                 out_at,
                                 in_at,
                                 blend_secs,
+                                tempo_ratio,
+                                in_gain,
                                 token: 0,
                                 failed: false,
                             }
@@ -1077,6 +1113,8 @@ impl PlaybackContext {
                             out_at,
                             in_at,
                             blend_secs,
+                            tempo_ratio,
+                            in_gain,
                             token,
                             failed,
                         }
@@ -1088,6 +1126,7 @@ impl PlaybackContext {
                 to,
                 in_at,
                 blend_secs,
+                in_gain,
                 token,
             } => {
                 if current.as_deref() != Some(from.as_str()) {
@@ -1121,7 +1160,8 @@ impl PlaybackContext {
                             FadePhase::Out {
                                 from,
                                 to,
-                                started: Instant::now(),
+                                elapsed: 0.0,
+                                last_tick: Instant::now(),
                                 duration,
                                 in_at,
                             }
@@ -1131,6 +1171,7 @@ impl PlaybackContext {
                             to,
                             in_at,
                             blend_secs,
+                            in_gain,
                             token,
                         },
                     }
@@ -1139,7 +1180,8 @@ impl PlaybackContext {
             FadePhase::Out {
                 from,
                 to,
-                started,
+                elapsed,
+                last_tick,
                 duration,
                 in_at,
             } => {
@@ -1151,7 +1193,8 @@ impl PlaybackContext {
                     FadePhase::In {
                         from,
                         to,
-                        started: None,
+                        elapsed: 0.0,
+                        last_tick: None,
                         duration: 1.2,
                     }
                 } else if current.as_deref() != Some(from.as_str()) {
@@ -1159,7 +1202,16 @@ impl PlaybackContext {
                     shared.set_transition_gain(1.0);
                     FadePhase::Idle
                 } else {
-                    let t = (started.elapsed().as_secs_f64() / duration).clamp(0.0, 1.0);
+                    let now = Instant::now();
+                    // Only add the time between two ticks while playing. A pause
+                    // leaves a large gap; clamping it keeps the envelope from
+                    // jumping forward when playback resumes.
+                    let delta = now
+                        .saturating_duration_since(last_tick)
+                        .as_secs_f64()
+                        .min(0.25);
+                    let elapsed = (elapsed + delta).max(0.0);
+                    let t = (elapsed / duration).clamp(0.0, 1.0);
                     if t >= 1.0 {
                         // The outgoing track is now silent. Advance immediately
                         // instead of waiting for its natural end, so the next
@@ -1169,7 +1221,8 @@ impl PlaybackContext {
                         FadePhase::In {
                             from,
                             to,
-                            started: None,
+                            elapsed: 0.0,
+                            last_tick: None,
                             duration: 1.2,
                         }
                     } else {
@@ -1179,7 +1232,8 @@ impl PlaybackContext {
                         FadePhase::Out {
                             from,
                             to,
-                            started,
+                            elapsed,
+                            last_tick: now,
                             duration,
                             in_at,
                         }
@@ -1189,13 +1243,21 @@ impl PlaybackContext {
             FadePhase::In {
                 from,
                 to,
-                started,
+                elapsed,
+                last_tick,
                 duration,
             } => {
                 if current.as_deref() == Some(to.as_str()) {
                     // The queue has advanced: fade the new track up.
-                    let started = started.unwrap_or_else(Instant::now);
-                    let t = (started.elapsed().as_secs_f64() / duration).clamp(0.0, 1.0);
+                    let now = Instant::now();
+                    let (elapsed, last_tick) = match last_tick {
+                        Some(last) => {
+                            let delta = now.saturating_duration_since(last).as_secs_f64().min(0.25);
+                            ((elapsed + delta).max(0.0), now)
+                        }
+                        None => (0.0, now),
+                    };
+                    let t = (elapsed / duration).clamp(0.0, 1.0);
                     if t >= 1.0 {
                         shared.set_transition_gain(1.0);
                         FadePhase::Idle
@@ -1206,7 +1268,8 @@ impl PlaybackContext {
                         FadePhase::In {
                             from,
                             to,
-                            started: Some(started),
+                            elapsed,
+                            last_tick: Some(last_tick),
                             duration,
                         }
                     }
@@ -1218,7 +1281,8 @@ impl PlaybackContext {
                     FadePhase::In {
                         from,
                         to,
-                        started,
+                        elapsed,
+                        last_tick: None,
                         duration,
                     }
                 } else {

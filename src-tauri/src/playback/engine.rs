@@ -533,6 +533,10 @@ pub struct Shared {
     fade_frames: AtomicU64,
     /// True while two decks are mixed by the crossfade envelope.
     fade_active: AtomicBool,
+    /// Linear loudness compensation for the incoming deck during a fade, as
+    /// `f32` bits. It is eased back to 1.0 as the fade completes so the new
+    /// track keeps its own master level after handover.
+    fade_gain_in: AtomicU32,
     /// Set by the outgoing deck once the envelope reaches the end (or it hits
     /// EOF); the worker then promotes the incoming deck.
     fade_done: AtomicBool,
@@ -619,6 +623,7 @@ impl Shared {
             fade_start_frame: AtomicU64::new(0),
             fade_frames: AtomicU64::new(1),
             fade_active: AtomicBool::new(false),
+            fade_gain_in: AtomicU32::new(1.0f32.to_bits()),
             fade_done: AtomicBool::new(false),
             fade_starved: AtomicBool::new(false),
             active_deck: AtomicU8::new(0),
@@ -815,7 +820,13 @@ impl Shared {
         if deck == from {
             angle.cos()
         } else {
-            angle.sin()
+            // Ease the loudness compensation out as the fade completes: the
+            // incoming deck is matched to the outgoing one during the overlap
+            // and settles back to its own level at handover, so there is no
+            // step when the old deck leaves.
+            let target = f32::from_bits(self.fade_gain_in.load(Ordering::Relaxed));
+            let comp = 1.0 + (target - 1.0) * (1.0 - t);
+            (angle.sin() * comp).clamp(0.0, 2.0)
         }
     }
 
@@ -1280,12 +1291,16 @@ pub enum Command {
         source_id: String,
         path: String,
         in_at: f64,
+        /// Beat-match multiplier for the incoming deck.
+        tempo_ratio: f32,
     },
     /// Start the prepared crossfade envelope. Ignored (and reported as failed)
     /// when the prepared deck is not ready.
     StartCrossfade {
         token: u64,
         blend_secs: f64,
+        /// Loudness compensation for the incoming deck (linear gain).
+        in_gain: f32,
     },
     /// Abort a prepared/active crossfade and keep the active deck.
     CancelCrossfade,
@@ -1542,7 +1557,14 @@ mod worker {
             let (mut ring, mut consumer) = Ring::new(800);
             ring.done.store(false, Ordering::Release);
             for _ in 0..30 {
-                Worker::pump(&shared, &mut ring, &mut current, channels as usize, 0.25);
+                Worker::pump(
+                    &shared,
+                    &mut ring,
+                    &mut current,
+                    channels as usize,
+                    0.25,
+                    true,
+                );
                 while consumer.pop().is_ok() {}
             }
             assert!(
@@ -1643,12 +1665,21 @@ mod worker {
     fn build_incoming(
         shared: &Arc<Shared>,
         prepared: PreparedIncoming,
+        tempo_ratio: f32,
     ) -> Result<IncomingDeck, String> {
         // Match the active deck's work rate so both rings are consumed at the
         // same frame rate and the shared fade clock stays aligned.
         let work_rate = shared.sample_rate.load(Ordering::Relaxed).max(1);
         let channels = prepared.channels.max(1);
-        let stretch = build_stretch(work_rate, channels, 1.0).map_err(|e| e.to_string())?;
+        // Beat-match the incoming deck to the outgoing one, on top of the
+        // user's playback rate. The ratio is clamped to the stretcher's range.
+        let tempo_ratio = if tempo_ratio.is_finite() && tempo_ratio > 0.0 {
+            tempo_ratio.clamp(0.25, 4.0)
+        } else {
+            1.0
+        };
+        let tempo = (shared.tempo() * tempo_ratio).clamp(wsola::MIN_TEMPO, wsola::MAX_TEMPO);
+        let stretch = build_stretch(work_rate, channels, tempo).map_err(|e| e.to_string())?;
         let capacity = output_samples(work_rate, channels, CROSSFADE_BUFFER_MILLIS);
         let (mut ring, consumer) = Ring::new(capacity);
         ring.done.store(false, Ordering::Release);
@@ -1661,8 +1692,8 @@ mod worker {
             }),
             source_done: false,
             stretch,
-            applied_tempo: 1.0,
-            direct: true,
+            applied_tempo: tempo,
+            direct: tempo == 1.0,
             draining: false,
             drain_flushed: false,
             drain_tail: Vec::new(),
@@ -1679,7 +1710,14 @@ mod worker {
         // Fill the whole ring so the fade starts without an underrun.
         while !ring.is_full() && !ring.is_done() {
             let before = ring.len();
-            Worker::pump(shared, &mut ring, &mut current, channels as usize, 1.0);
+            Worker::pump(
+                shared,
+                &mut ring,
+                &mut current,
+                channels as usize,
+                tempo,
+                false,
+            );
             if ring.len() == before {
                 break;
             }
@@ -1700,6 +1738,7 @@ mod worker {
             path: prepared.path,
             progress: Arc::new(Progress::default()),
             in_at: prepared.in_at,
+            tempo_ratio,
         })
     }
 
@@ -1888,6 +1927,8 @@ mod worker {
         progress: Arc<Progress>,
         /// Absolute source position where this deck starts.
         in_at: f64,
+        /// Beat-match multiplier applied on top of the user's playback rate.
+        tempo_ratio: f32,
     }
 
     /// Decoder produced by the preparation thread.
@@ -2277,6 +2318,7 @@ mod worker {
                                 current,
                                 self.shared.channels.load(Ordering::Relaxed) as usize,
                                 self.shared.tempo(),
+                                true,
                             );
                             if !self.ring.is_full() {
                                 idle = false;
@@ -2287,6 +2329,14 @@ mod worker {
                     // Top the prepared incoming deck up only when the audible
                     // deck has all the audio it can hold (or has ended).
                     if audible_satisfied {
+                        let incoming_tempo = self
+                            .incoming
+                            .as_ref()
+                            .map(|incoming| {
+                                (self.shared.tempo() * incoming.tempo_ratio)
+                                    .clamp(wsola::MIN_TEMPO, wsola::MAX_TEMPO)
+                            })
+                            .unwrap_or(1.0);
                         if let Some(incoming) = self.incoming.as_mut() {
                             if !incoming.ring.is_full() && !incoming.ring.is_done() {
                                 let before = incoming.ring.len();
@@ -2295,7 +2345,8 @@ mod worker {
                                     &mut incoming.ring,
                                     &mut incoming.current,
                                     incoming.channels as usize,
-                                    1.0,
+                                    incoming_tempo,
+                                    false,
                                 );
                                 if incoming.ring.len() != before {
                                     idle = false;
@@ -2374,13 +2425,20 @@ mod worker {
                     source_id,
                     path,
                     in_at,
+                    tempo_ratio,
                 } => {
-                    log::debug!("playback: cmd PrepareCrossfade {source_id}::{path} in_at={in_at:.3}");
-                    self.prepare_crossfade(token, source_id, path, in_at)
+                    log::debug!("playback: cmd PrepareCrossfade {source_id}::{path} in_at={in_at:.3} tempo={tempo_ratio:.3}");
+                    self.prepare_crossfade(token, source_id, path, in_at, tempo_ratio)
                 }
-                Command::StartCrossfade { token, blend_secs } => {
-                    log::debug!("playback: cmd StartCrossfade blend={blend_secs:.3}");
-                    self.start_crossfade(token, blend_secs)
+                Command::StartCrossfade {
+                    token,
+                    blend_secs,
+                    in_gain,
+                } => {
+                    log::debug!(
+                        "playback: cmd StartCrossfade blend={blend_secs:.3} gain={in_gain:.3}"
+                    );
+                    self.start_crossfade(token, blend_secs, in_gain)
                 }
                 Command::CancelCrossfade => {
                     log::debug!("playback: cmd CancelCrossfade");
@@ -2404,13 +2462,23 @@ mod worker {
             shared.fade_active.store(false, Ordering::Release);
             shared.fade_done.store(false, Ordering::Release);
             shared.fade_starved.store(false, Ordering::Release);
+            shared
+                .fade_gain_in
+                .store(1.0f32.to_bits(), Ordering::Release);
             shared.set_transition_gain(1.0);
             shared.set_crossfade_state(CrossfadeState::None);
         }
 
         /// Open the incoming track on a helper thread so a slow network read
         /// never stalls the worker that is still feeding the audible deck.
-        fn prepare_crossfade(&mut self, token: u64, source_id: String, path: String, in_at: f64) {
+        fn prepare_crossfade(
+            &mut self,
+            token: u64,
+            source_id: String,
+            path: String,
+            in_at: f64,
+            tempo_ratio: f32,
+        ) {
             self.cancel_crossfade();
             self.prepare_token = token;
             self.shared.set_crossfade_state(CrossfadeState::Preparing);
@@ -2426,7 +2494,7 @@ mod worker {
                     // first reads may block on the network, and that must never
                     // stall the worker still feeding the audible deck.
                     let result = prepare_decoder(&app, &cache, &manual, &source_id, &path, in_at)
-                        .and_then(|prepared| build_incoming(&shared, prepared));
+                        .and_then(|prepared| build_incoming(&shared, prepared, tempo_ratio));
                     let _ = tx.send((token, result));
                 });
             if let Err(error) = spawned {
@@ -2469,7 +2537,7 @@ mod worker {
 
         /// Begin mixing the prepared deck. The envelope clock starts now; the
         /// outgoing deck fades out and the incoming one fades in.
-        fn start_crossfade(&mut self, token: u64, blend_secs: f64) {
+        fn start_crossfade(&mut self, token: u64, blend_secs: f64, in_gain: f32) {
             let state = self.shared.crossfade_state();
             // A duplicate StartCrossfade must not tear down a fade that is
             // already running.
@@ -2513,6 +2581,14 @@ mod worker {
             // audio callback may pick it up immediately, and an incoming deck
             // observed outside a fade would return `None` and be dropped.
             shared.set_transition_gain(1.0);
+            let loudness_gain = if in_gain.is_finite() {
+                in_gain.clamp(0.25, 4.0)
+            } else {
+                1.0
+            };
+            shared
+                .fade_gain_in
+                .store(loudness_gain.to_bits(), Ordering::Release);
             shared.fade_start_frame.store(
                 shared.fade_clock.load(Ordering::Relaxed),
                 Ordering::Release,
@@ -2553,12 +2629,16 @@ mod worker {
                 path,
                 progress,
                 in_at,
+                tempo_ratio,
                 ..
             } = incoming;
             let shared = &self.shared;
             shared.active_deck.store(deck, Ordering::Release);
             shared.fade_active.store(false, Ordering::Release);
             shared.fade_starved.store(false, Ordering::Release);
+            shared
+                .fade_gain_in
+                .store(1.0f32.to_bits(), Ordering::Release);
             shared.set_transition_gain(1.0);
             let incoming_ended = progress.ended.load(Ordering::Relaxed);
             *shared.progress.lock().unwrap_or_else(|e| e.into_inner()) = progress;
@@ -2568,7 +2648,9 @@ mod worker {
                 segments.push_back(Segment {
                     out: 0,
                     pos_secs: in_at,
-                    tempo: 1.0,
+                    // The deck played through the fade at the beat-matched rate;
+                    // keep that mapping so the reported playhead is correct.
+                    tempo: (shared.tempo() * tempo_ratio).clamp(wsola::MIN_TEMPO, wsola::MAX_TEMPO),
                 });
             }
             shared.channels.store(channels as u32, Ordering::Relaxed);
@@ -2941,6 +3023,7 @@ mod worker {
                     current,
                     self.shared.channels.load(Ordering::Relaxed) as usize,
                     self.shared.tempo(),
+                    true,
                 );
                 if self.ring.len() == before {
                     // Input is starved or the stream already ended; the main
@@ -2986,6 +3069,7 @@ mod worker {
             current: &mut Current,
             channels: usize,
             tempo: f32,
+            active: bool,
         ) {
             let channels = channels.max(1);
 
@@ -3020,9 +3104,11 @@ mod worker {
             // Leaving the direct 1.0x feed: hand the decoded-but-unqueued audio
             // to WSOLA so nothing is dropped, and anchor the new tempo segment.
             if !want_direct && current.direct && !current.draining {
-                let boundary = current.out_made + current.stretch.available() as u64;
-                let position = shared.position_at(boundary);
-                shared.push_segment(boundary, position, tempo);
+                if active {
+                    let boundary = current.out_made + current.stretch.available() as u64;
+                    let position = shared.position_at(boundary);
+                    shared.push_segment(boundary, position, tempo);
+                }
                 // The stretcher was drained when the direct feed began; reset it
                 // so the new tempo run primes from a clean state.
                 current.stretch.reset();
@@ -3056,13 +3142,17 @@ mod worker {
                 if now == 1.0 {
                     current.direct = true;
                     current.applied_tempo = 1.0;
-                    let position = shared.position_at(current.out_made);
-                    shared.push_segment(current.out_made, position, 1.0);
+                    if active {
+                        let position = shared.position_at(current.out_made);
+                        shared.push_segment(current.out_made, position, 1.0);
+                    }
                 } else {
                     // The tempo changed again while draining: resume stretching.
-                    let boundary = current.out_made + current.stretch.available() as u64;
-                    let position = shared.position_at(boundary);
-                    shared.push_segment(boundary, position, now);
+                    if active {
+                        let boundary = current.out_made + current.stretch.available() as u64;
+                        let position = shared.position_at(boundary);
+                        shared.push_segment(boundary, position, now);
+                    }
                     current.stretch.reset();
                     let aligned = current.pending.len() / channels * channels;
                     if aligned > 0 {
@@ -3086,9 +3176,11 @@ mod worker {
             // source position of the current output index, then retune.
             if (tempo - current.applied_tempo).abs() > 1e-4 {
                 // Output already inside WSOLA still belongs to the old tempo.
-                let boundary = current.out_made + current.stretch.available() as u64;
-                let position = shared.position_at(boundary);
-                shared.push_segment(boundary, position, tempo);
+                if active {
+                    let boundary = current.out_made + current.stretch.available() as u64;
+                    let position = shared.position_at(boundary);
+                    shared.push_segment(boundary, position, tempo);
+                }
                 current.stretch.set_tempo(tempo);
                 current.applied_tempo = tempo;
             }
