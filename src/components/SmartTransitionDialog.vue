@@ -62,24 +62,24 @@ function apply() {
   // The smart order is now the playlist order; show it instead of whatever
   // manual sort the user had selected.
   playlistSort.key.value = "default";
-  pushToast("success", t("playlists.smart.applied"));
+  pushToast("success", t("library.playlists.smart.applied"));
   emit("close");
 }
 
 function enableOnly() {
   if (!smart.enableOnly(props.playlistId)) return;
-  pushToast("success", t("playlists.smart.enabled"));
+  pushToast("success", t("library.playlists.smart.enabled"));
   emit("close");
 }
 
 function undo() {
   if (!smart.undoOrder(props.playlistId)) return;
-  pushToast("info", t("playlists.smart.undone"));
+  pushToast("info", t("library.playlists.smart.undone"));
 }
 
 function remove() {
   void smart.remove(props.playlistId).then(() => {
-    pushToast("info", t("playlists.smart.removed"));
+    pushToast("info", t("library.playlists.smart.removed"));
     emit("close");
   });
 }
@@ -111,53 +111,53 @@ onBeforeUnmount(() => {
         <header class="flex items-start gap-3 border-b border-line px-5 py-4">
           <span class="mt-0.5 grid h-9 w-9 shrink-0 place-items-center bg-accent text-accent-fg"><AudioLines :size="18" /></span>
           <div class="min-w-0 flex-1">
-            <p class="text-[11px] font-semibold uppercase tracking-[0.3em] text-accent">{{ t("playlists.smart.eyebrow") }}</p>
-            <h2 class="mt-1 truncate text-lg font-black">{{ t("playlists.smart.title") }}</h2>
-            <p class="mt-1 text-xs text-dim">{{ t("playlists.smart.desc") }}</p>
+            <p class="text-[11px] font-semibold uppercase tracking-[0.3em] text-accent">{{ t("library.playlists.smart.eyebrow") }}</p>
+            <h2 class="mt-1 truncate text-lg font-black">{{ t("library.playlists.smart.title") }}</h2>
+            <p class="mt-1 text-xs text-dim">{{ t("library.playlists.smart.desc") }}</p>
           </div>
-          <button type="button" class="grid h-8 w-8 shrink-0 place-items-center border border-line text-dim transition-colors hover:border-accent hover:text-accent" :title="t('playlists.smart.close')" @click="close"><X :size="16" /></button>
+          <button type="button" class="grid h-8 w-8 shrink-0 place-items-center border border-line text-dim transition-colors hover:border-accent hover:text-accent" :title="t('library.playlists.smart.close')" @click="close"><X :size="16" /></button>
         </header>
 
         <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4">
           <div v-if="busy" class="space-y-3">
             <div class="flex items-center gap-3 text-sm">
               <LoaderCircle :size="16" class="animate-spin text-accent" />
-              <span>{{ t("playlists.smart.analyzing") }}</span>
+              <span>{{ t("library.playlists.smart.analyzing") }}</span>
               <span class="ml-auto font-mono text-xs text-dim">{{ progress ? `${progress.done}/${progress.total}` : "" }}</span>
             </div>
             <div class="h-1.5 w-full overflow-hidden bg-surface">
               <div class="h-full bg-accent transition-[width] duration-300" :style="{ width: `${percent}%` }" />
             </div>
-            <p class="text-xs text-dim">{{ t("playlists.smart.analyzingHint") }}</p>
+            <p class="text-xs text-dim">{{ t("library.playlists.smart.analyzingHint") }}</p>
           </div>
 
           <div v-else-if="error" class="border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-400">
-            {{ error === "no-playable-tracks" ? t("playlists.smart.noTracks") : error }}
+            {{ error === "no-playable-tracks" ? t("library.playlists.smart.noTracks") : error }}
           </div>
 
           <template v-else-if="summary">
             <div class="flex flex-wrap items-center gap-2 text-xs text-dim">
-              <span class="border border-line px-2 py-1 font-mono uppercase tracking-wider">{{ t("playlists.smart.stats", { analyzed: summary.stats.analyzed, transitions: summary.transitions.length }) }}</span>
-              <span v-if="summary.stats.reused" class="border border-line px-2 py-1 font-mono uppercase tracking-wider">{{ t("playlists.smart.reused", { count: summary.stats.reused }) }}</span>
-              <span v-if="summary.stats.skipped" class="border border-line px-2 py-1 font-mono uppercase tracking-wider">{{ t("playlists.smart.skipped", { count: summary.stats.skipped }) }}</span>
-              <span v-if="summary.source === 'local'" class="border border-amber-500/40 px-2 py-1 font-mono uppercase tracking-wider text-amber-400">{{ t("playlists.smart.localOnly") }}</span>
+              <span class="border border-line px-2 py-1 font-mono uppercase tracking-wider">{{ t("library.playlists.smart.stats", { analyzed: summary.stats.analyzed, transitions: summary.transitions.length }) }}</span>
+              <span v-if="summary.stats.reused" class="border border-line px-2 py-1 font-mono uppercase tracking-wider">{{ t("library.playlists.smart.reused", { count: summary.stats.reused }) }}</span>
+              <span v-if="summary.stats.skipped" class="border border-line px-2 py-1 font-mono uppercase tracking-wider">{{ t("library.playlists.smart.skipped", { count: summary.stats.skipped }) }}</span>
+              <span v-if="summary.source === 'local'" class="border border-amber-500/40 px-2 py-1 font-mono uppercase tracking-wider text-amber-400">{{ t("library.playlists.smart.localOnly") }}</span>
             </div>
 
             <section class="mt-4">
-              <h3 class="text-xs font-semibold uppercase tracking-[0.25em] text-dim">{{ t("playlists.smart.orderTitle") }}</h3>
+              <h3 class="text-xs font-semibold uppercase tracking-[0.25em] text-dim">{{ t("library.playlists.smart.orderTitle") }}</h3>
               <ol class="mt-2 divide-y divide-line border border-line">
                 <li v-for="row in orderedRows" :key="`${row.key}-${row.index}`" class="flex items-center gap-3 px-3 py-1.5 text-sm">
                   <span class="w-6 shrink-0 text-right font-mono text-xs text-dim">{{ row.index }}</span>
                   <span class="min-w-0 flex-1 truncate">{{ row.title }}</span>
                 </li>
                 <li v-if="summary.order.length > orderedRows.length" class="px-3 py-1.5 text-center text-xs text-dim">
-                  {{ t("playlists.smart.moreTracks", { count: summary.order.length - orderedRows.length }) }}
+                  {{ t("library.playlists.smart.moreTracks", { count: summary.order.length - orderedRows.length }) }}
                 </li>
               </ol>
             </section>
 
             <section v-if="transitionRows.length" class="mt-4">
-              <h3 class="text-xs font-semibold uppercase tracking-[0.25em] text-dim">{{ t("playlists.smart.transitionsTitle") }}</h3>
+              <h3 class="text-xs font-semibold uppercase tracking-[0.25em] text-dim">{{ t("library.playlists.smart.transitionsTitle") }}</h3>
               <ul class="mt-2 space-y-1.5">
                 <li v-for="(plan, index) in transitionRows" :key="`${plan.from}-${plan.to}-${index}`" class="flex items-center gap-2 border border-line px-3 py-2 text-xs">
                   <span class="min-w-0 flex-1 truncate">{{ plan.fromTitle }} <span class="text-dim">→</span> {{ plan.toTitle }}</span>
@@ -170,20 +170,20 @@ onBeforeUnmount(() => {
 
           <div v-else class="grid place-items-center gap-3 border border-dashed border-line px-4 py-10 text-center">
             <Sparkles :size="22" class="text-accent" />
-            <p class="max-w-sm text-sm text-muted">{{ t("playlists.smart.emptyHint") }}</p>
+            <p class="max-w-sm text-sm text-muted">{{ t("library.playlists.smart.emptyHint") }}</p>
           </div>
         </div>
 
         <footer class="flex flex-wrap items-center gap-2 border-t border-line px-5 py-3">
-          <button v-if="busy" type="button" class="ak-clip-tr flex h-9 items-center gap-2 border border-line px-3 text-xs font-semibold transition-colors hover:border-accent hover:text-accent" @click="smart.cancel(props.playlistId)">{{ t("playlists.smart.cancel") }}</button>
+          <button v-if="busy" type="button" class="ak-clip-tr flex h-9 items-center gap-2 border border-line px-3 text-xs font-semibold transition-colors hover:border-accent hover:text-accent" @click="smart.cancel(props.playlistId)">{{ t("library.playlists.smart.cancel") }}</button>
           <template v-else>
             <button type="button" class="ak-clip-tr flex h-9 items-center gap-2 bg-accent px-4 text-xs font-bold text-accent-fg transition-transform hover:scale-[1.02] active:scale-95" @click="start">
-              <Sparkles :size="14" />{{ summary ? t("playlists.smart.reanalyze") : t("playlists.smart.start") }}
+              <Sparkles :size="14" />{{ summary ? t("library.playlists.smart.reanalyze") : t("library.playlists.smart.start") }}
             </button>
-            <button v-if="summary" type="button" class="ak-clip-tr flex h-9 items-center gap-2 border border-line px-3 text-xs font-semibold transition-colors hover:border-accent hover:text-accent" @click="apply">{{ t("playlists.smart.apply") }}</button>
-            <button v-if="summary" type="button" class="ak-clip-tr flex h-9 items-center gap-2 border border-line px-3 text-xs font-semibold transition-colors hover:border-accent hover:text-accent" @click="enableOnly">{{ t("playlists.smart.enableOnly") }}</button>
-            <button v-if="summary && summary.previousOrder.length" type="button" class="ak-clip-tr flex h-9 items-center gap-2 border border-line px-3 text-xs font-semibold transition-colors hover:border-accent hover:text-accent" @click="undo"><RotateCcw :size="14" />{{ t("playlists.smart.undo") }}</button>
-            <button v-if="summary" type="button" class="ml-auto grid h-9 w-9 place-items-center border border-line text-dim transition-colors hover:border-red-500/60 hover:text-red-400" :title="t('playlists.smart.remove')" @click="remove"><Trash2 :size="14" /></button>
+            <button v-if="summary" type="button" class="ak-clip-tr flex h-9 items-center gap-2 border border-line px-3 text-xs font-semibold transition-colors hover:border-accent hover:text-accent" @click="apply">{{ t("library.playlists.smart.apply") }}</button>
+            <button v-if="summary" type="button" class="ak-clip-tr flex h-9 items-center gap-2 border border-line px-3 text-xs font-semibold transition-colors hover:border-accent hover:text-accent" @click="enableOnly">{{ t("library.playlists.smart.enableOnly") }}</button>
+            <button v-if="summary && summary.previousOrder.length" type="button" class="ak-clip-tr flex h-9 items-center gap-2 border border-line px-3 text-xs font-semibold transition-colors hover:border-accent hover:text-accent" @click="undo"><RotateCcw :size="14" />{{ t("library.playlists.smart.undo") }}</button>
+            <button v-if="summary" type="button" class="ml-auto grid h-9 w-9 place-items-center border border-line text-dim transition-colors hover:border-red-500/60 hover:text-red-400" :title="t('library.playlists.smart.remove')" @click="remove"><Trash2 :size="14" /></button>
           </template>
         </footer>
       </div>

@@ -145,10 +145,10 @@ function downloadMetadata(track: Track) { emit("downloadMetadata", track); }
                 <template v-if="activePlaylist">
                   <button type="button" class="ak-clip-tr flex h-10 shrink-0 items-center gap-2 bg-accent px-4 text-[13px] font-bold text-accent-fg transition-transform hover:scale-[1.02] active:scale-95 disabled:opacity-50" :disabled="!tracks.length" @click="playFirst"><Play :size="15" :stroke-width="2.2" />{{ t("library.play") }}</button>
                   <button type="button" class="ak-clip-tr flex h-10 shrink-0 items-center gap-2 border border-line px-4 text-[13px] font-semibold transition-colors hover:border-accent hover:text-accent" @click="emit('edit', activePlaylist.id)"><Pencil :size="15" />{{ t("library.edit") }}</button>
-                  <button type="button" class="ak-clip-tr flex h-10 shrink-0 items-center gap-2 border px-4 text-[13px] font-semibold transition-colors" :class="activePlaylist.smartTransition?.enabled ? 'border-accent/60 text-accent' : 'border-line hover:border-accent hover:text-accent'" :title="t('playlists.smart.buttonHint')" @click="openSmart">
+                  <button type="button" class="ak-clip-tr flex h-10 shrink-0 items-center gap-2 border px-4 text-[13px] font-semibold transition-colors" :class="activePlaylist.smartTransition?.enabled ? 'border-accent/60 text-accent' : 'border-line hover:border-accent hover:text-accent'" :title="t('library.playlists.smart.buttonHint')" @click="openSmart">
                     <Sparkles :size="15" />
-                    {{ activePlaylist.smartTransition?.status === 'ready' ? t('playlists.smart.badgeReady') : t('playlists.smart.button') }}
-                    <span v-if="activePlaylist.smartTransition?.status === 'stale'" class="border border-amber-500/50 px-1.5 text-[10px] font-mono uppercase text-amber-400">{{ t('playlists.smart.badgeStale') }}</span>
+                    {{ activePlaylist.smartTransition?.status === 'ready' ? t('library.playlists.smart.badgeReady') : t('library.playlists.smart.button') }}
+                    <span v-if="activePlaylist.smartTransition?.status === 'stale'" class="border border-amber-500/50 px-1.5 text-[10px] font-mono uppercase text-amber-400">{{ t('library.playlists.smart.badgeStale') }}</span>
                   </button>
                 </template>
                 <button v-else type="button" class="ak-clip-tr flex h-10 shrink-0 items-center gap-2 bg-accent px-4 text-[13px] font-bold text-accent-fg transition-transform hover:scale-[1.02] active:scale-95 disabled:opacity-50" :disabled="!tracks.length" @click="playFirst"><Play :size="15" :stroke-width="2.2" />{{ t("library.collections.playAll") }}</button>
