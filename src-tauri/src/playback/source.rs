@@ -40,7 +40,22 @@ pub fn open_track(
     source_id: &str,
     path: &str,
 ) -> Result<(Box<dyn ReadSeek>, Option<u64>), AppError> {
-    open_track_with_lead(app, cache, manual, source_id, path, None)
+    open_track_with_lead(app, cache, manual, source_id, path, None, true)
+}
+
+/// Open a source for the second deck of an overlapping crossfade.
+///
+/// Unlike [`open_track`] this does **not** mark the track as the active stream
+/// cache entry: the outgoing track is still playing and must keep its eviction
+/// protection until the incoming deck actually takes over.
+pub fn open_track_inactive(
+    app: &AppHandle,
+    cache: &Arc<StreamCache>,
+    manual: &Arc<ManualCache>,
+    source_id: &str,
+    path: &str,
+) -> Result<(Box<dyn ReadSeek>, Option<u64>), AppError> {
+    open_track_with_lead(app, cache, manual, source_id, path, None, false)
 }
 
 /// Open a source for a short head/tail analysis.
@@ -58,7 +73,15 @@ pub fn open_track_for_analysis(
     path: &str,
     lead_secs: f64,
 ) -> Result<(Box<dyn ReadSeek>, Option<u64>), AppError> {
-    open_track_with_lead(app, cache, manual, source_id, path, Some(lead_secs.max(1.0)))
+    open_track_with_lead(
+        app,
+        cache,
+        manual,
+        source_id,
+        path,
+        Some(lead_secs.max(1.0)),
+        true,
+    )
 }
 
 fn open_track_with_lead(
@@ -68,6 +91,7 @@ fn open_track_with_lead(
     source_id: &str,
     path: &str,
     lead: Option<f64>,
+    protect_active: bool,
 ) -> Result<(Box<dyn ReadSeek>, Option<u64>), AppError> {
     let source = find_source(app, source_id)?;
 
@@ -107,7 +131,9 @@ fn open_track_with_lead(
     // playback start on the first byte. The total may already be known from the
     // upstream headers, which is enough to let the decoder seek.
     log::debug!("playback source: streaming {path} via read-ahead cache");
-    cache.set_active(&key);
+    if protect_active {
+        cache.set_active(&key);
+    }
     cache.touch(&key);
     cache.ensure_stream(app, &source, path, &entry, 0, lead);
     let reader = cache.reader_from(&entry, 0);
