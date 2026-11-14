@@ -296,6 +296,10 @@ function getViewFromHash(): View { const route = window.location.hash.slice(1); 
 function setView(nextView: View) { view.value = nextView; window.location.hash = nextView === "library" ? "" : nextView; }
 function clearCollectionFilters() { playlistFilter.value = null; artistFilter.value = null; albumFilter.value = null; sourceFilter.value = null; }
 function navigate(nextView: View) { clearCollectionFilters(); setView(nextView); }
+/** Open the full-screen player without disturbing the page (and its filters) underneath. */
+function openPlayer() { setView("player"); }
+/** Fold the player away back to the page it was opened over, keeping that page's filters. */
+function returnFromPlayer() { setView(baseView.value); }
 function syncViewFromHash() { view.value = getViewFromHash(); }
 function openUserPlaylist(id: string) { clearCollectionFilters(); playlistFilter.value = id; setView("tracks"); }
 /** Open a source in the file-manager browser instead of the flat track list. */
@@ -403,8 +407,8 @@ listen<PlaybackSnapshot>("playback:changed", (event) => {
 </script>
 
 <template>
-  <AmllPlayerView v-if="amllMounted && player.currentTrack" :active="amllActive" :return-view="baseView" @navigate="navigate" @closed="amllMounted = false" />
-  <Transition name="slide"><PlayerView v-if="view === 'player' && player.currentTrack && !lyrics.useAmll" :return-view="baseView" @navigate="navigate" @queue="toggleQueue" @open-artist="openArtist" @open-album="openAlbum" /></Transition>
+  <AmllPlayerView v-if="amllMounted && player.currentTrack" :active="amllActive" :return-view="baseView" @navigate="returnFromPlayer" @closed="amllMounted = false" />
+  <Transition name="slide"><PlayerView v-if="view === 'player' && player.currentTrack && !lyrics.useAmll" :return-view="baseView" @navigate="returnFromPlayer" @queue="toggleQueue" @open-artist="openArtist" @open-album="openAlbum" /></Transition>
   <Transition name="info"><TrackInfoView v-if="view === 'track-info' && viewingTrack" :path="viewingTrack.path ?? null" :source-id="viewingTrack.sourceId" @back="closeOverlay" /></Transition>
   <Transition name="info"><LyricsEditorView v-if="view === 'lyrics-edit' && editingLyricsTrack" :path="editingLyricsTrack.path ?? null" :source-id="editingLyricsTrack.sourceId" @back="closeOverlay" @friendly-error="showError" /></Transition>
   <Transition name="info"><TrackEditorView v-if="view === 'track-edit' && editingTrack" :path="editingTrack.path ?? null" :source-id="editingTrack.sourceId" @back="closeOverlay" @friendly-error="showError" /></Transition>
@@ -433,7 +437,7 @@ listen<PlaybackSnapshot>("playback:changed", (event) => {
       </main>
       <Transition name="queue-panel"><div v-if="showQueue" class="absolute inset-y-0 right-0 z-20 w-80 border-l border-line bg-surface"><QueuePanel @close="closeQueue" /></div></Transition>
     </div>
-    <PlayerBar v-if="player.currentTrack" @open="navigate('player')" @queue="toggleQueue" @open-artist="openArtist" @open-album="openAlbum" />
+    <PlayerBar v-if="player.currentTrack" @open="openPlayer" @queue="toggleQueue" @open-artist="openArtist" @open-album="openAlbum" />
     <AppNavigation placement="mobile" :active-view="baseView" :active-playlist-id="playlistFilter" :active-artist="artistFilter" :active-album="albumFilter" :active-source="sourceFilter" @navigate="navigate" @create-playlist="createPlaylist" @open-playlist="openUserPlaylist" />
     <ToastStack />
     <AudioQualityModal />
