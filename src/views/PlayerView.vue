@@ -214,7 +214,9 @@ function onKeydown(event: KeyboardEvent) {
 }
 
 const repeatTitle = computed(() => player.repeat === "one" ? t("controls.repeatOne") : player.repeat === "all" ? t("controls.repeatAll") : t("controls.repeatOff"));
-const shuffleTitle = computed(() => player.shuffle ? t("controls.shuffleOn") : t("controls.shuffleOff"));
+const shuffleTitle = computed(() =>
+  player.orderLocked ? t("controls.shuffleLocked") : player.shuffle ? t("controls.shuffleOn") : t("controls.shuffleOff"),
+);
 /** Whether the total-time label toggles to show the remaining time instead. */
 const showRemaining = ref(false);
 /** True when the rate actually playing is Hi-Res (above the 48 kHz CD ceiling). */
@@ -747,7 +749,7 @@ watch(
             </button>
           </div>
           <div class="mt-3 flex items-center justify-between gap-3">
-            <button class="grid h-9 w-9 place-items-center" :class="player.shuffle ? 'text-accent' : 'text-muted'" :title="shuffleTitle" @click="player.toggleShuffle()">
+            <button class="grid h-9 w-9 place-items-center" :class="player.orderLocked ? 'text-dim opacity-50' : player.shuffle ? 'text-accent' : 'text-muted'" :title="shuffleTitle" :disabled="player.orderLocked" @click="player.toggleShuffle()">
               <Shuffle :size="16" :stroke-width="1.8" />
             </button>
             <div class="flex items-center gap-2">

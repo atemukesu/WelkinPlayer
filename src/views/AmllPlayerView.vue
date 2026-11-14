@@ -211,7 +211,9 @@ watch(
 );
 
 const repeatTitle = computed(() => player.repeat === "one" ? t("controls.repeatOne") : player.repeat === "all" ? t("controls.repeatAll") : t("controls.repeatOff"));
-const shuffleTitle = computed(() => player.shuffle ? t("controls.shuffleOn") : t("controls.shuffleOff"));
+const shuffleTitle = computed(() =>
+  player.orderLocked ? t("controls.shuffleLocked") : player.shuffle ? t("controls.shuffleOn") : t("controls.shuffleOff"),
+);
 
 /** True when the rate actually playing is Hi-Res (above the 48 kHz CD ceiling). */
 const isHiRes = computed(() => player.outputRate > 48000);
@@ -403,7 +405,7 @@ function onLyricSeek(timeMs: number) {
             </button>
           </div>
           <div class="mt-4 flex items-center justify-between gap-3">
-            <button type="button" class="transition" :class="player.shuffle ? 'text-white' : 'text-white/50'" :title="shuffleTitle" @click="player.toggleShuffle()">
+            <button type="button" class="transition" :class="player.orderLocked ? 'text-white/25' : player.shuffle ? 'text-white' : 'text-white/50'" :title="shuffleTitle" :disabled="player.orderLocked" @click="player.toggleShuffle()">
               <Shuffle :size="20" :stroke-width="2" />
             </button>
             <div class="flex items-center gap-3 sm:gap-5">

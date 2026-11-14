@@ -86,12 +86,15 @@ const librarySignature = computed(() =>
 );
 watch(librarySignature, refreshRecommended, { immediate: true });
 
-function play(track: Track) { player.playInQueue(player.tracks, track); }
-function shuffleAll() {
+function play(track: Track) { void player.playInQueue(player.tracks, track); }
+async function shuffleAll() {
   const pool = player.tracks.filter((track) => track.path);
   if (pool.length === 0) return;
-  if (!player.shuffle) player.toggleShuffle();
-  play(pool[Math.floor(Math.random() * pool.length)]);
+  const first = pool[Math.floor(Math.random() * pool.length)];
+  // Replace any smart-locked queue first (that also releases the shuffle lock),
+  // then request shuffle for the new library queue.
+  await player.playInQueue(player.tracks, first);
+  if (!player.shuffle) await player.setShuffle(true);
 }
 function openContextMenu(event: MouseEvent, track: Track) { contextTrack.value = track; contextPosition.value = { x: event.clientX, y: event.clientY }; }
 function downloadMetadata(track: Track) { emit("downloadMetadata", track); }

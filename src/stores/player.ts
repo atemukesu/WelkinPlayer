@@ -50,6 +50,8 @@ export interface PlaybackSnapshot {
   currentSourceId: string | null;
   currentPath: string | null;
   isPlaying: boolean;
+  /** Queue pinned to the analysed smart-transition order; shuffle is ignored. */
+  orderLocked: boolean;
 }
 
 /** Restore the locally saved output volume, falling back to the default. */
@@ -135,6 +137,8 @@ export const usePlayerStore = defineStore("player", () => {
   const baseQueue = ref<Track[]>([]);
   const queueIndex = ref(-1);
   const shuffle = ref(localStorage.getItem(SHUFFLE_STORAGE_KEY) === "1");
+  /** True while the queue is pinned to a smart-transition order. */
+  const orderLocked = ref(false);
   const repeat = ref<RepeatMode>(localStorage.getItem(REPEAT_STORAGE_KEY) === "all" ? "all" : localStorage.getItem(REPEAT_STORAGE_KEY) === "one" ? "one" : "off");
 
   const currentTrack = ref<Track | null>(null);
@@ -212,6 +216,7 @@ export const usePlayerStore = defineStore("player", () => {
    */
   function applySnapshot(snapshot: PlaybackSnapshot) {
     lastSnapshot = snapshot;
+    if (snapshot.orderLocked !== orderLocked.value) orderLocked.value = snapshot.orderLocked;
     if (snapshot.shuffle !== shuffle.value) shuffle.value = snapshot.shuffle;
     if (snapshot.repeat !== repeat.value) repeat.value = snapshot.repeat;
     queueIndex.value = snapshot.queueIndex;
@@ -322,24 +327,36 @@ export const usePlayerStore = defineStore("player", () => {
    * Replace the Rust queue and start playing it. `cachedOnly` is enforced by
    * the backend, which drops cloud tracks that are not fully cached.
    */
-  async function startQueue(items: Track[], track: Track, cachedOnly = false) {
+  async function startQueue(items: Track[], track: Track, cachedOnly = false, lockOrder = false) {
     const keys = items.map((item) => trackKey(item)).filter((key): key is string => !!key);
     const startKey = trackKey(track) ?? undefined;
     try {
-      await invoke("playback_set_queue", { keys, startKey, cachedOnly });
+      await invoke("playback_set_queue", { keys, startKey, cachedOnly, lockOrder });
     } catch (error) {
       console.warn("[welkin] playback_set_queue failed", error);
     }
   }
 
   /** Start a track while preserving the exact context it was chosen from. */
-  async function playInQueue(items: Track[], track: Track) {
+  async function playInQueue(items: Track[], track: Track, lockOrder = false) {
     if (track.unavailable) return;
     const valid = items.filter((item) => item.path);
     if (valid.length === 0) return;
     const authorized = await authorizeQueue(valid);
     if (!authorized) return;
-    await startQueue(valid, track, authorized.cachedOnly);
+    await startQueue(valid, track, authorized.cachedOnly, lockOrder);
+  }
+
+  /**
+   * Reorder the live queue without restarting the current track. Used when
+   * smart transitions are switched on while this playlist is already playing.
+   */
+  async function reorderQueue(keys: string[]) {
+    try {
+      await invoke("playback_reorder", { keys });
+    } catch (error) {
+      console.warn("[welkin] playback_reorder failed", error);
+    }
   }
 
   /** Select a track by its identity, finding its index in the current queue. */
@@ -362,6 +379,7 @@ export const usePlayerStore = defineStore("player", () => {
   }
 
   async function toggleShuffle() {
+    if (orderLocked.value) return;
     if (repeat.value === "one") {
       // The Rust context mirrors the frontend's cycle semantics: leaving
       // repeat-one also clears shuffle. Request the cycle first; if the result is
@@ -383,6 +401,7 @@ export const usePlayerStore = defineStore("player", () => {
   }
 
   async function setShuffle(on: boolean) {
+    if (orderLocked.value) return;
     try {
       await invoke("playback_set_shuffle", { on });
     } catch (error) {
@@ -537,6 +556,7 @@ export const usePlayerStore = defineStore("player", () => {
     baseQueue,
     queueIndex,
     shuffle,
+    orderLocked,
     repeat,
     currentTrack,
     isPlaying,
@@ -575,6 +595,7 @@ export const usePlayerStore = defineStore("player", () => {
     previous,
     selectTrack,
     playInQueue,
+    reorderQueue,
     toggleShuffle,
     cycleRepeat,
     setShuffle,

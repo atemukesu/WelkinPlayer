@@ -272,23 +272,6 @@ export const useSmartTransitionStore = defineStore("smartTransition", () => {
     return true;
   }
 
-  /** Enable transitions without changing the playlist's current order. */
-  function enableOnly(playlistId: string): boolean {
-    const playlist = profile.playlists.find((item) => item.id === playlistId);
-    const summary = summaries.value[playlistId];
-    if (!playlist || !summary || summary.incomplete) return false;
-    profile.updatePlaylist(playlistId, {
-      smartTransition: {
-        enabled: true,
-        file: summary.file,
-        algorithmVersion: 3,
-        updatedAt: summary.updatedAt,
-        status: "ready",
-      },
-    });
-    return true;
-  }
-
   /** Restore the order that existed before the first analysis. */
   function undoOrder(playlistId: string): boolean {
     const playlist = profile.playlists.find((item) => item.id === playlistId);
@@ -336,15 +319,16 @@ export const useSmartTransitionStore = defineStore("smartTransition", () => {
 
   /**
    * Install plans into the Rust playback context just before a queue starts.
-   * A stale/disabled analysis or shuffle leaves the queue on a normal hard
-   * transition, which is always safe.
+   * Plans also pin the queue to the analysed order. A stale/disabled analysis
+   * leaves the queue on a normal hard transition, which is always safe.
    */
   async function armPlayback(playlistId: string): Promise<void> {
     const playlist = profile.playlists.find((item) => item.id === playlistId);
-    if (!playlist?.smartTransition?.enabled || playlist.smartTransition.status !== "ready" || player.shuffle) {
+    if (!playlist?.smartTransition?.enabled || playlist.smartTransition.status !== "ready") {
       await invoke("playback_clear_transition_plans").catch(() => {});
       return;
-    }    try {
+    }
+    try {
       let plans = await loadTransitionPlans(playlistId);
       if (plans.length === 0) {
         // First play on this device: pull the document once, then use the
@@ -391,7 +375,6 @@ export const useSmartTransitionStore = defineStore("smartTransition", () => {
     analyze,
     cancel,
     applyOrder,
-    enableOnly,
     undoOrder,
     disable,
     remove,

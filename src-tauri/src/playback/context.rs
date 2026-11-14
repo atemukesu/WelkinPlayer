@@ -137,6 +137,9 @@ pub struct ContextSnapshot {
     pub current_path: Option<String>,
     /// Whether the engine is currently playing.
     pub is_playing: bool,
+    /// When true the queue is pinned to the analysed smart-transition order:
+    /// shuffle is ignored and the order never reshuffles.
+    pub order_locked: bool,
 }
 
 /// The mutable playback context, guarded by a single mutex. All intent commands
@@ -169,6 +172,8 @@ struct Inner {
     cached_only: bool,
     /// Bumped when the same item is reselected, to force an engine restart.
     nonce: u64,
+    /// Pinned to the analysed order while smart transitions are enabled.
+    order_locked: bool,
 }
 
 impl PlaybackContext {
@@ -244,11 +249,16 @@ impl PlaybackContext {
     /// Replace the whole queue (e.g. "play these tracks starting here").
     ///
     /// `cached_only` narrows the request to tracks that can play without the
-    /// network (local files or completed manual cache entries). The webview
-    /// already filters the list so the start track is known, but the context
-    /// enforces it again so a backgrounded or dead webview cannot resume cloud
-    /// playback the user declined on a metered connection.
-    pub fn set_queue(&self, keys: Vec<String>, start_key: Option<&str>, cached_only: bool) {
+    /// network (local files or completed manual cache entries). When
+    /// `lock_order` is set the queue is the analysed smart-transition order and
+    /// shuffle is ignored for its whole lifetime.
+    pub fn set_queue(
+        &self,
+        keys: Vec<String>,
+        start_key: Option<&str>,
+        cached_only: bool,
+        lock_order: bool,
+    ) {
         // A new queue invalidates the previous playlist's plans; the caller arms
         // the new ones after the queue is installed.
         self.clear_transition_plans();
@@ -258,8 +268,9 @@ impl PlaybackContext {
         }
         let mut inner = self.inner.lock().unwrap();
         inner.cached_only = cached_only;
+        inner.order_locked = lock_order;
         inner.base_queue = items.clone();
-        let (queue, index) = if inner.shuffle && !items.is_empty() {
+        let (queue, index) = if inner.shuffle && !lock_order && !items.is_empty() {
             // Keep the chosen start first, then shuffle the remainder.
             if let Some(start) = start_key.and_then(Self::split_key) {
                 let start_item = QueueItem {
@@ -488,7 +499,7 @@ impl PlaybackContext {
                 self.emit(snapshot);
                 return;
             }
-            if inner.shuffle && inner.queue.len() > 1 {
+            if inner.shuffle && !inner.order_locked && inner.queue.len() > 1 {
                 let current = inner.queue[inner.index as usize].clone();
                 let mut reshuffled = Self::shuffled(inner.queue.clone());
                 // Avoid starting the new cycle on the same track.
@@ -535,6 +546,10 @@ impl PlaybackContext {
     /// Toggle shuffle. When turning on, reshuffle keeping the current track
     /// first; when off, restore the base order and re-locate the current track.
     pub fn toggle_shuffle(&self) {
+        // Smart transitions pin the played order, so shuffle cannot reorder it.
+        if self.inner.lock().unwrap().order_locked {
+            return;
+        }
         self.reset_transition();
         let mut inner = self.inner.lock().unwrap();
         inner.shuffle = !inner.shuffle;
@@ -619,6 +634,9 @@ impl PlaybackContext {
 
     /// Set shuffle explicitly (used for restore / settings).
     pub fn set_shuffle(&self, on: bool) {
+        if self.inner.lock().unwrap().order_locked {
+            return;
+        }
         self.reset_transition();
         let mut inner = self.inner.lock().unwrap();
         if inner.shuffle == on {
@@ -714,6 +732,23 @@ impl PlaybackContext {
     /// disables transitions. The envelope is reset so a stale fade never leaks
     /// into the next queue.
     pub fn set_transition_plans(&self, plans: Vec<PlaybackTransition>) {
+        // Plans describe the analysed order, so possessing them pins the queue
+        // to that order; clearing them releases the lock.
+        let order_locked = !plans.is_empty();
+        let changed = {
+            let mut inner = self.inner.lock().unwrap();
+            let changed = inner.order_locked != order_locked;
+            inner.order_locked = order_locked;
+            changed
+        };
+        if changed {
+            // Surface the lock state so the UI can disable/enable shuffle.
+            let snapshot = {
+                let inner = self.inner.lock().unwrap();
+                self.snapshot_locked(&inner)
+            };
+            self.emit(snapshot);
+        }
         let mut runtime = self.transition.lock().unwrap();
         runtime.plans = plans;
         runtime.phase = FadePhase::Idle;
@@ -724,6 +759,61 @@ impl PlaybackContext {
     /// Clear all transition plans and restore unity gain.
     pub fn clear_transition_plans(&self) {
         self.set_transition_plans(Vec::new());
+    }
+
+    /// Reorder the current queue in place, keeping the playing track.
+    ///
+    /// Used when smart transitions are switched on mid-playback: the queue was
+    /// possibly shuffled or sorted, and must become the analysed order without
+    /// restarting the current track. Items that are not in `keys` (for example
+    /// cloud tracks filtered out on a metered connection) keep their relative
+    /// order at the end. The order is pinned so shuffle cannot undo it.
+    pub fn reorder(&self, keys: &[String]) {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.queue.is_empty() {
+            return;
+        }
+        let current = inner
+            .index
+            .try_into()
+            .ok()
+            .filter(|&i: &usize| i < inner.queue.len())
+            .map(|i| inner.queue[i].clone());
+        let base = if inner.base_queue.is_empty() {
+            inner.queue.clone()
+        } else {
+            inner.base_queue.clone()
+        };
+        let mut ordered: Vec<QueueItem> = Vec::with_capacity(base.len());
+        for key in keys {
+            let Some((source_id, path)) = Self::split_key(key) else {
+                continue;
+            };
+            let item = QueueItem { source_id, path };
+            if !ordered.contains(&item) && base.contains(&item) {
+                ordered.push(item);
+            }
+        }
+        for item in base {
+            if !ordered.contains(&item) {
+                ordered.push(item);
+            }
+        }
+        if ordered.is_empty() {
+            return;
+        }
+        inner.index = current
+            .and_then(|current| ordered.iter().position(|item| item == &current))
+            .map(|i| i as i64)
+            .unwrap_or(0);
+        inner.queue = ordered.clone();
+        inner.base_queue = ordered;
+        inner.order_locked = true;
+        let snapshot = self.snapshot_locked(&inner);
+        drop(inner);
+        // Keep the currently playing track untouched; only the upcoming order
+        // changes. The caller re-arms plans for the new adjacency afterwards.
+        self.emit(snapshot);
     }
 
     fn reset_transition(&self) {
@@ -939,7 +1029,7 @@ impl PlaybackContext {
                 self.emit(snapshot);
                 return;
             }
-            if inner.shuffle && inner.queue.len() > 1 {
+            if inner.shuffle && !inner.order_locked && inner.queue.len() > 1 {
                 let current = inner.queue[inner.index as usize].clone();
                 let mut reshuffled = Self::shuffled(inner.queue.clone());
                 if reshuffled[0] == current && reshuffled.len() > 1 {
@@ -1030,6 +1120,7 @@ impl PlaybackContext {
             current_source_id: current.as_ref().map(|item| item.source_id.clone()),
             current_path: current.as_ref().map(|item| item.path.clone()),
             is_playing: inner.playing,
+            order_locked: inner.order_locked,
         }
     }
 

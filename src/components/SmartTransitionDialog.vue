@@ -80,19 +80,29 @@ function apply() {
   emit("close");
 }
 
-function enableOnly() {
-  if (!smart.enableOnly(props.playlistId)) return;
-  pushToast("success", t("library.playlists.smart.enabled"));
-  emit("close");
+/** Whether the live queue is exactly this playlist's tracks. */
+function isCurrentQueue(): boolean {
+  const current = playlist.value;
+  if (!current) return false;
+  const playlistKeys = new Set(
+    tracksForPaths(current.tracks, player.tracks).map(trackKey).filter((key): key is string => !!key),
+  );
+  const playing = trackKey(player.currentTrack);
+  if (!playing || !playlistKeys.has(playing)) return false;
+  const queueKeys = player.queue.map(trackKey).filter((key): key is string => !!key);
+  return queueKeys.length > 0 && queueKeys.every((key) => playlistKeys.has(key));
 }
 
 function undo() {
   if (!smart.undoOrder(props.playlistId)) return;
+  // Restoring the old order invalidates the plans/order lock of this queue.
+  if (isCurrentQueue()) void smart.clearPlans();
   pushToast("info", t("library.playlists.smart.undone"));
 }
 
 function remove() {
   void smart.remove(props.playlistId).then(() => {
+    if (isCurrentQueue()) void smart.clearPlans();
     pushToast("info", t("library.playlists.smart.removed"));
     emit("close");
   });
@@ -199,7 +209,6 @@ watch(
               <Sparkles :size="14" />{{ incomplete ? t("library.playlists.smart.resume") : summary ? t("library.playlists.smart.reanalyze") : t("library.playlists.smart.start") }}
             </button>
             <button v-if="summary && !incomplete" type="button" class="ak-clip-tr flex h-9 items-center gap-2 border border-line px-3 text-xs font-semibold transition-colors hover:border-accent hover:text-accent" @click="apply">{{ t("library.playlists.smart.apply") }}</button>
-            <button v-if="summary && !incomplete" type="button" class="ak-clip-tr flex h-9 items-center gap-2 border border-line px-3 text-xs font-semibold transition-colors hover:border-accent hover:text-accent" @click="enableOnly">{{ t("library.playlists.smart.enableOnly") }}</button>
             <button v-if="summary && !incomplete && summary.previousOrder.length" type="button" class="ak-clip-tr flex h-9 items-center gap-2 border border-line px-3 text-xs font-semibold transition-colors hover:border-accent hover:text-accent" @click="undo"><RotateCcw :size="14" />{{ t("library.playlists.smart.undo") }}</button>
             <button v-if="summary" type="button" class="ml-auto grid h-9 w-9 place-items-center border border-line text-dim transition-colors hover:border-red-500/60 hover:text-red-400" :title="t('library.playlists.smart.remove')" @click="remove"><Trash2 :size="14" /></button>
           </template>

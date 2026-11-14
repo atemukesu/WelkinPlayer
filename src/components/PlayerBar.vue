@@ -47,7 +47,9 @@ let pointerSeeking = false;
 let pointerCommitDone = false;
 
 const repeatTitle = computed(() => player.repeat === "one" ? t("controls.repeatOne") : player.repeat === "all" ? t("controls.repeatAll") : t("controls.repeatOff"));
-const shuffleTitle = computed(() => player.shuffle ? t("controls.shuffleOn") : t("controls.shuffleOff"));
+const shuffleTitle = computed(() =>
+  player.orderLocked ? t("controls.shuffleLocked") : player.shuffle ? t("controls.shuffleOn") : t("controls.shuffleOff"),
+);
 const desktopLyricsTitle = computed(() => desktopLyrics.settings.enabled ? t("settings.desktopLyrics.close") : t("settings.desktopLyrics.open"));
 
 /** Playback-speed picker. The store owns the value; this maps it to strings. */
@@ -168,7 +170,7 @@ function endSeek() {
       </div>
 
       <div class="absolute left-1/2 hidden -translate-x-1/2 items-center gap-2 md:flex">
-        <button class="grid h-9 w-9 place-items-center" :class="player.shuffle ? 'text-accent' : 'text-muted'" :title="shuffleTitle" @click="player.toggleShuffle()">
+        <button class="grid h-9 w-9 place-items-center" :class="player.orderLocked ? 'text-dim opacity-50' : player.shuffle ? 'text-accent' : 'text-muted'" :title="shuffleTitle" :disabled="player.orderLocked" @click="player.toggleShuffle()">
           <Shuffle :size="16" :stroke-width="1.8" />
         </button>
         <button class="grid h-10 w-10 place-items-center text-fg transition-colors hover:text-accent" @click="player.previous()">
@@ -279,7 +281,7 @@ function endSeek() {
       <div class="overflow-hidden">
       <div class="grid gap-3 border-t border-line px-4 py-3">
       <div class="flex items-center justify-between">
-        <button class="grid h-10 w-10 place-items-center" :class="player.shuffle ? 'text-accent' : 'text-muted'" :title="shuffleTitle" :aria-label="shuffleTitle" @click="player.toggleShuffle()">
+        <button class="grid h-10 w-10 place-items-center" :class="player.orderLocked ? 'text-dim opacity-50' : player.shuffle ? 'text-accent' : 'text-muted'" :title="shuffleTitle" :aria-label="shuffleTitle" :disabled="player.orderLocked" @click="player.toggleShuffle()">
           <Shuffle :size="17" :stroke-width="1.8" />
         </button>
         <button class="grid h-10 w-10 place-items-center text-fg transition-colors hover:text-accent" :title="t('controls.previous')" :aria-label="t('controls.previous')" @click="player.previous()">

@@ -40,7 +40,8 @@ import { pushToast } from "./lib/toast";
 import { usePlayerStore } from "./stores/player";
 import type { Track, PlaybackSnapshot } from "./stores/player";
 import { useSourcesStore } from "./stores/sources";
-import { useProfileStore } from "./stores/profile";
+import { useProfileStore, tracksForPaths } from "./stores/profile";
+import { useSmartTransitionStore } from "./stores/smartTransition";
 import { usePlaybackStore } from "./stores/playback";
 import { useLyricsStore } from "./stores/lyrics";
 import { useMetadataStore } from "./stores/metadata";
@@ -82,6 +83,7 @@ const { t, locale } = useI18n();
 const player = usePlayerStore();
 const sources = useSourcesStore();
 const profile = useProfileStore();
+const smart = useSmartTransitionStore();
 const playback = usePlaybackStore();
 const lyrics = useLyricsStore();
 const metadata = useMetadataStore();
@@ -204,7 +206,9 @@ watch(
     // Prefer the saved play queue so the exact playlist/context resumes; fall
     // back to just the track when no queue was stored (older state).
     if (playback.queue.length > 0) {
-      void player.restoreQueue(playback.queue, playback.queueIndex, stored);
+      void player.restoreQueue(playback.queue, playback.queueIndex, stored).then((ok) => {
+        if (ok) void armRestoredSmart(playback.queue);
+      });
     } else if (track) {
       void player.playInQueue([track], track);
     }
@@ -219,6 +223,28 @@ watch(
 /** Resolve a stored playback key to its track. */
 function findTrackByKey(key: string): Track | undefined {
   return player.tracks.find((item) => trackKey(item) === key);
+}
+
+/**
+ * Re-arm smart transitions after restoring the last queue. The saved order was
+ * already the analysed order while the playlist was locked, so we only need to
+ * find the matching playlist, re-install the order and pin it again.
+ */
+async function armRestoredSmart(keys: string[]) {
+  if (keys.length === 0) return;
+  const wanted = new Set(keys);
+  const playlist = profile.playlists.find((item) => {
+    if (!item.smartTransition?.enabled || item.smartTransition.status !== "ready") return false;
+    const playlistKeys = tracksForPaths(item.tracks, player.tracks)
+      .map(trackKey)
+      .filter((key): key is string => !!key);
+    return playlistKeys.length === wanted.size && playlistKeys.every((key) => wanted.has(key));
+  });
+  if (!playlist) return;
+  const summary = await smart.load(playlist.id);
+  if (!summary || summary.incomplete) return;
+  await player.reorderQueue(summary.order);
+  await smart.armPlayback(playlist.id);
 }
 
 // Persist the playback position: on track changes, on pause/seek/hide/exit, and

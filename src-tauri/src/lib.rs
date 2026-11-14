@@ -318,6 +318,7 @@ pub fn run() {
             playback::commands::audio_state,
             #[cfg(any(desktop, target_os = "android"))]
             playback::commands_context::playback_set_queue,
+            playback::commands_context::playback_reorder,
             #[cfg(any(desktop, target_os = "android"))]
             playback::commands_context::playback_select,
             #[cfg(any(desktop, target_os = "android"))]
