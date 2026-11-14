@@ -37,7 +37,7 @@ use crate::streaming::stream_cache::StreamCache;
 /// Seconds decoded from the start *and* the end of each track.
 pub const WINDOW_SECS: f32 = 60.0;
 /// Bump when the analysis pipeline or cost model changes.
-pub const ALGORITHM_VERSION: u32 = 2;
+pub const ALGORITHM_VERSION: u32 = 3;
 /// On-disk document schema.
 pub const SCHEMA_VERSION: u32 = 1;
 /// Prefix that scopes transition documents away from audio and other objects.
@@ -110,6 +110,12 @@ pub struct TrackAnalysis {
     pub key: String,
     pub title: String,
     pub duration: f32,
+    /// Whether the container reported a real total duration. Some remote or
+    /// header-less streams cannot, and guessing from the head window would put
+    /// a Mix Out point 30 s into a five-minute track. Such tracks can still be
+    /// analysed and ordered, but never receive a timed transition plan.
+    #[serde(default)]
+    pub duration_known: bool,
     pub bpm: f32,
     pub key_camelot: String,
     pub energy: f32,
@@ -132,7 +138,14 @@ impl TrackAnalysis {
         (self.status == "ok" || self.status == "low")
             && !self.head.empty()
             && !self.tail.empty()
-            && self.duration > 1.0
+            // An unknown duration is fine for ordering (which never places an
+            // absolute cue), but a known one must be a real track length.
+            && (!self.duration_known || self.duration > 1.0)
+    }
+
+    /// Whether a time-based transition plan can be trusted for this track.
+    fn plan_ready(&self) -> bool {
+        self.usable() && self.duration_known && self.duration > 1.0
     }
 }
 
@@ -152,7 +165,7 @@ pub struct TransitionPlan {
     pub fade_in_curve: String,
     /// `strict`, `relaxed` or `fallback`.
     pub mode: String,
-    /// Lower is better; `automix`'s candidate cost.
+    /// Lower is better: energy/timbre continuity plus a grid-confidence penalty.
     pub score: f32,
 }
 
@@ -401,7 +414,9 @@ fn analyse_track(
     let duration = decoder
         .total_duration()
         .map(|value| value.as_secs_f32())
-        .unwrap_or(0.0);
+        .filter(|value| value.is_finite() && *value > 0.0);
+    let duration_known = duration.is_some();
+    let duration = duration.unwrap_or(0.0);
     let window_frames = (WINDOW_SECS * rate as f32) as usize;
 
     // Head: decode the first window.
@@ -487,11 +502,12 @@ fn analyse_track(
 
     let head = EdgeFeatures::from_features(&head_features);
     let tail = EdgeFeatures::from_features(&tail_features);
-    let confidence_ok = head.bpm > 1.0 && !head.key.is_empty();
+    let confidence_ok = head.bpm > 1.0 && !head.key.is_empty() && duration_known;
     Ok(TrackAnalysis {
         key: input.key.clone(),
         title: input.title.clone(),
-        duration: round(duration.max(head_buffer.duration_seconds())),
+        duration: round(duration),
+        duration_known,
         bpm: head.bpm,
         key_camelot: head.key.clone(),
         energy: round((head.mean_energy() + tail.mean_energy()) / 2.0),
@@ -962,7 +978,7 @@ fn assemble_document(
         if let (Some(out), Some(input)) =
             (by_key.get(pair[0].as_str()), by_key.get(pair[1].as_str()))
         {
-            if out.usable() && input.usable() {
+            if out.plan_ready() && input.plan_ready() {
                 transitions.push(plan_transition(out, input));
             }
         }
@@ -1074,6 +1090,7 @@ pub fn analyze_playlist(
                     key: input.key.clone(),
                     title: input.title.clone(),
                     duration: 0.0,
+                    duration_known: false,
                     bpm: 0.0,
                     key_camelot: String::new(),
                     energy: 0.0,
@@ -1127,6 +1144,7 @@ mod tests {
             key: format!("s::{bpm}"),
             title: bpm.to_string(),
             duration: 200.0,
+            duration_known: true,
             bpm,
             key_camelot: key.to_string(),
             energy: 0.5,
@@ -1234,5 +1252,19 @@ mod tests {
         assert_eq!(plan.mode, "strict");
         assert!(plan.in_at >= 0.0);
         assert!(plan.out_at > 0.0);
+    }
+
+    #[test]
+    fn unknown_duration_is_usable_but_never_planned() {
+        let mut unknown = track(120.0, "8A");
+        unknown.duration = 0.0;
+        unknown.duration_known = false;
+        // `usable` requires non-empty loudness curves.
+        unknown.head.loudness_curve_db = vec![-20.0];
+        unknown.tail.loudness_curve_db = vec![-20.0];
+        // It may still take part in ordering…
+        assert!(unknown.usable());
+        // …but placing an absolute cue would be a guess, so no plan.
+        assert!(!unknown.plan_ready());
     }
 }
