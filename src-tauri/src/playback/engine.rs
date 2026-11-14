@@ -490,6 +490,9 @@ pub struct Shared {
     muted: AtomicBool,
     /// Volume as `f32` bits, `0.0..=1.0`.
     volume: AtomicU32,
+    /// Extra gain for the smart-transition envelope, as `f32` bits. It is
+    /// multiplied with the user volume so a fade never mutates the saved volume.
+    transition_gain: AtomicU32,
     /// Playback-rate multiplier as `f32` bits (`1.0` = unchanged).
     tempo: AtomicU32,
     failure: Mutex<Option<ErrorInfo>>,
@@ -555,6 +558,7 @@ impl Shared {
             worker_started: AtomicBool::new(false),
             muted: AtomicBool::new(false),
             volume: AtomicU32::new(1.0f32.to_bits()),
+            transition_gain: AtomicU32::new(1.0f32.to_bits()),
             tempo: AtomicU32::new(1.0f32.to_bits()),
             failure: Mutex::new(None),
             location: Mutex::new(None),
@@ -681,6 +685,25 @@ impl Shared {
 
     fn volume(&self) -> f32 {
         f32::from_bits(self.volume.load(Ordering::Relaxed))
+    }
+
+    /// Set the smart-transition gain envelope (0.0–1.0).
+    ///
+    /// This is kept separate from the user volume so fading never changes the
+    /// saved volume or the value shown by the UI.
+    pub fn set_transition_gain(&self, gain: f32) {
+        let value = if gain.is_finite() {
+            gain.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        self.transition_gain
+            .store(value.to_bits(), Ordering::Relaxed);
+    }
+
+    /// Current smart-transition gain.
+    pub fn transition_gain(&self) -> f32 {
+        f32::from_bits(self.transition_gain.load(Ordering::Relaxed))
     }
 
     /// Set the playback-rate multiplier, clamped to the range the WSOLA
@@ -961,7 +984,7 @@ impl Iterator for RingSource {
             let target = if self.shared.muted.load(Ordering::Relaxed) {
                 0.0
             } else {
-                self.shared.volume()
+                self.shared.volume() * self.shared.transition_gain()
             };
             if target != self.target_gain {
                 self.target_gain = target;
@@ -1159,6 +1182,11 @@ mod events {
             }
 
             let state = shared.snapshot();
+            // Drive the smart-transition gain envelope at the fast tick rate
+            // (50 ms) so fades stay smooth without an extra timer thread.
+            if let Some(context) = app.try_state::<crate::playback::context::PlaybackContext>() {
+                context.on_tick(&state);
+            }
             // State remains intentionally low frequency; waveform samples use
             // the faster loop below without making transport events noisy.
             state_ticks += 1;

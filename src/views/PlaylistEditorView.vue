@@ -119,6 +119,7 @@ async function save() {
   const previous = editing.value?.coverFile;
   if (editing.value) {
     profile.updatePlaylist(editing.value.id, { name: trimmed, cover: legacyCover.value, coverFile: file ?? undefined, coverTrack: coverTrack.value, tracks: selectedPaths.value });
+    profile.markSmartTransitionStale(editing.value.id);
     if (previous && previous !== file) void profile.pruneCover(previous);
     emit("done", editing.value.id);
   } else {

@@ -13,6 +13,7 @@ import {
 } from "../lib/profile";
 import type { Playlist, Profile } from "../lib/profile";
 import { coverUrl } from "../lib/remote";
+import { deleteSmartTransition } from "../lib/smartTransition";
 import { profileTrackKey, sourceProfileId, splitTrackKey, trackKey } from "../lib/sources";
 import { useSourcesStore } from "./sources";
 import type { Track } from "./player";
@@ -316,8 +317,8 @@ export const useProfileStore = defineStore("profile", () => {
     scheduleSave();
   }
 
-  /** Update mutable playlist fields (name, cover and/or tracks). */
-  function updatePlaylist(id: string, patch: Partial<Pick<Playlist, "name" | "cover" | "coverFile" | "coverTrack" | "tracks">>) {
+  /** Update mutable playlist fields (name, cover, tracks and/or smart metadata). */
+  function updatePlaylist(id: string, patch: Partial<Pick<Playlist, "name" | "cover" | "coverFile" | "coverTrack" | "tracks" | "smartTransition">>) {
     const playlist = profile.value.playlists.find((item) => item.id === id);
     if (!playlist) return;
     if (patch.name !== undefined) playlist.name = patch.name.trim() || playlist.name;
@@ -325,6 +326,15 @@ export const useProfileStore = defineStore("profile", () => {
     if ("cover" in patch) playlist.cover = patch.cover;
     if ("coverFile" in patch) playlist.coverFile = patch.coverFile;
     if ("coverTrack" in patch) playlist.coverTrack = patch.coverTrack;
+    if ("smartTransition" in patch) playlist.smartTransition = patch.smartTransition;
+    scheduleSave();
+  }
+
+  /** Mark a playlist's analysis as stale after its track list changes. */
+  function markSmartTransitionStale(id: string) {
+    const playlist = profile.value.playlists.find((item) => item.id === id);
+    if (!playlist?.smartTransition || playlist.smartTransition.status !== "ready") return;
+    playlist.smartTransition = { ...playlist.smartTransition, status: "stale" };
     scheduleSave();
   }
 
@@ -425,9 +435,16 @@ export const useProfileStore = defineStore("profile", () => {
 
   function deletePlaylist(id: string) {
     const file = profile.value.playlists.find((item) => item.id === id)?.coverFile;
+    const smart = profile.value.playlists.find((item) => item.id === id)?.smartTransition;
     profile.value.playlists = profile.value.playlists.filter((item) => item.id !== id);
     scheduleSave();
     if (file) void pruneCover(file);
+    if (smart) {
+      // Best-effort: the document is only useful for this playlist.
+      void deleteSmartTransition(id).catch((error) => {
+        console.warn("[welkin] failed to delete smart transition", error);
+      });
+    }
   }
 
   function addToPlaylist(id: string, path: string | undefined) {
@@ -436,6 +453,7 @@ export const useProfileStore = defineStore("profile", () => {
     const playlist = profile.value.playlists.find((item) => item.id === id);
     if (!playlist || playlist.tracks.includes(path)) return;
     playlist.tracks.push(path);
+    markSmartTransitionStale(id);
     scheduleSave();
   }
 
@@ -444,6 +462,7 @@ export const useProfileStore = defineStore("profile", () => {
     const playlist = profile.value.playlists.find((item) => item.id === id);
     if (!playlist) return;
     playlist.tracks = playlist.tracks.filter((item) => item !== path);
+    markSmartTransitionStale(id);
     scheduleSave();
   }
 
@@ -458,6 +477,7 @@ export const useProfileStore = defineStore("profile", () => {
     const next = [...playlist.tracks];
     [next[index], next[target]] = [next[target], next[index]];
     playlist.tracks = next;
+    markSmartTransitionStale(id);
     scheduleSave();
   }
 
@@ -502,6 +522,7 @@ export const useProfileStore = defineStore("profile", () => {
     createPlaylist,
     renamePlaylist,
     updatePlaylist,
+    markSmartTransitionStale,
     deletePlaylist,
     addToPlaylist,
     removeFromPlaylist,

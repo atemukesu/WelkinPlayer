@@ -18,11 +18,12 @@ use std::sync::Mutex;
 // `Duration` is only needed by the Android media-control poller below.
 #[cfg(target_os = "android")]
 use std::time::Duration;
+use std::time::Instant;
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::playback::engine::{Command, Engine};
+use crate::playback::engine::{AudioState, Command, Engine};
 
 /// Separator between a source id and a track path inside a track key.
 pub const KEY_SEPARATOR: &str = "::";
@@ -33,6 +34,56 @@ pub const KEY_SEPARATOR: &str = "::";
 pub struct QueueItem {
     pub source_id: String,
     pub path: String,
+}
+
+/// One transition handed to the context for scheduling.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackTransition {
+    /// `sourceId::path` of the outgoing track.
+    pub from: String,
+    /// `sourceId::path` of the incoming track.
+    pub to: String,
+    /// Absolute seconds in the outgoing track where the fade starts.
+    pub out_at: f64,
+    /// Fade length in seconds.
+    pub blend_secs: f64,
+}
+
+/// The transition envelope currently in flight.
+enum FadePhase {
+    Idle,
+    /// Fading the outgoing track down to silence.
+    Out {
+        from: String,
+        to: String,
+        started: Instant,
+        duration: f64,
+    },
+    /// Fading the incoming track up from silence. `started` is `None` while the
+    /// queue is still waiting for the outgoing track to end and advance.
+    In {
+        from: String,
+        to: String,
+        started: Option<Instant>,
+        duration: f64,
+    },
+}
+
+impl Default for FadePhase {
+    fn default() -> Self {
+        FadePhase::Idle
+    }
+}
+
+#[derive(Default)]
+struct TransitionRuntime {
+    plans: Vec<PlaybackTransition>,
+    phase: FadePhase,
+}
+
+fn track_key(item: &QueueItem) -> String {
+    format!("{}{}{}", item.source_id, KEY_SEPARATOR, item.path)
 }
 
 /// Repeat modes, mirroring the frontend's `RepeatMode`.
@@ -91,6 +142,8 @@ pub struct PlaybackContext {
     /// cached-only queue; the context may outlive the webview that set it.
     app: AppHandle,
     inner: Mutex<Inner>,
+    /// Smart-transition plans and the fade envelope currently in flight.
+    transition: Mutex<TransitionRuntime>,
 }
 
 #[derive(Default)]
@@ -118,6 +171,7 @@ impl PlaybackContext {
             engine,
             app,
             inner: Mutex::new(Inner::default()),
+            transition: Mutex::new(TransitionRuntime::default()),
         }
     }
 
@@ -189,6 +243,9 @@ impl PlaybackContext {
     /// enforces it again so a backgrounded or dead webview cannot resume cloud
     /// playback the user declined on a metered connection.
     pub fn set_queue(&self, keys: Vec<String>, start_key: Option<&str>, cached_only: bool) {
+        // A new queue invalidates the previous playlist's plans; the caller arms
+        // the new ones after the queue is installed.
+        self.clear_transition_plans();
         let mut items = Self::items_from_keys(&keys);
         if cached_only {
             items = self.cached_items(items);
@@ -241,6 +298,7 @@ impl PlaybackContext {
 
     /// Reselect the current queue item (same track) without changing order.
     pub fn select_index(&self, index: i64) {
+        self.reset_transition();
         let mut inner = self.inner.lock().unwrap();
         if inner.queue.is_empty() || index < 0 || index as usize >= inner.queue.len() {
             return;
@@ -269,6 +327,7 @@ impl PlaybackContext {
 
     /// Toggle play/pause.
     pub fn toggle(&self) {
+        self.reset_transition();
         let mut inner = self.inner.lock().unwrap();
         let was_playing = inner.playing;
         inner.playing = !inner.playing;
@@ -290,6 +349,7 @@ impl PlaybackContext {
 
     /// Explicit play (resume).
     pub fn play(&self) {
+        self.reset_transition();
         let mut inner = self.inner.lock().unwrap();
         inner.playing = true;
         let snapshot = self.snapshot_locked(&inner);
@@ -304,6 +364,7 @@ impl PlaybackContext {
 
     /// Explicit pause.
     pub fn pause(&self) {
+        self.reset_transition();
         let mut inner = self.inner.lock().unwrap();
         inner.playing = false;
         let snapshot = self.snapshot_locked(&inner);
@@ -315,6 +376,7 @@ impl PlaybackContext {
     /// Seek to an absolute position (seconds). Drives the engine directly so the
     /// native MediaSession's scrub bar works without the webview.
     pub fn seek(&self, position_secs: f64) {
+        self.reset_transition();
         if !position_secs.is_finite() || position_secs < 0.0 {
             return;
         }
@@ -396,6 +458,7 @@ impl PlaybackContext {
 
     /// Advance to the next track (honouring repeat-one / repeat-all / end).
     pub fn next(&self) {
+        self.reset_transition();
         let mut inner = self.inner.lock().unwrap();
         if inner.queue.is_empty() {
             return;
@@ -439,6 +502,7 @@ impl PlaybackContext {
 
     /// Go to the previous track.
     pub fn previous(&self) {
+        self.reset_transition();
         let mut inner = self.inner.lock().unwrap();
         if inner.queue.is_empty() {
             return;
@@ -465,6 +529,7 @@ impl PlaybackContext {
     /// Toggle shuffle. When turning on, reshuffle keeping the current track
     /// first; when off, restore the base order and re-locate the current track.
     pub fn toggle_shuffle(&self) {
+        self.reset_transition();
         let mut inner = self.inner.lock().unwrap();
         inner.shuffle = !inner.shuffle;
         let current = inner
@@ -513,6 +578,7 @@ impl PlaybackContext {
 
     /// Cycle repeat mode (off -> all -> one -> off).
     pub fn cycle_repeat(&self) {
+        self.reset_transition();
         let mut inner = self.inner.lock().unwrap();
         inner.repeat = inner.repeat.cycle();
         // One implies shuffle off for a sane cycle, matching the frontend.
@@ -547,6 +613,7 @@ impl PlaybackContext {
 
     /// Set shuffle explicitly (used for restore / settings).
     pub fn set_shuffle(&self, on: bool) {
+        self.reset_transition();
         let mut inner = self.inner.lock().unwrap();
         if inner.shuffle == on {
             return;
@@ -598,6 +665,7 @@ impl PlaybackContext {
     /// when present (more reliable than a stale index). Returns false when the
     /// queue could not be rebuilt.
     pub fn restore(&self, keys: &[String], index: i64, current_key: Option<&str>) -> bool {
+        self.reset_transition();
         let items = Self::items_from_keys(keys);
         if items.is_empty() {
             return false;
@@ -634,6 +702,192 @@ impl PlaybackContext {
         // applied lazily once the UI requests playback or the resume playhead.
         self.emit(snapshot);
         true
+    }
+
+    /// Replace the scheduled smart-transition plans. Passing an empty list
+    /// disables transitions. The envelope is reset so a stale fade never leaks
+    /// into the next queue.
+    pub fn set_transition_plans(&self, plans: Vec<PlaybackTransition>) {
+        let mut runtime = self.transition.lock().unwrap();
+        runtime.plans = plans;
+        runtime.phase = FadePhase::Idle;
+        drop(runtime);
+        self.engine.shared().set_transition_gain(1.0);
+    }
+
+    /// Clear all transition plans and restore unity gain.
+    pub fn clear_transition_plans(&self) {
+        self.set_transition_plans(Vec::new());
+    }
+
+    fn reset_transition(&self) {
+        let mut runtime = self.transition.lock().unwrap();
+        runtime.phase = FadePhase::Idle;
+        drop(runtime);
+        self.engine.shared().set_transition_gain(1.0);
+    }
+
+    /// Drive the smart-transition envelope. Called from the engine events thread
+    /// every 50 ms, so the fade stays smooth without another timer.
+    pub fn on_tick(&self, state: &AudioState) {
+        if !state.playing {
+            return;
+        }
+        let (current, next) = {
+            let inner = self.inner.lock().unwrap();
+            let index: usize = match inner.index.try_into() {
+                Ok(index) => index,
+                Err(_) => return,
+            };
+            let current = inner.queue.get(index).map(track_key);
+            let next = if inner.repeat == RepeatMode::One {
+                None
+            } else if index + 1 < inner.queue.len() {
+                Some(track_key(&inner.queue[index + 1]))
+            } else if inner.repeat == RepeatMode::All && !inner.queue.is_empty() {
+                Some(track_key(&inner.queue[0]))
+            } else {
+                None
+            };
+            (current, next)
+        };
+        let position = state.position_ms / 1000.0;
+        let track_duration = state.duration_ms / 1000.0;
+        // Never truncate the outgoing track. If the analysed ramp point sits
+        // further than this from the end, wait and fade only the final stretch,
+        // so the fade reaches silence exactly as the track ends.
+        const MAX_FADE_SECS: f64 = 8.0;
+
+        let mut runtime = self.transition.lock().unwrap();
+        let phase = std::mem::replace(&mut runtime.phase, FadePhase::Idle);
+        let shared = self.engine.shared();
+        runtime.phase = match phase {
+            FadePhase::Idle => {
+                let trigger = current.as_deref().and_then(|current| {
+                    next.as_deref().and_then(|next| {
+                        runtime
+                            .plans
+                            .iter()
+                            .find(|plan| plan.from == current && plan.to == next)
+                            .cloned()
+                    })
+                });
+                match trigger {
+                    Some(plan) => {
+                        let start = if track_duration > 0.5 {
+                            plan.out_at.max(track_duration - MAX_FADE_SECS).max(0.0)
+                        } else {
+                            plan.out_at.max(0.0)
+                        };
+                        if position + 0.02 >= start {
+                            let remaining = if track_duration > 0.5 {
+                                track_duration - position
+                            } else {
+                                plan.blend_secs
+                            };
+                            FadePhase::Out {
+                                from: plan.from,
+                                to: plan.to,
+                                started: Instant::now(),
+                                duration: remaining.clamp(0.35, MAX_FADE_SECS),
+                            }
+                        } else {
+                            FadePhase::Idle
+                        }
+                    }
+                    None => FadePhase::Idle,
+                }
+            }
+            FadePhase::Out {
+                from,
+                to,
+                started,
+                duration,
+            } => {
+                if current.as_deref() == Some(to.as_str()) {
+                    // The track ended and the queue advanced before the envelope
+                    // finished ticking: start the new track silent so the fade-in
+                    // still happens instead of unmuting abruptly.
+                    shared.set_transition_gain(0.0);
+                    FadePhase::In {
+                        from,
+                        to,
+                        started: None,
+                        duration: 1.2,
+                    }
+                } else if current.as_deref() != Some(from.as_str()) {
+                    // The user moved to some other track: cancel the fade.
+                    shared.set_transition_gain(1.0);
+                    FadePhase::Idle
+                } else {
+                    let t = (started.elapsed().as_secs_f64() / duration).clamp(0.0, 1.0);
+                    if t >= 1.0 {
+                        // The fade lands on the track's end, so let the natural
+                        // `ended` handling advance the queue: advancing here too
+                        // would skip a track when both fire on the same tick.
+                        shared.set_transition_gain(0.0);
+                        FadePhase::In {
+                            from,
+                            to,
+                            started: None,
+                            duration: 1.2,
+                        }
+                    } else {
+                        // Equal-power fade-out: cos(t * pi/2).
+                        let gain = ((1.0 - t) * std::f64::consts::FRAC_PI_2).cos() as f32;
+                        shared.set_transition_gain(gain);
+                        FadePhase::Out {
+                            from,
+                            to,
+                            started,
+                            duration,
+                        }
+                    }
+                }
+            }
+            FadePhase::In {
+                from,
+                to,
+                started,
+                duration,
+            } => {
+                if current.as_deref() == Some(to.as_str()) {
+                    // The queue has advanced: fade the new track up.
+                    let started = started.unwrap_or_else(Instant::now);
+                    let t = (started.elapsed().as_secs_f64() / duration).clamp(0.0, 1.0);
+                    if t >= 1.0 {
+                        shared.set_transition_gain(1.0);
+                        FadePhase::Idle
+                    } else {
+                        // Equal-power fade-in: sin(t * pi/2).
+                        let gain = (t * std::f64::consts::FRAC_PI_2).sin() as f32;
+                        shared.set_transition_gain(gain);
+                        FadePhase::In {
+                            from,
+                            to,
+                            started: Some(started),
+                            duration,
+                        }
+                    }
+                } else if current.as_deref() == Some(from.as_str()) {
+                    // Still on the outgoing track for a tick or two: stay silent
+                    // until the natural end advances the queue, instead of
+                    // jumping back to full volume.
+                    shared.set_transition_gain(0.0);
+                    FadePhase::In {
+                        from,
+                        to,
+                        started,
+                        duration,
+                    }
+                } else {
+                    // The user moved to some other track: restore unity gain.
+                    shared.set_transition_gain(1.0);
+                    FadePhase::Idle
+                }
+            }
+        };
+        drop(runtime);
     }
 
     /// Called by the engine events thread when the current track ends. Advances

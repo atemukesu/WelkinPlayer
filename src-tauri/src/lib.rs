@@ -7,6 +7,11 @@ mod data;
 mod platform;
 mod streaming;
 
+// Smart-transition analysis decodes audio through the playback source layer, so
+// it shares the desktop/Android configuration of the playback engine.
+#[cfg(any(desktop, target_os = "android"))]
+mod analysis;
+
 // The Rust playback engine runs on desktop and Android. Both use `rodio` +
 // `cpal` (WASAPI / CoreAudio / ALSA on desktop, Oboe / AAudio on Android), so
 // decoding and output never touch the webview or hand-written JNI.
@@ -87,6 +92,10 @@ pub fn run() {
         .manage(platform::media_control::MediaControlState::default())
         .manage(platform::tray::CloseToTray::default())
         .setup(|app| {
+            #[cfg(any(desktop, target_os = "android"))]
+            {
+                app.manage(commands::smart_transition::TransitionJobs::default());
+            }
             // Apply signed updates from GitHub Releases. macOS/Windows use the
             // Tauri updater plugin (in-app auto-install); Android and Linux query
             // GitHub directly and open the release page, so they need neither the
@@ -331,6 +340,10 @@ pub fn run() {
             playback::commands_context::playback_restore,
             #[cfg(any(desktop, target_os = "android"))]
             playback::commands_context::playback_state,
+            #[cfg(any(desktop, target_os = "android"))]
+            playback::commands_context::playback_set_transition_plans,
+            #[cfg(any(desktop, target_os = "android"))]
+            playback::commands_context::playback_clear_transition_plans,
             commands::desktop_lyric::desktop_lyric_open,
             commands::desktop_lyric::desktop_lyric_close,
             commands::desktop_lyric::desktop_lyric_load,
@@ -344,6 +357,16 @@ pub fn run() {
             platform::media_control::media_control_position,
             platform::media_control::media_control_clear,
             platform::media_control::media_control_take_control,
+            #[cfg(any(desktop, target_os = "android"))]
+            commands::smart_transition::smart_transition_analyze,
+            #[cfg(any(desktop, target_os = "android"))]
+            commands::smart_transition::smart_transition_load,
+            #[cfg(any(desktop, target_os = "android"))]
+            commands::smart_transition::smart_transition_plans,
+            #[cfg(any(desktop, target_os = "android"))]
+            commands::smart_transition::smart_transition_delete,
+            #[cfg(any(desktop, target_os = "android"))]
+            commands::smart_transition::smart_transition_cancel,
             platform::tray::set_close_to_tray
         ])
         .build(tauri::generate_context!())

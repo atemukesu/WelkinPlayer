@@ -131,6 +131,33 @@ const controlsVisible = ref(true);
 const isFullscreen = ref(false);
 let controlsTimer = 0;
 
+/**
+ * Album-art crossfade. The full-screen player keeps the outgoing cover on top
+ * and fades it out while the new one fades/scales in, so a smart transition is
+ * also visible when the audio engine hands over between tracks.
+ */
+const outgoingArt = ref<{ cover?: string; color: string } | null>(null);
+const artTransition = ref(false);
+let artTimer = 0;
+
+watch(
+  () => player.currentTrack,
+  (next, previous) => {
+    if (!next) return;
+    const key = `${next.sourceId ?? ""}::${next.path ?? next.title}`;
+    const previousKey = previous ? `${previous.sourceId ?? ""}::${previous.path ?? previous.title}` : "";
+    if (key === previousKey) return;
+    if (!previous) return;
+    outgoingArt.value = { cover: previous.cover, color: previous.color };
+    artTransition.value = true;
+    window.clearTimeout(artTimer);
+    artTimer = window.setTimeout(() => {
+      artTransition.value = false;
+      outgoingArt.value = null;
+    }, 900);
+  },
+);
+
 let lastBump = 0;
 function bumpControls() {
   const now = performance.now();
@@ -522,6 +549,7 @@ onBeforeUnmount(() => {
   window.clearTimeout(programmaticTimer);
   window.clearTimeout(fullscreenTimer);
   window.clearTimeout(settleTimer);
+  window.clearTimeout(artTimer);
   fullscreenRequest += 1;
   cachedWords = null;
   cachedSet = null;
@@ -681,12 +709,13 @@ watch(
     </div>
     <div class="relative z-10 grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] gap-6 overflow-hidden px-5 pt-[env(safe-area-inset-top)] py-4 md:grid-cols-[minmax(220px,0.34fr)_minmax(0,0.66fr)] md:grid-rows-1 md:gap-12 md:px-10 md:py-8 lg:grid-cols-[minmax(280px,0.32fr)_minmax(0,0.68fr)] lg:gap-16 lg:px-16">
       <div class="amll-controls order-2 flex min-h-0 flex-col justify-end md:order-none md:justify-center" :data-collapsed="controlsVisible ? 'false' : 'true'">
-        <div class="ak-frame mx-auto hidden aspect-square w-full max-w-[420px] overflow-hidden md:block" :style="{ backgroundColor: player.currentTrack.color }">
-          <img v-if="player.currentTrack.cover" :src="player.currentTrack.cover" alt="" decoding="async" class="h-full w-full object-cover" />
+        <div class="ak-frame relative mx-auto hidden aspect-square w-full max-w-[420px] overflow-hidden md:block" :style="{ backgroundColor: player.currentTrack.color }">
+          <img v-if="player.currentTrack.cover" :key="player.currentTrack.cover" :src="player.currentTrack.cover" alt="" decoding="async" class="player-art-in h-full w-full object-cover" />
           <span v-else-if="coverPending(player.currentTrack)" class="grid h-full w-full place-items-center text-white/90"><LoaderCircle :size="40" :stroke-width="1.8" class="animate-spin" /></span>
           <span v-else-if="player.currentTrack.metaLoaded" class="grid h-full w-full place-items-center text-8xl font-black text-white/90">{{ initial(player.currentTrack) }}</span>
+          <img v-if="artTransition && outgoingArt?.cover" :src="outgoingArt.cover" alt="" decoding="async" class="player-art-out absolute inset-0 h-full w-full object-cover" />
         </div>
-        <div class="mx-auto mt-4 hidden w-full max-w-[420px] md:block">
+        <div :key="`meta-${player.currentTrack.sourceId}-${player.currentTrack.path}-${player.currentTrack.id}`" class="player-meta-in mx-auto mt-4 hidden w-full max-w-[420px] md:block">
           <h1 class="mt-3 text-2xl font-black leading-none tracking-tight lg:text-3xl">{{ player.currentTrack.title }}</h1>
           <button v-if="player.currentTrack.artist" type="button" class="mt-2 block w-fit max-w-full truncate text-left text-base text-dim transition-colors hover:text-accent" :title="t('library.openArtist')" @click="emit('openArtist', player.currentTrack.artist)">{{ player.currentTrack.artist }}</button>
         </div>
@@ -1005,5 +1034,55 @@ watch(
 .ak-slider:hover,
 .ak-slider:focus-visible {
   height: 7px;
+}
+
+/*
+ * Smart-transition visual handover. The outgoing cover stays mounted on top and
+ * fades out while the incoming cover fades/scales in, and the title block slides
+ * up. Audio is crossfaded by the Rust engine; this keeps the two in sync.
+ */
+.player-art-in {
+  animation: player-art-in 620ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.player-art-out {
+  animation: player-art-out 820ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+.player-meta-in {
+  animation: player-meta-in 480ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+@keyframes player-art-in {
+  from {
+    opacity: 0;
+    transform: scale(1.06);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes player-art-out {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
+@keyframes player-meta-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 </style>

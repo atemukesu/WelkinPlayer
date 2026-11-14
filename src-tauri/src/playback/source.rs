@@ -40,6 +40,35 @@ pub fn open_track(
     source_id: &str,
     path: &str,
 ) -> Result<(Box<dyn ReadSeek>, Option<u64>), AppError> {
+    open_track_with_lead(app, cache, manual, source_id, path, None)
+}
+
+/// Open a source for a short head/tail analysis.
+///
+/// Identical to [`open_track`] except that the remote read-ahead buffer is
+/// bounded to `lead_secs` instead of the playback lead window. Analysis only
+/// decodes a small window at each edge and must never pull the whole file into
+/// the cache, so the larger startup pre-buffer used for playback is deliberately
+/// skipped.
+pub fn open_track_for_analysis(
+    app: &AppHandle,
+    cache: &Arc<StreamCache>,
+    manual: &Arc<ManualCache>,
+    source_id: &str,
+    path: &str,
+    lead_secs: f64,
+) -> Result<(Box<dyn ReadSeek>, Option<u64>), AppError> {
+    open_track_with_lead(app, cache, manual, source_id, path, Some(lead_secs.max(1.0)))
+}
+
+fn open_track_with_lead(
+    app: &AppHandle,
+    cache: &Arc<StreamCache>,
+    manual: &Arc<ManualCache>,
+    source_id: &str,
+    path: &str,
+    lead: Option<f64>,
+) -> Result<(Box<dyn ReadSeek>, Option<u64>), AppError> {
     let source = find_source(app, source_id)?;
 
     if source.is_local() {
@@ -80,7 +109,7 @@ pub fn open_track(
     log::debug!("playback source: streaming {path} via read-ahead cache");
     cache.set_active(&key);
     cache.touch(&key);
-    cache.ensure_stream(app, &source, path, &entry, 0, None);
+    cache.ensure_stream(app, &source, path, &entry, 0, lead);
     let reader = cache.reader_from(&entry, 0);
     // The total arrives with the first upstream response header. Without a byte
     // length the decoder is built non-seekable (Symphonia then falls back to
@@ -108,6 +137,7 @@ pub fn open_track(
             entry,
             reader,
             offset: 0,
+            lead,
         }),
         len,
     ))
@@ -121,6 +151,10 @@ struct CacheSource {
     entry: Arc<Entry>,
     reader: CacheReader,
     offset: u64,
+    /// Bounded read-ahead window for analysis, or `None` for normal playback.
+    /// Carried across seeks so a demuxer probe cannot re-enable the larger
+    /// playback startup pre-buffer and pull a whole track during analysis.
+    lead: Option<f64>,
 }
 
 impl Read for CacheSource {
@@ -178,7 +212,7 @@ impl Seek for CacheSource {
             &self.path,
             &self.entry,
             target,
-            None,
+            self.lead,
         );
         self.reader = self.cache.reader_from(&self.entry, target);
         self.offset = target;

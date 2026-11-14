@@ -32,6 +32,26 @@ export interface Playlist {
   coverFile?: string;
   /** Remote track path whose cover/icon is used as the playlist cover. */
   coverTrack?: string;
+  /**
+   * Pointer to this playlist's smart-transition document. The heavy per-track
+   * features and the transition plan live in that separate file (local cache +
+   * WebDAV), never in the profile.
+   */
+  smartTransition?: SmartTransitionMeta;
+}
+
+/** Lightweight metadata stored in the profile for a smart-transition document. */
+export interface SmartTransitionMeta {
+  /** Whether smart transitions are enabled for playback. */
+  enabled: boolean;
+  /** Remote file name, e.g. `welkin-transition-<hash>.json`. */
+  file: string;
+  /** Analysis schema/algorithm version that produced the file. */
+  algorithmVersion: number;
+  /** Last analysis time (ms). */
+  updatedAt: number;
+  /** `ready`, `stale` (playlist changed since analysis) or `missing`. */
+  status: "ready" | "stale" | "missing";
 }
 
 /**
@@ -86,6 +106,23 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+/** Parse the lightweight smart-transition pointer stored on a playlist. */
+function parseSmartTransition(value: unknown): SmartTransitionMeta | undefined {
+  if (!isRecord(value) || typeof value.file !== "string" || !value.file) return undefined;
+  const status = value.status === "stale" || value.status === "missing" ? value.status : "ready";
+  return {
+    enabled: value.enabled === true,
+    file: value.file,
+    algorithmVersion:
+      typeof value.algorithmVersion === "number" && Number.isFinite(value.algorithmVersion)
+        ? value.algorithmVersion
+        : 1,
+    updatedAt:
+      typeof value.updatedAt === "number" && Number.isFinite(value.updatedAt) ? value.updatedAt : 0,
+    status,
+  };
+}
+
 /**
  * Parse a stored profile document, filling in anything missing or malformed so
  * a partially-written / older document never breaks startup.
@@ -134,6 +171,7 @@ export function parseProfile(raw: string | null | undefined, fallback: Profile):
           cover: typeof item.cover === "string" ? item.cover : undefined,
           coverFile: typeof item.coverFile === "string" ? item.coverFile : undefined,
           coverTrack: typeof item.coverTrack === "string" ? item.coverTrack : undefined,
+          smartTransition: parseSmartTransition(item.smartTransition),
         }];
       })
     : [];

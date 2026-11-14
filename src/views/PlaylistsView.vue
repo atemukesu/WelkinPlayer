@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { ListMusic, Pencil, Plus, Search } from "@lucide/vue";
+import { ListMusic, Pencil, Plus, Search, Sparkles } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { useProfileStore } from "../stores/profile";
 import PlaylistCover from "../components/PlaylistCover.vue";
@@ -41,6 +41,10 @@ const playlists = computed(() => {
         <article v-for="playlist in playlists" :key="playlist.id" class="group ak-frame flex flex-col border border-line bg-surface p-3 transition-all hover:-translate-y-0.5 hover:border-accent">
           <button type="button" class="relative aspect-square w-full overflow-hidden" :title="t('playlistsPage.open')" @click="emit('openPlaylist', playlist.id)">
             <PlaylistCover :playlist="playlist" class="h-full w-full text-4xl" :icon-size="40" />
+            <span v-if="playlist.smartTransition?.status === 'ready'" class="absolute left-1.5 top-1.5 flex items-center gap-1 border border-accent/60 bg-bg/80 px-1.5 py-0.5 text-[10px] font-mono uppercase tracking-wider text-accent backdrop-blur">
+              <Sparkles :size="11" />{{ t("playlistsPage.smartBadge") }}
+            </span>
+            <span v-else-if="playlist.smartTransition?.status === 'stale'" class="absolute left-1.5 top-1.5 border border-amber-500/60 bg-bg/80 px-1.5 py-0.5 text-[10px] font-mono uppercase tracking-wider text-amber-400 backdrop-blur">{{ t("playlistsPage.smartStale") }}</span>
           </button>
           <div class="mt-3 flex items-start gap-2">
             <button type="button" class="min-w-0 flex-1 text-left" @click="emit('openPlaylist', playlist.id)">

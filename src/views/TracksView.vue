@@ -5,11 +5,12 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { ListChecks, Pencil, Play, RefreshCw, Search } from "@lucide/vue";
+import { ListChecks, Pencil, Play, RefreshCw, Search, Sparkles } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { usePlayerStore } from "../stores/player";
 import type { Track } from "../stores/player";
 import { tracksForPaths, useProfileStore } from "../stores/profile";
+import { useSmartTransitionStore } from "../stores/smartTransition";
 import { useSourcesStore } from "../stores/sources";
 import { groupKeys, isUnknownGroup, type GroupKind } from "../lib/grouping";
 import { sortTracks, titleLetterIndex, useTrackSort, type TrackSortContext } from "../lib/sort";
@@ -18,12 +19,14 @@ import TrackContextMenu from "../components/TrackContextMenu.vue";
 import TrackSortMenu from "../components/TrackSortMenu.vue";
 import ViewModeToggle from "../components/ViewModeToggle.vue";
 import PlaylistCover from "../components/PlaylistCover.vue";
+import SmartTransitionDialog from "../components/SmartTransitionDialog.vue";
 
 const props = withDefaults(defineProps<{ playlistId?: string | null; artist?: string | null; album?: string | null; sourceId?: string | null; loading: boolean; refreshing?: boolean; downloadingTrackId?: number | null }>(), { playlistId: null, artist: null, album: null, sourceId: null, refreshing: false, downloadingTrackId: null });
 const emit = defineEmits<{ refresh: []; edit: [id: string]; openArtist: [artist: string]; openAlbum: [album: string]; downloadMetadata: [track: Track]; editLyrics: [track: Track]; editInfo: [track: Track]; showInfo: [track: Track] }>();
 const { t } = useI18n();
 const player = usePlayerStore();
 const profile = useProfileStore();
+const smart = useSmartTransitionStore();
 const sources = useSourcesStore();
 const query = ref("");
 const contextTrack = ref<Track | null>(null);
@@ -31,6 +34,7 @@ const contextPosition = ref({ x: 0, y: 0 });
 const selectMode = ref(false);
 const selected = ref<Set<string>>(new Set());
 const scrollEl = ref<HTMLElement | null>(null);
+const smartOpen = ref(false);
 
 const activePlaylist = computed(() => props.playlistId ? profile.playlists.find((item) => item.id === props.playlistId) ?? null : null);
 /** A generated artist/album collection, selected from the classification views. */
@@ -78,13 +82,30 @@ function toggleSelectMode() {
   selectMode.value = !selectMode.value;
   if (!selectMode.value) selected.value = new Set();
 }
-function play(track: Track) { player.playInQueue(orderedTracks.value, track); }
-function playFirst() {
+/** Install smart-transition plans for the playlist that is now playing. */
+async function armTransition() {
+  if (!activePlaylist.value) return;
+  if (sortKey.value !== "default" || player.shuffle) {
+    // The audible order differs from the analysed order, so the plans would be
+    // wrong. Clear them and fall back to hard transitions.
+    await smart.clearPlans();
+    return;
+  }
+  await smart.armPlayback(activePlaylist.value.id);
+}
+async function play(track: Track) {
+  await player.playInQueue(orderedTracks.value, track);
+  // `playback_set_queue` clears old plans, so arm after the queue is installed.
+  await armTransition();
+}
+async function playFirst() {
   const pool = tracks.value.filter((track) => track.path);
   if (pool.length === 0) return;
   const first = player.shuffle ? pool[Math.floor(Math.random() * pool.length)] : pool[0];
-  player.playInQueue(sourceTracks.value, first);
+  await player.playInQueue(sourceTracks.value, first);
+  await armTransition();
 }
+function openSmart() { smartOpen.value = true; }
 function openContextMenu(event: MouseEvent, track: Track) { contextTrack.value = track; contextPosition.value = { x: event.clientX, y: event.clientY }; }
 function downloadMetadata(track: Track) { emit("downloadMetadata", track); }
 </script>
@@ -124,6 +145,11 @@ function downloadMetadata(track: Track) { emit("downloadMetadata", track); }
                 <template v-if="activePlaylist">
                   <button type="button" class="ak-clip-tr flex h-10 shrink-0 items-center gap-2 bg-accent px-4 text-[13px] font-bold text-accent-fg transition-transform hover:scale-[1.02] active:scale-95 disabled:opacity-50" :disabled="!tracks.length" @click="playFirst"><Play :size="15" :stroke-width="2.2" />{{ t("library.play") }}</button>
                   <button type="button" class="ak-clip-tr flex h-10 shrink-0 items-center gap-2 border border-line px-4 text-[13px] font-semibold transition-colors hover:border-accent hover:text-accent" @click="emit('edit', activePlaylist.id)"><Pencil :size="15" />{{ t("library.edit") }}</button>
+                  <button type="button" class="ak-clip-tr flex h-10 shrink-0 items-center gap-2 border px-4 text-[13px] font-semibold transition-colors" :class="activePlaylist.smartTransition?.enabled ? 'border-accent/60 text-accent' : 'border-line hover:border-accent hover:text-accent'" :title="t('playlists.smart.buttonHint')" @click="openSmart">
+                    <Sparkles :size="15" />
+                    {{ activePlaylist.smartTransition?.status === 'ready' ? t('playlists.smart.badgeReady') : t('playlists.smart.button') }}
+                    <span v-if="activePlaylist.smartTransition?.status === 'stale'" class="border border-amber-500/50 px-1.5 text-[10px] font-mono uppercase text-amber-400">{{ t('playlists.smart.badgeStale') }}</span>
+                  </button>
                 </template>
                 <button v-else type="button" class="ak-clip-tr flex h-10 shrink-0 items-center gap-2 bg-accent px-4 text-[13px] font-bold text-accent-fg transition-transform hover:scale-[1.02] active:scale-95 disabled:opacity-50" :disabled="!tracks.length" @click="playFirst"><Play :size="15" :stroke-width="2.2" />{{ t("library.collections.playAll") }}</button>
               </div>
@@ -144,6 +170,7 @@ function downloadMetadata(track: Track) { emit("downloadMetadata", track); }
       <div v-else class="min-h-0 flex-1"><TrackList v-model:selected="selected" :tracks="tracks" :scroller="scrollEl" :letter-index="letterIndex" empty-key="library.playlists.noTracks" :selectable="selectMode" @play="play" @menu="openContextMenu" @open-artist="emit('openArtist', $event)" @open-album="emit('openAlbum', $event)" /></div>
 
       <TrackContextMenu v-if="contextTrack" :track="contextTrack" :x="contextPosition.x" :y="contextPosition.y" :selected-paths="[...selected]" :playlist-id="activePlaylist?.id ?? null" :downloading="downloadingTrackId === contextTrack.id" @close="contextTrack = null" @download-metadata="downloadMetadata" @edit-lyrics="emit('editLyrics', $event)" @edit-info="emit('editInfo', $event)" @show-info="emit('showInfo', $event)" />
+      <SmartTransitionDialog v-if="activePlaylist" :playlist-id="activePlaylist.id" :open="smartOpen" @close="smartOpen = false" />
     </div>
   </div>
 </template>

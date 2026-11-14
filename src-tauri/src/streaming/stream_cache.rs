@@ -264,7 +264,11 @@ impl StreamCache {
             let mut state = entry.state.lock().unwrap();
             // A real request clears the short preload override; a preload sets it.
             state.lead_override = lead;
-            if want_start == 0 && lead.is_none() {
+            if lead.is_some() {
+                // A bounded lead (short preload / head-tail analysis) must not
+                // inherit playback's larger startup pre-buffer.
+                state.startup = false;
+            } else if want_start == 0 {
                 state.startup = true;
             }
             // A rebase invalidates the old reader demand. The new reader will

@@ -110,3 +110,22 @@ pub fn playback_state(
 ) -> Result<crate::playback::context::ContextSnapshot, AppError> {
     Ok(context.snapshot())
 }
+
+/// Install the smart-transition plans for the current queue.
+#[tauri::command]
+pub fn playback_set_transition_plans(
+    context: State<PlaybackContext>,
+    plans: Vec<crate::playback::context::PlaybackTransition>,
+) -> Result<(), AppError> {
+    context.set_transition_plans(plans);
+    Ok(())
+}
+
+/// Remove all smart-transition plans and restore unity gain.
+#[tauri::command]
+pub fn playback_clear_transition_plans(
+    context: State<PlaybackContext>,
+) -> Result<(), AppError> {
+    context.clear_transition_plans();
+    Ok(())
+}
