@@ -469,6 +469,18 @@ impl StreamCache {
         }
     }
 
+    /// Complete file for a key without creating an entry, when already cached.
+    pub fn cached_file(&self, key: &str) -> Option<PathBuf> {
+        let entries = self.entries.lock().unwrap();
+        let entry = entries.get(key)?;
+        let state = entry.state.lock().unwrap();
+        if state.complete && state.seg_start == 0 && entry.path.is_file() {
+            Some(entry.path.clone())
+        } else {
+            None
+        }
+    }
+
     /// Drop every cached track except the one playing right now, so a clear
     /// during playback does not cut the active stream.
     pub fn clear(&self) {
@@ -521,6 +533,16 @@ impl StreamCache {
             }
             // Never evict the track that is playing right now.
             if active.as_deref() == Some(key.as_str()) {
+                continue;
+            }
+            // Never pull the file out from under an active reader either. This
+            // covers concurrent smart-transition analysis, which holds several
+            // cache entries at once (only one can be `active`).
+            let busy = entries.get(&key).is_some_and(|entry| {
+                let state = entry.state.lock().unwrap_or_else(|error| error.into_inner());
+                state.downloading || state.last_advanced.elapsed() < Duration::from_secs(3)
+            });
+            if busy {
                 continue;
             }
             if let Some(entry) = entries.remove(&key) {

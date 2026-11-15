@@ -58,32 +58,6 @@ pub fn open_track_inactive(
     open_track_with_lead(app, cache, manual, source_id, path, None, false)
 }
 
-/// Open a source for a short head/tail analysis.
-///
-/// Identical to [`open_track`] except that the remote read-ahead buffer is
-/// bounded to `lead_secs` instead of the playback lead window. Analysis only
-/// decodes a small window at each edge and must never pull the whole file into
-/// the cache, so the larger startup pre-buffer used for playback is deliberately
-/// skipped.
-pub fn open_track_for_analysis(
-    app: &AppHandle,
-    cache: &Arc<StreamCache>,
-    manual: &Arc<ManualCache>,
-    source_id: &str,
-    path: &str,
-    lead_secs: f64,
-) -> Result<(Box<dyn ReadSeek>, Option<u64>), AppError> {
-    open_track_with_lead(
-        app,
-        cache,
-        manual,
-        source_id,
-        path,
-        Some(lead_secs.max(1.0)),
-        true,
-    )
-}
-
 fn open_track_with_lead(
     app: &AppHandle,
     cache: &Arc<StreamCache>,

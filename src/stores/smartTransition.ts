@@ -32,6 +32,7 @@ import {
   type AnalysisProgress,
   type SmartTransitionSummary,
   type SmartTrackInput,
+  type TrackStage,
 } from "../lib/smartTransition";
 import type { Playlist } from "../lib/profile";
 
@@ -39,6 +40,27 @@ interface ProgressState {
   done: number;
   total: number;
   phase: AnalysisProgress["phase"];
+  index: number;
+  trackKey: string | null;
+  trackTitle: string | null;
+  stage: TrackStage | "pending";
+  bytesDone: number | null;
+  bytesTotal: number | null;
+}
+
+/** Live status of one playlist entry during (or after) an analysis. */
+export type TrackState =
+  | "pending"
+  | "downloading"
+  | "analyzing"
+  | "cached"
+  | "done"
+  | "skipped";
+
+/** Byte progress of one track download. */
+export interface TrackDownloadState {
+  done: number;
+  total: number | null;
 }
 
 export const useSmartTransitionStore = defineStore("smartTransition", () => {
@@ -47,6 +69,8 @@ export const useSmartTransitionStore = defineStore("smartTransition", () => {
 
   const summaries = ref<Record<string, SmartTransitionSummary>>({});
   const progress = ref<Record<string, ProgressState>>({});
+  const trackStates = ref<Record<string, Record<string, TrackState>>>({});
+  const downloads = ref<Record<string, Record<string, TrackDownloadState>>>({});
   const running = ref<Record<string, boolean>>({});
   const cancelling = ref<Record<string, boolean>>({});
   const loading = ref<Record<string, boolean>>({});
@@ -62,14 +86,54 @@ export const useSmartTransitionStore = defineStore("smartTransition", () => {
       listen<AnalysisProgress>("smart-transition:progress", (event) => {
         const payload = event.payload;
         if (!payload?.playlistId) return;
+        const previous = progress.value[payload.playlistId];
+        // Per-track stage events carry the track's *index*, not the number of
+        // finished tracks, and several tracks run concurrently. Only the
+        // aggregate progress events (no track key) may move the counters, so
+        // the bars never jump backwards.
+        const liveTrack = payload.trackKey !== null && payload.trackKey !== undefined;
         progress.value = {
           ...progress.value,
           [payload.playlistId]: {
-            done: payload.done,
-            total: payload.total,
+            done: liveTrack ? (previous?.done ?? payload.done) : payload.done,
+            total: liveTrack ? (previous?.total ?? payload.total) : payload.total,
             phase: payload.phase,
+            index: payload.index,
+            trackKey: payload.trackKey,
+            trackTitle: payload.trackTitle,
+            stage: payload.stage,
+            bytesDone: payload.bytesDone ?? null,
+            bytesTotal: payload.bytesTotal ?? null,
           },
         };
+        if (payload.trackKey && payload.trackKey.length > 0) {
+          const stage = payload.stage;
+          if (
+            stage === "downloading" &&
+            payload.bytesDone !== null &&
+            payload.bytesDone !== undefined
+          ) {
+            setDownload(
+              payload.playlistId,
+              payload.trackKey,
+              payload.bytesDone,
+              payload.bytesTotal ?? null,
+            );
+          }
+          if (
+            stage === "downloading" ||
+            stage === "analyzing" ||
+            stage === "cached" ||
+            stage === "done" ||
+            stage === "skipped"
+          ) {
+            setTrackState(payload.playlistId, payload.trackKey, stage);
+          }
+          // The bytes are only meaningful while the track is downloading.
+          if (stage !== "downloading") {
+            clearDownload(payload.playlistId, payload.trackKey);
+          }
+        }
       }),
       listen<SmartTransitionSummary>("smart-transition:partial", (event) => {
         const payload = event.payload;
@@ -89,6 +153,7 @@ export const useSmartTransitionStore = defineStore("smartTransition", () => {
         // and never update the profile pointer, so they cannot be applied or
         // used for playback until the analysis finishes.
         summaries.value = { ...summaries.value, [payload.playlistId]: payload };
+        applySummaryStates(payload.playlistId, payload);
       }),
     ])
       .then((stops) => {
@@ -119,6 +184,50 @@ export const useSmartTransitionStore = defineStore("smartTransition", () => {
 
   function errorFor(playlistId: string): string | null {
     return errors.value[playlistId] ?? null;
+  }
+
+  function trackStatesFor(playlistId: string): Record<string, TrackState> {
+    return trackStates.value[playlistId] ?? {};
+  }
+
+  function downloadsFor(playlistId: string): Record<string, TrackDownloadState> {
+    return downloads.value[playlistId] ?? {};
+  }
+
+  function setDownload(playlistId: string, key: string, done: number, total: number | null) {
+    const current = downloads.value[playlistId] ?? {};
+    downloads.value = {
+      ...downloads.value,
+      [playlistId]: { ...current, [key]: { done, total } },
+    };
+  }
+
+  function clearDownload(playlistId: string, key: string) {
+    const current = downloads.value[playlistId];
+    if (!current || !(key in current)) return;
+    const next = { ...current };
+    delete next[key];
+    downloads.value = { ...downloads.value, [playlistId]: next };
+  }
+
+  function setTrackState(playlistId: string, key: string, state: TrackState) {
+    const current = trackStates.value[playlistId];
+    if (current?.[key] === state) return;
+    trackStates.value = {
+      ...trackStates.value,
+      [playlistId]: { ...(current ?? {}), [key]: state },
+    };
+  }
+
+  /** Seed per-track states from a stored/partial summary. */
+  function applySummaryStates(playlistId: string, summary: SmartTransitionSummary) {
+    const current = { ...(trackStates.value[playlistId] ?? {}) };
+    for (const track of summary.tracks) {
+      // A live stage always wins over the stored status.
+      if (current[track.key] === "downloading" || current[track.key] === "analyzing") continue;
+      current[track.key] = track.status === "skipped" ? "skipped" : "done";
+    }
+    trackStates.value = { ...trackStates.value, [playlistId]: current };
   }
 
   function clearError(playlistId: string) {
@@ -172,6 +281,7 @@ export const useSmartTransitionStore = defineStore("smartTransition", () => {
       const summary = await loadSmartTransition(playlistId);
       if (summary) {
         summaries.value = { ...summaries.value, [playlistId]: summary };
+        applySummaryStates(playlistId, summary);
         // A partial snapshot is only resumable context; it must not mark the
         // playlist as analysed or flip an existing badge to ready.
         if (summary.incomplete) return summary;
@@ -214,11 +324,32 @@ export const useSmartTransitionStore = defineStore("smartTransition", () => {
     running.value = { ...running.value, [playlistId]: true };
     cancelling.value = { ...cancelling.value, [playlistId]: false };
     clearError(playlistId);
+    // Reset the live statuses, seeding any already-analysed tracks so a resume
+    // shows them as complete before the backend echoes them back.
+    trackStates.value = { ...trackStates.value, [playlistId]: {} };
+    downloads.value = { ...downloads.value, [playlistId]: {} };
+    const existing = summaries.value[playlistId];
+    if (existing?.incomplete) applySummaryStates(playlistId, existing);
+    progress.value = {
+      ...progress.value,
+      [playlistId]: {
+        done: 0,
+        total: inputs.length,
+        phase: "analyzing",
+        index: 0,
+        trackKey: null,
+        trackTitle: null,
+        stage: "pending",
+        bytesDone: null,
+        bytesTotal: null,
+      },
+    };
     try {
       const summary = await analyzePlaylist(playlistId, playlist.name, inputs, {
         previousOrder: previous && previous.length > 0 ? previous : orderKeys,
       });
       summaries.value = { ...summaries.value, [playlistId]: summary };
+      applySummaryStates(playlistId, summary);
       profile.updatePlaylist(playlistId, {
         smartTransition: {
           enabled: playlist.smartTransition?.enabled ?? false,
@@ -239,6 +370,7 @@ export const useSmartTransitionStore = defineStore("smartTransition", () => {
     } finally {
       running.value = { ...running.value, [playlistId]: false };
       cancelling.value = { ...cancelling.value, [playlistId]: false };
+      downloads.value = { ...downloads.value, [playlistId]: {} };
     }
   }
 
@@ -306,6 +438,15 @@ export const useSmartTransitionStore = defineStore("smartTransition", () => {
     const next = { ...summaries.value };
     delete next[playlistId];
     summaries.value = next;
+    const nextStates = { ...trackStates.value };
+    delete nextStates[playlistId];
+    trackStates.value = nextStates;
+    const nextDownloads = { ...downloads.value };
+    delete nextDownloads[playlistId];
+    downloads.value = nextDownloads;
+    const nextProgress = { ...progress.value };
+    delete nextProgress[playlistId];
+    progress.value = nextProgress;
     const playlist = profile.playlists.find((item) => item.id === playlistId);
     if (playlist?.smartTransition) {
       profile.updatePlaylist(playlistId, { smartTransition: undefined });
@@ -360,6 +501,8 @@ export const useSmartTransitionStore = defineStore("smartTransition", () => {
   return {
     summaries,
     progress,
+    trackStates,
+    downloads,
     running,
     cancelling,
     loading,
@@ -369,6 +512,8 @@ export const useSmartTransitionStore = defineStore("smartTransition", () => {
     isCancelling,
     summaryFor,
     progressFor,
+    trackStatesFor,
+    downloadsFor,
     errorFor,
     clearError,
     load,

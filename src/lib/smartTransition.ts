@@ -44,6 +44,15 @@ export interface AnalysisStats {
   lowConfidence: number;
 }
 
+/** Mirrors Rust `TrackSummary`. */
+export interface SmartTrackSummary {
+  key: string;
+  title: string;
+  status: string;
+  bpm: number;
+  keyCamelot: string;
+}
+
 /** Mirrors Rust `AnalysisSummary`. */
 export interface SmartTransitionSummary {
   playlistId: string;
@@ -53,6 +62,7 @@ export interface SmartTransitionSummary {
   order: string[];
   previousOrder: string[];
   transitions: TransitionPreview[];
+  tracks: SmartTrackSummary[];
   stats: AnalysisStats;
   /** `true` when this is an in-progress snapshot, not a finished analysis. */
   incomplete: boolean;
@@ -82,7 +92,23 @@ export interface AnalysisProgress {
   done: number;
   total: number;
   phase: "analyzing" | "planning";
+  index: number;
+  trackKey: string | null;
+  trackTitle: string | null;
+  stage: TrackStage;
+  /** Bytes fetched for the current track while downloading. */
+  bytesDone?: number | null;
+  bytesTotal?: number | null;
 }
+
+/** Live per-track stage pushed while analysing. */
+export type TrackStage =
+  | "downloading"
+  | "analyzing"
+  | "cached"
+  | "done"
+  | "skipped"
+  | "planning";
 
 /** Analyse (or re-order) a playlist. Cached tracks are not decoded again. */
 export function analyzePlaylist(

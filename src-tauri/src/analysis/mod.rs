@@ -12,16 +12,21 @@
 //!   playlist so every adjacent pair has a good transition.
 //!
 //! Only the first and last [`WINDOW_SECS`] seconds of each track are decoded:
-//! the middle of the file is never fetched or analysed. That is enough for both
-//! the outgoing (tail) and incoming (head) halves of every transition.
+//! the middle of the file is never analysed. That is enough for both the
+//! outgoing (tail) and incoming (head) halves of every transition. Remote
+//! tracks are first fetched sequentially into a scratch file (concurrently, a
+//! few at a time) so the decoder never has to probe random byte ranges over the
+//! network; local files and cached tracks are read in place.
 //!
 //! The resulting document is small, plain JSON and is stored per playlist, both
 //! in the local cache and (when a sync source exists) on WebDAV.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::io::{Read, Write};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use automix::{Analyzer, AudioBuffer, TrackFeatures};
 use rodio::{Decoder, Source};
@@ -29,10 +34,13 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::AppHandle;
 
+use crate::commands::media::{asset_hash, resolve_cache_dir};
 use crate::core::error::AppError;
-use crate::playback::source::{open_track_for_analysis, ReadSeek};
+use crate::data::backend::safe_join;
+use crate::data::sources::{find_source, SourceConfig};
+use crate::playback::source::ReadSeek;
 use crate::streaming::manual_cache::ManualCache;
-use crate::streaming::stream_cache::StreamCache;
+use crate::streaming::stream_cache::{open_upstream, response_total, StreamCache};
 
 /// Fallback edge window when the container cannot report a duration. Real
 /// tracks scale their windows with [`head_window_secs`] / [`tail_window_secs`].
@@ -40,7 +48,7 @@ pub const WINDOW_SECS: f32 = 60.0;
 /// Bump when the planning model changes. Stored per-track features are kept
 /// across this version and only the transitions are recomputed; bump
 /// [`SCHEMA_VERSION`] instead when the extracted features change.
-pub const ALGORITHM_VERSION: u32 = 6;
+pub const ALGORITHM_VERSION: u32 = 7;
 /// On-disk document schema (also invalidates cached per-track features when the
 /// feature set or DSP pipeline changes).
 pub const SCHEMA_VERSION: u32 = 2;
@@ -396,6 +404,18 @@ pub struct AnalysisDocument {
     pub incomplete: bool,
 }
 
+/// One track's lightweight status, included in the summary so the UI can list
+/// every analysed (or skipped) track without reading the full document.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackSummary {
+    pub key: String,
+    pub title: String,
+    pub status: String,
+    pub bpm: f32,
+    pub key_camelot: String,
+}
+
 /// Summary returned to the webview after analysis/load.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -407,6 +427,7 @@ pub struct AnalysisSummary {
     pub order: Vec<String>,
     pub previous_order: Vec<String>,
     pub transitions: Vec<TransitionPreview>,
+    pub tracks: Vec<TrackSummary>,
     pub stats: AnalysisStats,
     /// `true` when this is a partial snapshot rather than a finished analysis.
     pub incomplete: bool,
@@ -452,6 +473,17 @@ impl AnalysisDocument {
             order: self.order.clone(),
             previous_order: self.previous_order.clone(),
             transitions,
+            tracks: self
+                .tracks
+                .iter()
+                .map(|track| TrackSummary {
+                    key: track.key.clone(),
+                    title: track.title.clone(),
+                    status: track.status.clone(),
+                    bpm: track.bpm,
+                    key_camelot: track.key_camelot.clone(),
+                })
+                .collect(),
             stats: self.stats.clone(),
             incomplete: self.incomplete,
             source: source.to_string(),
@@ -555,6 +587,141 @@ fn cancel_error() -> AppError {
     AppError::Other("分析已取消".to_string())
 }
 
+/// Removes a temporarily downloaded track when analysis leaves its scope.
+struct ScratchFile(Option<PathBuf>);
+
+impl Drop for ScratchFile {
+    fn drop(&mut self) {
+        if let Some(path) = &self.0 {
+            if let Err(error) = std::fs::remove_file(path) {
+                log::warn!(
+                    "smart-transition: failed to remove scratch {}: {error}",
+                    path.display()
+                );
+            }
+        }
+    }
+}
+
+/// Unique scratch names for concurrent analyses of the same track.
+static SCRATCH_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Open the bytes for one track for analysis.
+///
+/// Local files and tracks already present in the manual/stream cache are read
+/// directly. Everything else is downloaded **sequentially in one request** to a
+/// scratch file first: the analysis only needs the first and last minute, but
+/// seeking a remote stream makes the demuxer probe several remote ranges, which
+/// is far slower on high-latency WebDAV than fetching the file in order once.
+fn open_analysis_source(
+    app: &AppHandle,
+    cache: &Arc<StreamCache>,
+    manual: &Arc<ManualCache>,
+    source_id: &str,
+    path: &str,
+    cancel: &AtomicBool,
+    progress: &dyn Fn(u64, Option<u64>),
+) -> Result<(Box<dyn ReadSeek>, Option<u64>, ScratchFile), AppError> {
+    let source = find_source(app, source_id)?;
+    if source.is_local() {
+        let root = source.root_path.clone().unwrap_or_default();
+        if root.trim().is_empty() {
+            return Err(AppError::Store("本地来源缺少目录".to_string()));
+        }
+        let file = std::fs::File::open(safe_join(&PathBuf::from(root), path)?)?;
+        let len = file.metadata().ok().map(|meta| meta.len());
+        return Ok((Box::new(file), len, ScratchFile(None)));
+    }
+
+    let key = asset_hash(source_id, path);
+    let cached = manual
+        .complete_file(&key)
+        .or_else(|| cache.cached_file(&key));
+    if let Some(file) = cached {
+        let file = std::fs::File::open(file)?;
+        let len = file.metadata().ok().map(|meta| meta.len());
+        return Ok((Box::new(file), len, ScratchFile(None)));
+    }
+
+    let dir = resolve_cache_dir(app).join("analysis");
+    std::fs::create_dir_all(&dir)?;
+    let scratch = dir.join(format!(
+        "{key}-{}.audio",
+        SCRATCH_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    if let Err(error) = download_track(app, &source, path, &scratch, cancel, progress) {
+        let _ = std::fs::remove_file(&scratch);
+        return Err(error);
+    }
+    let file = match std::fs::File::open(&scratch) {
+        Ok(file) => file,
+        Err(error) => {
+            let _ = std::fs::remove_file(&scratch);
+            return Err(error.into());
+        }
+    };
+    let len = file.metadata().ok().map(|meta| meta.len());
+    Ok((Box::new(file), len, ScratchFile(Some(scratch))))
+}
+
+/// One shared blocking client so consecutive tracks reuse the same TCP/TLS
+/// connections instead of paying a handshake per track.
+static DOWNLOAD_CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
+
+fn download_client() -> &'static reqwest::blocking::Client {
+    DOWNLOAD_CLIENT.get_or_init(|| {
+        reqwest::blocking::Client::builder()
+            .connect_timeout(Duration::from_secs(20))
+            .build()
+            .unwrap_or_else(|_| reqwest::blocking::Client::new())
+    })
+}
+
+/// Fetch a whole remote track into `dest`, reporting byte progress as it goes.
+///
+/// One sequential GET replaces the old read-ahead cache + seek dance, so high
+/// latency does not turn the head/tail windows into a pile of random Range
+/// requests.
+fn download_track(
+    app: &AppHandle,
+    source: &SourceConfig,
+    path: &str,
+    dest: &std::path::Path,
+    cancel: &AtomicBool,
+    progress: &dyn Fn(u64, Option<u64>),
+) -> Result<u64, AppError> {
+    let mut response = open_upstream(app, download_client(), source, path, 0)
+        .map_err(|(status, message)| AppError::Http { status, message })?;
+    let total = response_total(&response);
+    let mut file = std::fs::File::create(dest)?;
+    let mut buffer = vec![0u8; 128 * 1024];
+    let mut written = 0u64;
+    let mut last_emit = std::time::Instant::now();
+    progress(0, total);
+    loop {
+        if cancelled(cancel) {
+            drop(file);
+            let _ = std::fs::remove_file(dest);
+            return Err(cancel_error());
+        }
+        let read = response.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        file.write_all(&buffer[..read])?;
+        written += read as u64;
+        if last_emit.elapsed() >= Duration::from_millis(200)
+            || total.is_some_and(|size| written >= size)
+        {
+            progress(written, total);
+            last_emit = std::time::Instant::now();
+        }
+    }
+    file.flush()?;
+    progress(written, Some(written));
+    Ok(written)
+}
+
 /// Decode the head and tail windows of one track and analyse each with `automix`.
 ///
 /// `cancel` is polled between the expensive stages (fetch, head decode, tail
@@ -566,6 +733,8 @@ fn analyse_track(
     manual: &Arc<ManualCache>,
     input: &TrackInput,
     cancel: &AtomicBool,
+    stage: &dyn Fn(&'static str),
+    download: &dyn Fn(u64, Option<u64>),
 ) -> Result<TrackAnalysis, AppError> {
     if cancelled(cancel) {
         return Err(cancel_error());
@@ -574,16 +743,17 @@ fn analyse_track(
         return Err(AppError::invalid_argument("key", "不是有效的曲目键"));
     };
     let started = std::time::Instant::now();
-    let (reader, byte_len) = open_track_for_analysis(
+    // The reader blocks on the remote download as the decoder consumes bytes,
+    // so this first stage is where most of a WebDAV track's wall time goes.
+    stage("downloading");
+    let (reader, byte_len, _scratch) = open_analysis_source(
         app,
         cache,
         manual,
         source_id,
         path,
-        // A conservative read-ahead hint for the demuxer. The real head window
-        // is chosen once the duration is known; the tail seek rebases the
-        // downloader onto the end of the file after this.
-        WINDOW_SECS as f64 + 10.0,
+        cancel,
+        download,
     )?;
     if cancelled(cancel) {
         return Err(cancel_error());
@@ -679,6 +849,9 @@ fn analyse_track(
     if cancelled(cancel) {
         return Err(cancel_error());
     }
+    // The head/tail windows are fully read at this point, so the network wait
+    // for this track is over; only the local DSP remains.
+    stage("analyzing");
     let head_buffer = AudioBuffer {
         samples: head_samples,
         sample_rate: rate as i32,
@@ -1188,25 +1361,25 @@ fn mix_out(grid: Option<&BeatGrid>, musical_end: f32, tail_offset: f32) -> f32 {
     line.clamp(tail_offset.max(0.0).min(musical_end), musical_end)
 }
 
-/// Default crossfade target: four bars, shortened to fit the five-second cap.
+/// Default crossfade target: four bars, shortened to fit the 2.5-second cap.
 const BLEND_BARS: f32 = 4.0;
 /// Hard ceiling for the envelope, even at very slow tempos.
-const MAX_BLEND_SECS: f32 = 5.0;
+const MAX_BLEND_SECS: f32 = 2.5;
 /// Below this the transition stops sounding like a mix.
 const MIN_BLEND_SECS: f32 = 2.0;
 /// Tracks shorter than this get a short fade instead of a planned mix.
 const MIN_TRACK_SECS: f32 = 15.0;
 
-/// Fade length that fits the track's tempo: four bars, capped at five seconds
-/// so even a 60 BPM track never spends 16 s overlapping. This is the
-/// *intended* length; the actual envelope may shrink when the tail is shorter.
+/// Fade length that fits the track's tempo: four bars, capped at 2.5 seconds
+/// so a transition never spends too long overlapping. This is the *intended*
+/// length; the actual envelope may shrink when the tail is shorter.
 fn preferred_blend_secs(grid: Option<&BeatGrid>) -> f32 {
     let Some(grid) = grid else {
-        return 8.0;
+        return MAX_BLEND_SECS;
     };
     let bar = BEATS_PER_BAR * grid.period;
     if !(bar.is_finite() && bar > 0.0) {
-        return 8.0;
+        return MAX_BLEND_SECS;
     }
     let bars = (MAX_BLEND_SECS / bar).floor().clamp(1.0, BLEND_BARS);
     (bars * bar).clamp(MIN_BLEND_SECS, MAX_BLEND_SECS)
@@ -1220,7 +1393,7 @@ fn preferred_blend_secs(grid: Option<&BeatGrid>) -> f32 {
 fn blend_secs(grid: Option<&BeatGrid>, out_at: f32, musical_end: f32) -> f32 {
     let remaining = (musical_end - out_at).max(0.0);
     let Some(grid) = grid else {
-        return remaining.clamp(1.5, 8.0);
+        return remaining.clamp(1.5, MAX_BLEND_SECS);
     };
     let preferred = preferred_blend_secs(Some(grid));
     if remaining + 1e-3 >= preferred {
@@ -1754,6 +1927,27 @@ fn assemble_document(
     document
 }
 
+/// A placeholder entry for a track that could not be analysed, so the playlist
+/// keeps its original order and the UI can mark the row as skipped.
+fn skipped_track(input: &TrackInput, error: &str) -> TrackAnalysis {
+    TrackAnalysis {
+        key: input.key.clone(),
+        title: input.title.clone(),
+        duration: 0.0,
+        duration_known: false,
+        bpm: 0.0,
+        key_camelot: String::new(),
+        energy: 0.0,
+        head: EdgeFeatures::default(),
+        tail: EdgeFeatures::default(),
+        tail_offset: 0.0,
+        head_secs: 0.0,
+        tail_secs: 0.0,
+        status: "skipped".into(),
+        error: Some(error.to_string()),
+    }
+}
+
 /// Analyse a playlist, reusing cached per-track features where possible.
 ///
 /// `cached` is a previously stored document for the same playlist; tracks whose
@@ -1775,6 +1969,8 @@ pub fn analyze_playlist(
     fixed_first: Option<&str>,
     revision: u64,
     cancel: &AtomicBool,
+    stage: &(dyn Fn(usize, &str, &str, &'static str) + Sync),
+    download: &(dyn Fn(usize, &str, &str, u64, Option<u64>) + Sync),
     progress: &dyn Fn(usize, usize),
     partial: &dyn Fn(&AnalysisDocument),
 ) -> Result<AnalysisDocument, AppError> {
@@ -1789,9 +1985,13 @@ pub fn analyze_playlist(
         .unwrap_or_default();
 
     let total = inputs.len();
-    let mut tracks = Vec::with_capacity(total);
+    let mut slots: Vec<Option<TrackAnalysis>> = vec![None; total];
     let mut stats = AnalysisStats::default();
+    let mut completed = 0usize;
     progress(0, total);
+
+    // Reuse cached features up front: this is pure in-memory work, so it does
+    // not need a worker.
     for (index, input) in inputs.iter().enumerate() {
         if cancelled(cancel) {
             return Err(cancel_error());
@@ -1803,73 +2003,124 @@ pub fn analyze_playlist(
                 track.title = input.title.clone();
                 stats.reused += 1;
                 stats.analyzed += 1;
-                tracks.push(track);
-                progress(index + 1, total);
+                slots[index] = Some(track);
+                completed += 1;
+                stage(index, &input.key, &input.title, "cached");
+                progress(completed, total);
+                let snapshot: Vec<TrackAnalysis> = slots.iter().flatten().cloned().collect();
                 partial(&assemble_document(
                     playlist_id,
                     playlist_name,
                     revision,
                     inputs,
-                    tracks.clone(),
+                    snapshot,
                     previous_order.clone(),
                     stats.clone(),
                     None,
                     false,
                 ));
-                continue;
             }
         }
-        match analyse_track(app, cache, manual, input, cancel) {
-            Ok(track) => {
-                if track.status != "ok" {
-                    stats.low_confidence += 1;
-                }
-                stats.analyzed += 1;
-                tracks.push(track);
-            }
-            Err(error) => {
-                if cancelled(cancel) {
-                    return Err(cancel_error());
-                }
-                log::warn!("smart-transition: {} failed: {error}", input.key);
-                stats.skipped += 1;
-                tracks.push(TrackAnalysis {
-                    key: input.key.clone(),
-                    title: input.title.clone(),
-                    duration: 0.0,
-                    duration_known: false,
-                    bpm: 0.0,
-                    key_camelot: String::new(),
-                    energy: 0.0,
-                    head: EdgeFeatures::default(),
-                    tail: EdgeFeatures::default(),
-                    tail_offset: 0.0,
-                    head_secs: 0.0,
-                    tail_secs: 0.0,
-                    status: "skipped".into(),
-                    error: Some(error.to_string()),
+    }
+
+    // The remaining tracks each need a sequential download plus DSP. Run a few
+    // at a time so the network waits on several tracks in parallel instead of
+    // paying the round-trip latency one track after another. Results are still
+    // folded back in input order by this thread, so partial snapshots and the
+    // final playlist order stay deterministic.
+    let pending: Vec<usize> = (0..total).filter(|index| slots[*index].is_none()).collect();
+    if !pending.is_empty() && !cancelled(cancel) {
+        let worker_count = pending
+            .len()
+            .min(
+                std::thread::available_parallelism()
+                    .map(|value| value.get())
+                    .unwrap_or(1)
+                    .clamp(2, 4),
+            )
+            .max(1);
+        let (sender, receiver) = std::sync::mpsc::channel::<(usize, Result<TrackAnalysis, AppError>)>();
+        let queue = AtomicUsize::new(0);
+        let queue = &queue;
+        let pending = &pending;
+        std::thread::scope(|scope| {
+            for _ in 0..worker_count {
+                let sender = sender.clone();
+                scope.spawn(move || loop {
+                    let cursor = queue.fetch_add(1, Ordering::Relaxed);
+                    if cursor >= pending.len() {
+                        break;
+                    }
+                    let index = pending[cursor];
+                    let input = &inputs[index];
+                    let result = analyse_track(app, cache, manual, input, cancel, &|value| {
+                        stage(index, &input.key, &input.title, value)
+                    }, &|done, total| {
+                        download(index, &input.key, &input.title, done, total)
+                    });
+                    if cancelled(cancel) {
+                        break;
+                    }
+                    if sender.send((index, result)).is_err() {
+                        break;
+                    }
                 });
             }
-        }
-        // Snapshot after every track so the UI shows live results and a
-        // cancellation keeps the work done so far.
-        progress(index + 1, total);
-        partial(&assemble_document(
-            playlist_id,
-            playlist_name,
-            revision,
-            inputs,
-            tracks.clone(),
-            previous_order.clone(),
-            stats.clone(),
-            None,
-            false,
-        ));
+            // Drop this thread's sender so the loop below ends once every
+            // worker has finished.
+            drop(sender);
+            for (index, result) in receiver {
+                let input = &inputs[index];
+                match result {
+                    Ok(track) => {
+                        if track.status != "ok" {
+                            stats.low_confidence += 1;
+                        }
+                        stats.analyzed += 1;
+                        slots[index] = Some(track);
+                        stage(index, &input.key, &input.title, "done");
+                    }
+                    Err(error) => {
+                        if cancelled(cancel) {
+                            break;
+                        }
+                        log::warn!("smart-transition: {} failed: {error}", input.key);
+                        stats.skipped += 1;
+                        slots[index] = Some(skipped_track(input, &error.to_string()));
+                        stage(index, &input.key, &input.title, "skipped");
+                    }
+                }
+                completed += 1;
+                progress(completed, total);
+                // Snapshot after every track so the UI shows live results and
+                // a cancellation keeps the work done so far.
+                let snapshot: Vec<TrackAnalysis> = slots.iter().flatten().cloned().collect();
+                partial(&assemble_document(
+                    playlist_id,
+                    playlist_name,
+                    revision,
+                    inputs,
+                    snapshot,
+                    previous_order.clone(),
+                    stats.clone(),
+                    None,
+                    false,
+                ));
+            }
+        });
     }
     if cancelled(cancel) {
         return Err(cancel_error());
     }
+    stage(total, "", "", "planning");
     progress(total, total);
+    let tracks: Vec<TrackAnalysis> = slots
+        .into_iter()
+        .enumerate()
+        .map(|(index, slot)| {
+            slot.unwrap_or_else(|| skipped_track(&inputs[index], "分析未完成"))
+        })
+        .collect();
     Ok(assemble_document(
         playlist_id,
         playlist_name,
@@ -2004,19 +2255,22 @@ mod tests {
     #[test]
     fn mix_out_starts_the_fade_on_the_tracks_final_bar() {
         let g = grid(120.0, 0.0);
-        // Four seconds at 120 BPM = two bars; the last bar line before 196 is 196.
-        assert!((mix_out(Some(&g), 200.0, 120.0) - 196.0).abs() < 1e-3);
+        // Two seconds at 120 BPM = one bar; the last bar line before 198 is 198.
+        assert!((mix_out(Some(&g), 200.0, 120.0) - 198.0).abs() < 1e-3);
     }
 
     #[test]
-    fn blend_is_capped_at_five_seconds() {
-        let g = grid(120.0, 0.0);
-        // Two bars at 120 BPM = 4 s, under the 5 s ceiling. Never 16 s.
-        assert!((blend_secs(Some(&g), 184.0, 200.0) - 4.0).abs() < 1e-3);
-        assert!((blend_secs(Some(&g), 190.0, 200.0) - 4.0).abs() < 1e-3);
-        assert!((blend_secs(Some(&g), 194.0, 200.0) - 4.0).abs() < 1e-3);
+    fn blend_is_capped_at_two_and_a_half_seconds() {
+        // 60 BPM would prefer four bars, but the hard ceiling wins.
+        let slow = grid(60.0, 0.0);
+        assert!((blend_secs(Some(&slow), 184.0, 200.0) - 2.5).abs() < 1e-3);
+        let medium = grid(120.0, 0.0);
+        // One bar at 120 BPM = 2 s, under the 2.5 s ceiling.
+        assert!((blend_secs(Some(&medium), 184.0, 200.0) - 2.0).abs() < 1e-3);
         // Less tail: shrink to whole bars instead of stretching the envelope.
-        assert!((blend_secs(Some(&g), 197.0, 200.0) - 2.0).abs() < 1e-3);
+        assert!((blend_secs(Some(&medium), 197.0, 200.0) - 2.0).abs() < 1e-3);
+        // A grid-less track is capped too.
+        assert!(blend_secs(None, 0.0, 100.0) <= MAX_BLEND_SECS);
     }
 
     #[test]

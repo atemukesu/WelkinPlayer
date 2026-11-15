@@ -75,6 +75,16 @@ struct AnalysisProgress {
     done: usize,
     total: usize,
     phase: &'static str,
+    /// Index of the track being worked on.
+    index: usize,
+    /// Track key/title for the live per-row status; `None` between tracks.
+    track_key: Option<String>,
+    track_title: Option<String>,
+    /// `downloading`, `analyzing`, `cached`, `done`, `skipped` or `planning`.
+    stage: &'static str,
+    /// Bytes fetched for the current track while it is downloading.
+    bytes_done: Option<u64>,
+    bytes_total: Option<u64>,
 }
 
 fn transitions_dir(app: &AppHandle) -> PathBuf {
@@ -309,6 +319,7 @@ pub async fn smart_transition_analyze(
 
     let emit_app = app.clone();
     let emit_id = playlist_id.clone();
+    let total_tracks = tracks.len();
     let task = {
         let app = app.clone();
         let cached = cached.clone();
@@ -317,6 +328,10 @@ pub async fn smart_transition_analyze(
         let playlist_name = playlist_name.clone();
         let fixed_first = fixed_first.clone();
         tauri::async_runtime::spawn_blocking(move || {
+            let stage_app = emit_app.clone();
+            let stage_id = emit_id.clone();
+            let download_app = emit_app.clone();
+            let download_id = emit_id.clone();
             let progress_app = emit_app.clone();
             let progress_id = emit_id.clone();
             let partial_app = emit_app;
@@ -332,6 +347,44 @@ pub async fn smart_transition_analyze(
                 fixed_first.as_deref(),
                 revision,
                 &cancel,
+                &move |index, key, title, stage| {
+                    let _ = stage_app.emit(
+                        "smart-transition:progress",
+                        AnalysisProgress {
+                            playlist_id: stage_id.clone(),
+                            done: index,
+                            total: total_tracks,
+                            phase: if stage == "planning" {
+                                "planning"
+                            } else {
+                                "analyzing"
+                            },
+                            index,
+                            track_key: (!key.is_empty()).then(|| key.to_string()),
+                            track_title: (!title.is_empty()).then(|| title.to_string()),
+                            stage,
+                            bytes_done: None,
+                            bytes_total: None,
+                        },
+                    );
+                },
+                &move |index, key, title, bytes_done, bytes_total| {
+                    let _ = download_app.emit(
+                        "smart-transition:progress",
+                        AnalysisProgress {
+                            playlist_id: download_id.clone(),
+                            done: index,
+                            total: total_tracks,
+                            phase: "analyzing",
+                            index,
+                            track_key: (!key.is_empty()).then(|| key.to_string()),
+                            track_title: (!title.is_empty()).then(|| title.to_string()),
+                            stage: "downloading",
+                            bytes_done: Some(bytes_done),
+                            bytes_total,
+                        },
+                    );
+                },
                 &move |done, total| {
                     let _ = progress_app.emit(
                         "smart-transition:progress",
@@ -344,6 +397,16 @@ pub async fn smart_transition_analyze(
                             } else {
                                 "planning"
                             },
+                            index: done,
+                            track_key: None,
+                            track_title: None,
+                            stage: if done < total {
+                                "analyzing"
+                            } else {
+                                "planning"
+                            },
+                            bytes_done: None,
+                            bytes_total: None,
                         },
                     );
                 },
