@@ -40,10 +40,10 @@ pub const WINDOW_SECS: f32 = 60.0;
 /// Bump when the planning model changes. Stored per-track features are kept
 /// across this version and only the transitions are recomputed; bump
 /// [`SCHEMA_VERSION`] instead when the extracted features change.
-pub const ALGORITHM_VERSION: u32 = 5;
+pub const ALGORITHM_VERSION: u32 = 6;
 /// On-disk document schema (also invalidates cached per-track features when the
 /// feature set or DSP pipeline changes).
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 /// Prefix that scopes transition documents away from audio and other objects.
 pub const FILE_PREFIX: &str = "welkin-transition-";
 
@@ -103,10 +103,17 @@ pub struct EdgeFeatures {
     pub loudness_curve_db: Vec<f32>,
     #[serde(default)]
     pub loudness_curve_resolution_seconds: f32,
+    /// Phase of the first downbeat inside [`Self::beats`], in beats (`0..4`).
+    ///
+    /// `automix` only returns onset peaks, so `beats[0]` may be any beat of the
+    /// bar. A DJ grid has to start on the downbeat; this offset is the index of
+    /// the first beat whose low-band energy puts it at the top of a bar.
+    #[serde(default)]
+    pub downbeat_offset: u32,
 }
 
 impl EdgeFeatures {
-    fn from_features(features: &TrackFeatures) -> Self {
+    fn from_features(features: &TrackFeatures, downbeat_offset: u32) -> Self {
         Self {
             bpm: round(features.bpm),
             key: features.key.clone(),
@@ -120,6 +127,7 @@ impl EdgeFeatures {
                 .map(|v| round(*v))
                 .collect(),
             loudness_curve_resolution_seconds: features.loudness_curve_resolution_seconds,
+            downbeat_offset,
         }
     }
 
@@ -659,6 +667,14 @@ fn analyse_track(
     };
     let head_secs = head_samples.len() as f32 / frames_per_sec;
     let tail_secs = tail_samples.len() as f32 / frames_per_sec;
+    // The downbeat vote needs raw samples; compute both envelopes before the
+    // buffers are moved into the analyser.
+    let head_low = low_band_onset(&head_samples, rate as i32, channels as i32);
+    let tail_low = if tail_is_head {
+        head_low.clone()
+    } else {
+        low_band_onset(&tail_samples, rate as i32, channels as i32)
+    };
 
     if cancelled(cancel) {
         return Err(cancel_error());
@@ -712,8 +728,14 @@ fn analyse_track(
         started.elapsed().as_millis() - decode_elapsed.as_millis(),
     );
 
-    let head = EdgeFeatures::from_features(&head_features);
-    let tail = EdgeFeatures::from_features(&tail_features);
+    let head = EdgeFeatures::from_features(
+        &head_features,
+        downbeat_offset(&head_low, &head_features.beats),
+    );
+    let tail = EdgeFeatures::from_features(
+        &tail_features,
+        downbeat_offset(&tail_low, &tail_features.beats),
+    );
     let confidence_ok = head.bpm > 1.0 && !head.key.is_empty() && duration_known;
     Ok(TrackAnalysis {
         key: input.key.clone(),
@@ -943,11 +965,112 @@ const PHRASE_BARS: f32 = 8.0;
 /// Beats in one phrase line (32 by default).
 const PHRASE_BEATS: f32 = BEATS_PER_BAR * PHRASE_BARS;
 
-/// A beat grid anchored on the first detected beat.
+/// Frame rate of the low-band onset envelope used for downbeat detection.
+const DOWNBEAT_FPS: f32 = 100.0;
+/// One-pole low-pass cutoff that keeps kick and bass in the downbeat vote.
+const DOWNBEAT_LOW_HZ: f32 = 150.0;
+
+/// Positive onset of the low band, sampled at [`DOWNBEAT_FPS`] frames/second.
 ///
-/// Only the head/tail windows are decoded, so the anchor is the first beat of
-/// that window (mapped to absolute time via [`TrackAnalysis::tail_offset`] for
-/// the tail). Phrase lines land every `PHRASE_BEATS` beats from the anchor.
+/// This is the cheapest signal that tells a kick from a hi-hat: a first-order
+/// low-pass followed by the positive difference of its energy. It is only ever
+/// used to choose between the four bar phases, not to place mix points.
+fn low_band_onset(samples: &[f32], sample_rate: i32, channels: i32) -> Vec<f32> {
+    if samples.is_empty() || sample_rate <= 0 || channels <= 0 {
+        return Vec::new();
+    }
+    let rate = sample_rate as f32;
+    let channels = channels as usize;
+    let hop = ((rate / DOWNBEAT_FPS) as usize).max(1);
+    let frame_samples = hop * channels;
+    let frames = samples.len() / frame_samples;
+    if frames < 4 {
+        return Vec::new();
+    }
+    let dt = 1.0 / rate;
+    let rc = 1.0 / (std::f32::consts::TAU * DOWNBEAT_LOW_HZ);
+    let alpha = dt / (rc + dt);
+    let mut y = 0.0f32;
+    let mut previous = 0.0f32;
+    let mut onset = Vec::with_capacity(frames);
+    for frame in 0..frames {
+        let base = frame * frame_samples;
+        let mut sum = 0.0f32;
+        for channel in 0..channels {
+            sum += samples[base + channel];
+        }
+        let x = sum / channels as f32;
+        y += alpha * (x - y);
+        let energy = y * y;
+        onset.push((energy - previous).max(0.0));
+        previous = energy;
+    }
+    onset
+}
+
+/// Beat index of the first downbeat, given the low-band onset envelope.
+///
+/// `automix` returns onset peaks, not downbeats, so `beats[0]` may be any beat
+/// of the bar. This sums the low-band onset at each beat for the four possible
+/// bar phases and returns the strongest one. `0` is returned when there is not
+/// enough evidence (fewer than two bars), preserving the old anchor.
+fn downbeat_offset(onset: &[f32], beats: &[f32]) -> u32 {
+    let frames = onset.len();
+    if frames == 0 || beats.len() < 8 {
+        return 0;
+    }
+    let mut sums = [0.0f64; 4];
+    let mut counts = [0usize; 4];
+    for (index, beat) in beats.iter().enumerate() {
+        if !beat.is_finite() || *beat < 0.0 {
+            continue;
+        }
+        let center = (*beat * DOWNBEAT_FPS).round() as isize;
+        if center < 0 || center as usize >= frames {
+            continue;
+        }
+        // A kick's onset lands a few frames either side of the nominal beat.
+        let mut peak = 0.0f32;
+        for delta in -3..=3 {
+            let frame = center + delta;
+            if frame >= 0 && (frame as usize) < frames {
+                peak = peak.max(onset[frame as usize]);
+            }
+        }
+        let phase = index % 4;
+        sums[phase] += peak as f64;
+        counts[phase] += 1;
+    }
+    let mut best = 0usize;
+    let mut best_score = 0.0f64;
+    for phase in 0..4 {
+        if counts[phase] == 0 {
+            continue;
+        }
+        let score = sums[phase] / counts[phase] as f64;
+        if score > best_score + 1e-9 {
+            best_score = score;
+            best = phase;
+        }
+    }
+    best as u32
+}
+
+/// The beat that starts the first bar, used as the grid anchor.
+fn downbeat_time(beats: &[f32], offset: u32) -> Option<f32> {
+    beats
+        .get(offset as usize)
+        .copied()
+        .or_else(|| beats.first().copied())
+}
+
+/// A beat grid anchored on the first downbeat.
+///
+/// Only the head/tail windows are decoded, so the anchor is that window's first
+/// downbeat (mapped to absolute time via [`TrackAnalysis::tail_offset`] for the
+/// tail). Phrase lines land every `PHRASE_BEATS` beats from the anchor, so both
+/// sides of a transition share the same bar phase instead of drifting by 1–3
+/// beats because their first onset peak happened to fall elsewhere.
 /// This mirrors ClubCraft's `analysis/beatgrid.rs` + `analysis/cues.rs` rules
 /// (MIT/Apache-2.0), reimplemented here without pulling in a new dependency.
 #[derive(Debug, Clone, Copy)]
@@ -960,7 +1083,7 @@ impl BeatGrid {
     /// Build a grid from a tempo. When no beat was detected the grid still
     /// exists (anchored at zero) so phrase math degenerates to a regular
     /// BPM-only grid — this is our `relaxed` mode.
-    fn new(bpm: f32, first_beat: Option<f32>) -> Option<Self> {
+    fn new(bpm: f32, anchor_beat: Option<f32>) -> Option<Self> {
         if !(bpm.is_finite() && bpm > 1.0) {
             return None;
         }
@@ -968,7 +1091,7 @@ impl BeatGrid {
         if !(period.is_finite() && (0.02..=3.0).contains(&period)) {
             return None;
         }
-        let anchor = first_beat
+        let anchor = anchor_beat
             .filter(|value| value.is_finite())
             .unwrap_or(0.0)
             .max(0.0);
@@ -1011,11 +1134,9 @@ fn tail_grid(track: &TrackAnalysis) -> Option<BeatGrid> {
     BeatGrid::new(
         grid_bpm(track.tail.bpm, track.bpm),
         // Tail beat times are relative to the tail window; lift them onto the
-        // absolute timeline before using them as the anchor.
-        track
-            .tail
-            .beats
-            .first()
+        // absolute timeline before using them as the anchor. The anchor is the
+        // first *downbeat*, not the first onset peak.
+        downbeat_time(&track.tail.beats, track.tail.downbeat_offset)
             .map(|beat| beat + track.tail_offset),
     )
 }
@@ -1023,7 +1144,7 @@ fn tail_grid(track: &TrackAnalysis) -> Option<BeatGrid> {
 fn head_grid(track: &TrackAnalysis) -> Option<BeatGrid> {
     BeatGrid::new(
         grid_bpm(track.head.bpm, track.bpm),
-        track.head.beats.first().copied(),
+        downbeat_time(&track.head.beats, track.head.downbeat_offset),
     )
 }
 
@@ -2113,5 +2234,54 @@ mod tests {
         assert!(unknown.usable());
         // …but placing an absolute cue would be a guess, so no plan.
         assert!(!unknown.plan_ready());
+    }
+
+    #[test]
+    fn downbeat_offset_finds_the_strongest_bar_phase() {
+        // 120 BPM => one beat every 0.5 s (50 frames at 100 fps).
+        let beats: Vec<f32> = (0..16).map(|beat| beat as f32 * 0.5).collect();
+        let mut onset = vec![0.1f32; 1000];
+        for beat in (2..16).step_by(4) {
+            let frame = (beat as f32 * 0.5 * DOWNBEAT_FPS) as usize;
+            onset[frame] = 1.0;
+        }
+        assert_eq!(downbeat_offset(&onset, &beats), 2);
+        // Fewer than two bars is not enough evidence: keep the old anchor.
+        assert_eq!(downbeat_offset(&onset, &beats[..4]), 0);
+    }
+
+    #[test]
+    fn low_band_onset_prefers_kicks_over_quiet_beats() {
+        let rate = 44_100i32;
+        let mut samples = vec![0.0f32; rate as usize * 8];
+        let beats: Vec<f32> = (0..16).map(|beat| beat as f32 * 0.5).collect();
+        // A short 60 Hz burst on the third beat of every bar (phase 2), which
+        // is exactly what a kick on the downbeat looks like to a low-pass.
+        for beat in (2..16).step_by(4) {
+            let start = (beats[beat] * rate as f32) as usize;
+            let len = ((rate as f32 * 0.08) as usize).min(samples.len() - start);
+            for offset in 0..len {
+                let t = offset as f32 / rate as f32;
+                samples[start + offset] = 0.8 * (std::f32::consts::TAU * 60.0 * t).sin();
+            }
+        }
+        let onset = low_band_onset(&samples, rate, 1);
+        assert_eq!(downbeat_offset(&onset, &beats), 2);
+    }
+
+    #[test]
+    fn beat_grid_anchors_on_the_downbeat_not_the_first_beat() {
+        let mut out = track(120.0, "8A");
+        out.tail_offset = 100.0;
+        out.tail.beats = vec![10.0, 10.5, 11.0, 11.5, 12.0];
+        out.tail.downbeat_offset = 2;
+        let out_grid = tail_grid(&out).unwrap();
+        assert!((out_grid.anchor - 111.0).abs() < 1e-3);
+
+        let mut input = track(120.0, "8A");
+        input.head.beats = vec![2.0, 2.5, 3.0, 3.5];
+        input.head.downbeat_offset = 3;
+        let in_grid = head_grid(&input).unwrap();
+        assert!((in_grid.anchor - 3.5).abs() < 1e-3);
     }
 }
