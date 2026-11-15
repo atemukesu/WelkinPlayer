@@ -131,6 +131,8 @@ struct TransitionRuntime {
     phase: FadePhase,
     /// Monotonic token so a late preparation result cannot start a stale fade.
     crossfade_token: u64,
+    /// Last status pushed to the UI, so unchanged ticks stay silent.
+    last_status: Option<TransitionStatus>,
 }
 
 fn track_key(item: &QueueItem) -> String {
@@ -185,6 +187,45 @@ pub struct ContextSnapshot {
     /// When true the queue is pinned to the analysed smart-transition order:
     /// shuffle is ignored and the order never reshuffles.
     pub order_locked: bool,
+}
+
+/// Live crossfade state pushed on `playback:transition`.
+///
+/// Kept separate from [`ContextSnapshot`]: the queue does not change during a
+/// fade, and this payload is emitted at the fast tick rate so the UI can drive
+/// a progress animation. `active` is only true for a real smart transition
+/// (`preparing` while the second deck opens, `crossfading` while both play);
+/// the sequential fallback is deliberately not advertised as one.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransitionStatus {
+    pub active: bool,
+    /// `idle`, `preparing` or `crossfading`.
+    pub phase: &'static str,
+    /// Envelope progress, `0..=1`. Zero while preparing.
+    pub progress: f32,
+    /// Track key of the outgoing deck.
+    pub from: String,
+    /// Track key of the incoming deck.
+    pub to: String,
+    /// Fade length in seconds.
+    pub blend_secs: f32,
+    /// Seconds until the fade starts; zero once it is running.
+    pub starts_in: f32,
+}
+
+impl TransitionStatus {
+    fn inactive() -> Self {
+        Self {
+            active: false,
+            phase: "idle",
+            progress: 0.0,
+            from: String::new(),
+            to: String::new(),
+            blend_secs: 0.0,
+            starts_in: 0.0,
+        }
+    }
 }
 
 /// The mutable playback context, guarded by a single mutex. All intent commands
@@ -866,9 +907,20 @@ impl PlaybackContext {
         // Invalidate any in-flight preparation and stop a live crossfade; the
         // engine restores the audible deck to unity through its gain ramp.
         runtime.crossfade_token = runtime.crossfade_token.wrapping_add(1);
+        let was_active = runtime
+            .last_status
+            .as_ref()
+            .map(|status| status.active)
+            .unwrap_or(false);
+        runtime.last_status = Some(TransitionStatus::inactive());
         drop(runtime);
         let _ = self.engine.send(Command::CancelCrossfade);
         self.engine.shared().set_transition_gain(1.0);
+        // `on_tick` only runs while playing, so a seek/stop during a paused
+        // fade would otherwise leave the indicator on screen forever.
+        if was_active {
+            self.emit_transition(&TransitionStatus::inactive());
+        }
     }
 
     /// Drive the smart-transition envelope. Called from the engine events thread
@@ -1292,6 +1344,53 @@ impl PlaybackContext {
                 }
             }
         };
+        // Publish the live fade so the UI can show a progress indicator. Only
+        // real smart transitions are advertised: `Preparing` before the second
+        // deck is actually requested (token 0) and the `Out`/`In` fallback stay
+        // idle, so the label never claims a smart mix that is not happening.
+        let status = match &runtime.phase {
+            FadePhase::Preparing {
+                from,
+                to,
+                out_at,
+                blend_secs,
+                token,
+                failed,
+                ..
+            } if *token != 0 && !*failed => TransitionStatus {
+                active: true,
+                phase: "preparing",
+                progress: 0.0,
+                from: from.clone(),
+                to: to.clone(),
+                blend_secs: *blend_secs as f32,
+                starts_in: ((out_at - position).max(0.0) as f32).ceil(),
+            },
+            FadePhase::Crossfading {
+                from,
+                to,
+                blend_secs,
+                ..
+            } => {
+                let progress = shared.fade_progress().unwrap_or(0.0);
+                TransitionStatus {
+                    active: true,
+                    phase: "crossfading",
+                    // Two decimals is enough for the bar and keeps the event
+                    // rate around 10 Hz instead of one per tick.
+                    progress: (progress * 100.0).round() / 100.0,
+                    from: from.clone(),
+                    to: to.clone(),
+                    blend_secs: *blend_secs as f32,
+                    starts_in: 0.0,
+                }
+            }
+            _ => TransitionStatus::inactive(),
+        };
+        let status_changed = runtime.last_status.as_ref() != Some(&status);
+        if status_changed {
+            runtime.last_status = Some(status.clone());
+        }
         drop(runtime);
 
         if let Some(to) = handover {
@@ -1310,6 +1409,10 @@ impl PlaybackContext {
                     position_secs: in_at,
                 });
             }
+        }
+
+        if status_changed {
+            self.emit_transition(&status);
         }
     }
 
@@ -1491,6 +1594,13 @@ impl PlaybackContext {
     fn emit(&self, snapshot: ContextSnapshot) {
         if let Some(app) = self.engine.shared().app_handle() {
             let _ = app.emit("playback:changed", snapshot);
+        }
+    }
+
+    /// Push live smart-transition progress to the webview.
+    fn emit_transition(&self, status: &TransitionStatus) {
+        if let Some(app) = self.engine.shared().app_handle() {
+            let _ = app.emit("playback:transition", status);
         }
     }
 }

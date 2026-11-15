@@ -878,6 +878,21 @@ impl Shared {
         self.fade_active.load(Ordering::Relaxed)
     }
 
+    /// Progress of the live crossfade envelope, `0..=1`.
+    ///
+    /// Returns `None` when no overlap is running. Read by the context to drive
+    /// the UI progress indicator without duplicating the envelope maths.
+    pub fn fade_progress(&self) -> Option<f32> {
+        if !self.fade_active.load(Ordering::Relaxed) {
+            return None;
+        }
+        let clock = self.fade_clock.load(Ordering::Relaxed);
+        let start = self.fade_start_frame.load(Ordering::Relaxed);
+        let frames = self.fade_frames.load(Ordering::Relaxed).max(1);
+        let progress = clock.saturating_sub(start) as f32 / frames as f32;
+        Some(progress.clamp(0.0, 1.0))
+    }
+
     /// Set the playback-rate multiplier, clamped to the range the WSOLA
     /// stretcher supports. A non-finite or non-positive value resets to 1.0.
     pub fn set_tempo(&self, rate: f32) {
