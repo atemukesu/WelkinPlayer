@@ -34,17 +34,47 @@ use crate::playback::source::{open_track_for_analysis, ReadSeek};
 use crate::streaming::manual_cache::ManualCache;
 use crate::streaming::stream_cache::StreamCache;
 
-/// Seconds decoded from the start *and* the end of each track.
+/// Fallback edge window when the container cannot report a duration. Real
+/// tracks scale their windows with [`head_window_secs`] / [`tail_window_secs`].
 pub const WINDOW_SECS: f32 = 60.0;
 /// Bump when the planning model changes. Stored per-track features are kept
 /// across this version and only the transitions are recomputed; bump
 /// [`SCHEMA_VERSION`] instead when the extracted features change.
-pub const ALGORITHM_VERSION: u32 = 4;
+pub const ALGORITHM_VERSION: u32 = 5;
 /// On-disk document schema (also invalidates cached per-track features when the
 /// feature set or DSP pipeline changes).
 pub const SCHEMA_VERSION: u32 = 1;
 /// Prefix that scopes transition documents away from audio and other objects.
 pub const FILE_PREFIX: &str = "welkin-transition-";
+
+/// The head only needs to cover the intro, so it is a smaller share of the
+/// track than the tail. Both scale with duration: a two-minute track should not
+/// spend two minutes decoding, and a ten-minute track needs a longer outro
+/// search than a fixed sixty seconds.
+const HEAD_FRACTION: f32 = 0.20;
+const HEAD_MIN_SECS: f32 = 20.0;
+const HEAD_MAX_SECS: f32 = 45.0;
+const TAIL_FRACTION: f32 = 0.30;
+const TAIL_MIN_SECS: f32 = 20.0;
+const TAIL_MAX_SECS: f32 = 90.0;
+
+/// Seconds to decode from the start of `duration`.
+fn head_window_secs(duration: f32) -> f32 {
+    if duration > 1.0 {
+        (duration * HEAD_FRACTION).clamp(HEAD_MIN_SECS, HEAD_MAX_SECS)
+    } else {
+        WINDOW_SECS
+    }
+}
+
+/// Seconds to decode from the end of `duration`.
+fn tail_window_secs(duration: f32) -> f32 {
+    if duration > 1.0 {
+        (duration * TAIL_FRACTION).clamp(TAIL_MIN_SECS, TAIL_MAX_SECS)
+    } else {
+        WINDOW_SECS
+    }
+}
 
 /// One track to analyse, as handed over by the webview.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,6 +125,17 @@ impl EdgeFeatures {
 
     fn empty(&self) -> bool {
         self.loudness_curve_db.is_empty()
+    }
+
+    /// Seconds covered by the stored curves. Used to recover the window length
+    /// of documents written before it was recorded explicitly.
+    fn span_secs(&self) -> f32 {
+        let loud = self.loudness_curve_db.len() as f32 * self.loudness_curve_resolution_seconds;
+        if loud > 0.0 {
+            loud
+        } else {
+            self.energy_curve.len() as f32 * ENERGY_RESOLUTION_SECS
+        }
     }
 
     /// Mean RMS energy across the window (used for continuity costs).
@@ -202,6 +243,14 @@ pub struct TrackAnalysis {
     /// energy curves can be mapped back onto the real timeline.
     #[serde(default)]
     pub tail_offset: f32,
+    /// Seconds decoded from the head, recorded so the planner knows how far its
+    /// cue search may reach. Older documents omit it; [`Self::head_window`]
+    /// then recovers the length from the stored curves.
+    #[serde(default)]
+    pub head_secs: f32,
+    /// Seconds decoded from the tail (see [`Self::tail_window`]).
+    #[serde(default)]
+    pub tail_secs: f32,
     /// `ok` or `skipped`; skipped tracks never take part in ordering.
     pub status: String,
     #[serde(default)]
@@ -209,6 +258,39 @@ pub struct TrackAnalysis {
 }
 
 impl TrackAnalysis {
+    /// Length of the decoded head window in seconds.
+    fn head_window(&self) -> f32 {
+        if self.head_secs > 0.0 {
+            return self.head_secs;
+        }
+        let span = self.head.span_secs();
+        if span > 0.0 && self.duration > 0.0 {
+            span.min(self.duration)
+        } else if span > 0.0 {
+            span
+        } else {
+            self.duration.max(0.0)
+        }
+    }
+
+    /// Length of the decoded tail window in seconds.
+    fn tail_window(&self) -> f32 {
+        if self.tail_secs > 0.0 {
+            return self.tail_secs;
+        }
+        if self.tail_offset > 0.0 && self.duration > 0.0 {
+            return (self.duration - self.tail_offset).max(0.0);
+        }
+        let span = self.tail.span_secs();
+        if span > 0.0 && self.duration > 0.0 {
+            span.min(self.duration)
+        } else if span > 0.0 {
+            span
+        } else {
+            self.duration.max(0.0)
+        }
+    }
+
     fn usable(&self) -> bool {
         // `low` still carries usable features; only hard failures are excluded.
         (self.status == "ok" || self.status == "low")
@@ -490,8 +572,9 @@ fn analyse_track(
         manual,
         source_id,
         path,
-        // Head window plus a little slack for the demuxer's probe reads. The
-        // tail seek rebases the downloader onto the final minute after this.
+        // A conservative read-ahead hint for the demuxer. The real head window
+        // is chosen once the duration is known; the tail seek rebases the
+        // downloader onto the end of the file after this.
         WINDOW_SECS as f64 + 10.0,
     )?;
     if cancelled(cancel) {
@@ -507,10 +590,30 @@ fn analyse_track(
         .filter(|value| value.is_finite() && *value > 0.0);
     let duration_known = duration.is_some();
     let duration = duration.unwrap_or(0.0);
-    let window_frames = (WINDOW_SECS * rate as f32) as usize;
+
+    // Scale the decoded edges with the track instead of always taking 60 s from
+    // both ends. The head only has to cover the intro; the tail needs enough
+    // room to find the outro. Tracks shorter than the two minimum windows are
+    // decoded once and both edges share the whole file.
+    let (head_window, tail_window, analyze_once) = if duration > 1.0 {
+        if duration <= HEAD_MIN_SECS + TAIL_MIN_SECS {
+            (duration, duration, true)
+        } else {
+            (
+                head_window_secs(duration).min(duration),
+                tail_window_secs(duration).min(duration),
+                false,
+            )
+        }
+    } else {
+        (WINDOW_SECS, WINDOW_SECS, true)
+    };
+    let frames_per_sec = (channels as f32 * rate as f32).max(1.0);
+    let head_frames = (head_window * rate as f32) as usize;
+    let tail_frames = (tail_window * rate as f32) as usize;
 
     // Head: decode the first window.
-    let head_samples = read_frames(&mut decoder, window_frames, channels);
+    let head_samples = read_frames(&mut decoder, head_frames, channels);
     if head_samples.is_empty() {
         return Err(AppError::other("无法解码音频"));
     }
@@ -519,12 +622,14 @@ fn analyse_track(
     }
     let head_elapsed = started.elapsed();
 
-    // Tail: seek to duration - window and decode the rest. When the track is
-    // shorter than the window the head already covers it.
-    let tail_samples = if duration > WINDOW_SECS + 0.5 {
-        let target = duration - WINDOW_SECS;
+    // Tail: seek to `duration - tail_window` and decode the rest. A very short
+    // track reuses the head samples instead of seeking over itself.
+    let tail_samples = if analyze_once {
+        Vec::new()
+    } else {
+        let target = (duration - tail_window).max(0.0);
         match decoder.try_seek(std::time::Duration::from_secs_f32(target)) {
-            Ok(()) => read_frames(&mut decoder, window_frames, channels),
+            Ok(()) => read_frames(&mut decoder, tail_frames, channels),
             Err(error) => {
                 log::warn!(
                     "smart-transition: tail seek failed for {}: {error}",
@@ -533,8 +638,6 @@ fn analyse_track(
                 Vec::new()
             }
         }
-    } else {
-        head_samples.clone()
     };
     if cancelled(cancel) {
         return Err(cancel_error());
@@ -543,20 +646,19 @@ fn analyse_track(
     // A failed seek still leaves a usable (if less precise) tail. Record where
     // the tail window really starts so its beat times and energy curve can be
     // mapped back onto the absolute timeline.
-    let tail_offset = if !tail_samples.is_empty() && duration > WINDOW_SECS + 0.5 {
-        (duration - WINDOW_SECS).max(0.0)
-    } else {
-        0.0
-    };
-    // When the track is no longer than the analysis window, or the tail seek
-    // failed, the two windows are the same audio. Analysing it once halves the
-    // DSP cost of every short track.
-    let tail_is_head = tail_samples.is_empty() || tail_offset <= 0.0;
+    let tail_is_head = analyze_once || tail_samples.is_empty();
     let tail_samples = if tail_is_head {
         head_samples.clone()
     } else {
         tail_samples
     };
+    let tail_offset = if tail_is_head {
+        0.0
+    } else {
+        (duration - tail_window).max(0.0)
+    };
+    let head_secs = head_samples.len() as f32 / frames_per_sec;
+    let tail_secs = tail_samples.len() as f32 / frames_per_sec;
 
     if cancelled(cancel) {
         return Err(cancel_error());
@@ -599,12 +701,14 @@ fn analyse_track(
     }
 
     log::info!(
-        "smart-transition: analysed {} in {}ms (fetch {}ms, head {}ms, decode {}ms, dsp {}ms)",
+        "smart-transition: analysed {} in {}ms (fetch {}ms, head {}ms / {:.1}s, decode {}ms / {:.1}s, dsp {}ms)",
         input.key,
         started.elapsed().as_millis(),
         fetch_elapsed.as_millis(),
         head_elapsed.as_millis() - fetch_elapsed.as_millis(),
+        head_secs,
         decode_elapsed.as_millis() - head_elapsed.as_millis(),
+        tail_secs,
         started.elapsed().as_millis() - decode_elapsed.as_millis(),
     );
 
@@ -622,6 +726,8 @@ fn analyse_track(
         head,
         tail,
         tail_offset: round(tail_offset),
+        head_secs: round(head_secs),
+        tail_secs: round(tail_secs),
         status: if confidence_ok {
             "ok".into()
         } else {
@@ -923,13 +1029,18 @@ fn head_grid(track: &TrackAnalysis) -> Option<BeatGrid> {
 
 /// Earliest musical entry point for the incoming track.
 ///
-/// ClubCraft's fallback: the first 32-beat phrase line at least 15 s in,
-/// unless that would skip more than 40 % of a short track — then start at 0.
+/// The first 32-beat phrase line after a short, duration-scaled skip, unless
+/// that would skip more than 40 % of a short track — then start at 0.
 fn mix_in(grid: Option<&BeatGrid>, duration: f32) -> f32 {
     let Some(grid) = grid else {
         return 0.0;
     };
-    let line = grid.phrase_at_or_after(15.0, PHRASE_BEATS);
+    let skip = if duration > 1.0 {
+        (duration * 0.08).clamp(4.0, 15.0)
+    } else {
+        15.0
+    };
+    let line = grid.phrase_at_or_after(skip, PHRASE_BEATS);
     if duration > 1.0 && line > duration * 0.4 {
         0.0
     } else {
@@ -939,21 +1050,21 @@ fn mix_in(grid: Option<&BeatGrid>, duration: f32) -> f32 {
 
 /// Latest musical exit point for the outgoing track.
 ///
-/// The fade should end with the track, so the Mix Out point sits on the last
-/// bar line before `duration - blend`. The old rule ("last phrase line at
-/// least 30 s before the end") left a long tail unplayed and forced the
-/// envelope to be stretched to fill it.
-fn mix_out(grid: Option<&BeatGrid>, duration: f32, tail_offset: f32) -> f32 {
+/// The fade still finishes with the track, so the Mix Out point sits on the last
+/// bar line before `musical_end - blend`. `musical_end` is the last moment with
+/// meaningful audio; trailing digital silence is not a mix target.
+fn mix_out(grid: Option<&BeatGrid>, musical_end: f32, tail_offset: f32) -> f32 {
     let Some(grid) = grid else {
-        // No usable tempo: leave a safe two-bar-ish tail.
-        return (duration - preferred_blend_secs(None)).max(0.0);
+        return (musical_end - preferred_blend_secs(None))
+            .max(tail_offset.max(0.0))
+            .max(0.0);
     };
-    if duration <= 1.0 {
+    if musical_end <= 1.0 {
         return 0.0;
     }
     let blend = preferred_blend_secs(Some(grid));
-    let line = grid.phrase_at_or_before((duration - blend).max(0.0), BEATS_PER_BAR);
-    line.clamp(tail_offset.max(0.0).min(duration), duration)
+    let line = grid.phrase_at_or_before((musical_end - blend).max(0.0), BEATS_PER_BAR);
+    line.clamp(tail_offset.max(0.0).min(musical_end), musical_end)
 }
 
 /// Default crossfade target: four bars, shortened to fit the five-second cap.
@@ -962,6 +1073,8 @@ const BLEND_BARS: f32 = 4.0;
 const MAX_BLEND_SECS: f32 = 5.0;
 /// Below this the transition stops sounding like a mix.
 const MIN_BLEND_SECS: f32 = 2.0;
+/// Tracks shorter than this get a short fade instead of a planned mix.
+const MIN_TRACK_SECS: f32 = 15.0;
 
 /// Fade length that fits the track's tempo: four bars, capped at five seconds
 /// so even a 60 BPM track never spends 16 s overlapping. This is the
@@ -983,8 +1096,8 @@ fn preferred_blend_secs(grid: Option<&BeatGrid>) -> f32 {
 ///
 /// Deliberately *not* "the largest phrase that fits": stretching the fade to
 /// fill a long tail is what made every 120 BPM track overlap for 16 s.
-fn blend_secs(grid: Option<&BeatGrid>, out_at: f32, duration: f32) -> f32 {
-    let remaining = (duration - out_at).max(0.0);
+fn blend_secs(grid: Option<&BeatGrid>, out_at: f32, musical_end: f32) -> f32 {
+    let remaining = (musical_end - out_at).max(0.0);
     let Some(grid) = grid else {
         return remaining.clamp(1.5, 8.0);
     };
@@ -1015,32 +1128,128 @@ fn grid_lines(grid: &BeatGrid, min: f32, max: f32, span: f32) -> Vec<f32> {
         return lines;
     }
     let mut line = grid.phrase_at_or_after(min, span);
-    while line <= max + 1e-3 && lines.len() < 16 {
+    while line <= max + 1e-3 && lines.len() < 64 {
         lines.push(line);
         line += step;
     }
     lines
 }
 
-/// Candidate Mix Out points: bar lines across the last half-minute, plus the
+/// Below this the tail is treated as digital silence.
+const SILENCE_DB: f32 = -55.0;
+/// Energy floor for backing up the loudness-based silence trim.
+const SILENCE_ENERGY: f32 = 0.02;
+
+/// Mean energy of the outgoing tail over `span` seconds starting at `at`.
+fn tail_energy(track: &TrackAnalysis, at: f32, span: f32) -> Option<f32> {
+    let start = (at - track.tail_offset).max(0.0);
+    track.tail.energy_between(start, span.max(0.0))
+}
+
+/// Last moment of the outgoing track that still carries meaningful audio.
+///
+/// Digital silence at the end of a file is not a mix target; trimming it stops
+/// the planner from choosing a point that is literally quiet. If the whole tail
+/// is silent the file end is returned so a cue still exists.
+fn musical_end(track: &TrackAnalysis) -> f32 {
+    let end = track.duration.max(0.0);
+    if end <= 1.0 {
+        return end;
+    }
+    let floor = track.tail_offset.max(0.0);
+    let edge = &track.tail;
+    let loud_end = if edge.loudness_curve_resolution_seconds > 0.0 {
+        edge.loudness_curve_db
+            .iter()
+            .rposition(|db| db.is_finite() && *db > SILENCE_DB)
+            .map(|index| {
+                track.tail_offset + (index as f32 + 1.0) * edge.loudness_curve_resolution_seconds
+            })
+    } else {
+        None
+    };
+    let energy_end = edge
+        .energy_curve
+        .iter()
+        .rposition(|value| value.is_finite() && *value > SILENCE_ENERGY)
+        .map(|index| track.tail_offset + (index as f32 + 1.0) * ENERGY_RESOLUTION_SECS);
+    let detected = loud_end.or(energy_end).unwrap_or(end).clamp(floor, end);
+    if detected - floor < MIN_BLEND_SECS {
+        // The tail is silent throughout: fall back to the file end.
+        end
+    } else {
+        detected
+    }
+}
+
+/// Find where the outgoing track steps down into its outro.
+///
+/// Walks forward from the start of the tail window and returns the first point
+/// where the following 6–12 s are at most 60 % as loud as the preceding window
+/// *and* the rest of the track stays down. A later point inside a fade-out does
+/// not qualify because the walk starts at the beginning of the tail; this keeps
+/// the cue at the start of the outro instead of its quietest end.
+fn detect_outro_start(track: &TrackAnalysis, musical_end: f32) -> Option<f32> {
+    let start = track.tail_offset.max(0.0);
+    let available = musical_end - start;
+    if available < 12.0 {
+        return None;
+    }
+    let look = (track.tail_window() * 0.2)
+        .clamp(6.0, 12.0)
+        .min(available * 0.5);
+    if look < 3.0 {
+        return None;
+    }
+    let mut at = start + look;
+    while at <= musical_end - look + 1e-3 {
+        let before = tail_energy(track, at - look, look)?;
+        let after = tail_energy(track, at, look)?;
+        if before > SILENCE_ENERGY && after <= before * 0.6 {
+            let rest = tail_energy(track, at, musical_end - at)?;
+            if rest <= before * 0.7 {
+                return Some(at);
+            }
+        }
+        at += 1.0;
+    }
+    None
+}
+
+/// Candidate Mix Out points across the whole decoded tail window, plus the
 /// fallback. The fade itself is capped at five seconds; the *start* is chosen
-/// musically (energy/timbre continuity and the step down into an outro), so it
-/// is not forced to the very last bar of the file.
-fn mix_out_candidates(grid: Option<&BeatGrid>, duration: f32, tail_offset: f32) -> Vec<f32> {
-    let fallback = mix_out(grid, duration, tail_offset);
+/// musically (outro drop, energy/timbre continuity), so it is not forced to the
+/// very last bar of the file or limited to a fixed last thirty seconds.
+fn mix_out_candidates(
+    grid: Option<&BeatGrid>,
+    duration: f32,
+    musical_end: f32,
+    tail_offset: f32,
+    tail_window: f32,
+) -> Vec<f32> {
+    let fallback = mix_out(grid, musical_end, tail_offset);
     let Some(grid) = grid else {
         return vec![fallback];
     };
-    if duration <= 1.0 {
+    if musical_end <= 1.0 {
         return vec![0.0];
     }
-    let min = (duration - 30.0).max(tail_offset.max(0.0)).max(0.0);
-    let max = (duration - MIN_BLEND_SECS).max(min);
+    let floor = tail_offset.max(0.0);
+    // Never skip more than half of a short track; on longer tracks the tail
+    // window already starts well past the halfway point.
+    let min = (musical_end - tail_window)
+        .max(floor)
+        .max(duration * 0.5)
+        .max(0.0);
+    let max = musical_end - MIN_BLEND_SECS;
+    if max <= min {
+        return vec![fallback];
+    }
     let mut lines = grid_lines(grid, min, max, BEATS_PER_BAR);
     if !lines.iter().any(|line| (*line - fallback).abs() < 0.05) {
         lines.push(fallback);
     }
-    lines.retain(|line| line.is_finite() && *line >= 0.0 && *line <= duration);
+    lines.retain(|line| line.is_finite() && *line >= 0.0 && *line <= musical_end);
     if lines.is_empty() {
         vec![fallback]
     } else {
@@ -1048,9 +1257,9 @@ fn mix_out_candidates(grid: Option<&BeatGrid>, duration: f32, tail_offset: f32) 
     }
 }
 
-/// Candidate Mix In points: the first few phrase lines after 15 s, so the
+/// Candidate Mix In points: phrase lines in the analysed head window, so the
 /// incoming track can enter a little later when that improves continuity.
-fn mix_in_candidates(grid: Option<&BeatGrid>, duration: f32) -> Vec<f32> {
+fn mix_in_candidates(grid: Option<&BeatGrid>, duration: f32, head_window: f32) -> Vec<f32> {
     let fallback = mix_in(grid, duration);
     let Some(grid) = grid else {
         return vec![fallback];
@@ -1058,8 +1267,9 @@ fn mix_in_candidates(grid: Option<&BeatGrid>, duration: f32) -> Vec<f32> {
     if duration <= 1.0 {
         return vec![0.0];
     }
-    let max = (duration * 0.4).clamp(15.0, 45.0);
-    let mut lines = grid_lines(grid, 15.0, max, PHRASE_BEATS);
+    let skip = (duration * 0.08).clamp(4.0, 15.0);
+    let max = (duration * 0.4).min(head_window).max(skip);
+    let mut lines = grid_lines(grid, skip, max, PHRASE_BEATS);
     lines.retain(|line| line.is_finite() && *line <= duration);
     if lines.is_empty() {
         lines.push(fallback);
@@ -1116,7 +1326,11 @@ fn cue_score(
     out_at: f32,
     in_at: f32,
     blend: f32,
+    musical_end: f32,
+    outro_start: Option<f32>,
 ) -> (f32, Option<f32>, Option<f32>) {
+    let tail_window = out.tail_window().max(1.0);
+    let head_window = input.head_window().max(1.0);
     let out_energy = out
         .tail
         .energy_between(out_at - out.tail_offset, blend)
@@ -1133,38 +1347,62 @@ fn cue_score(
         (Some(a), Some(b)) => ((a - b).abs() / 18.0).min(1.0),
         _ => 0.0,
     };
-    // Reward a step down into a quieter section: that is where an outro
-    // starts and where a DJ would mix out. A gradual fade-out at the very end
-    // has a much smaller step, so this does not simply pull the cue to the
-    // last bar again.
+    // Reward a step down into a quieter section: that is where an outro starts
+    // and where a DJ would mix out. The lookback scales with the track so a long
+    // outro is still recognised, instead of only a sharp four-second drop.
+    let look = (tail_window * 0.2).clamp(6.0, 12.0);
     let before = out
         .tail
-        .energy_between((out_at - 4.0 - out.tail_offset).max(0.0), 4.0);
+        .energy_between((out_at - look - out.tail_offset).max(0.0), look);
     let drop = match before {
-        Some(before) if before > 0.02 => ((before - out_energy).max(0.0) / before).min(1.0),
+        Some(before) if before > SILENCE_ENERGY => {
+            ((before - out_energy).max(0.0) / before).min(1.0)
+        }
         _ => 0.0,
     };
+    // Pull the cue towards the detected start of the outro. Without a clear
+    // step down this is zero and the mild skip penalty below applies instead.
+    let proximity = outro_start
+        .map(|start| {
+            let scale = (tail_window * 0.15).clamp(6.0, 15.0);
+            (1.0 - (out_at - start).abs() / scale).clamp(0.0, 1.0)
+        })
+        .unwrap_or(0.0);
     // Mildly prefer not to skip too much of the outgoing track, and avoid a
     // transition so short that it sounds like a cut.
-    let skip = (out.duration - (out_at + blend)).max(0.0);
-    let skip_penalty = (skip / 30.0).min(1.0) * 0.05;
+    let skip = (musical_end - (out_at + blend)).max(0.0);
+    let skip_penalty = (skip / tail_window).min(1.0) * 0.10;
     let short_penalty = ((MIN_BLEND_SECS - blend).max(0.0) / MIN_BLEND_SECS) * 0.15;
     // Prefer an earlier Mix In (less of the intro skipped) when continuity is
     // otherwise equal.
-    let intro_penalty = (in_at.max(0.0) / 45.0).min(1.0) * 0.05;
-    let score = energy_gap * 0.50
+    let intro_penalty = (in_at.max(0.0) / head_window).min(1.0) * 0.05;
+    // Do not choose a point that is essentially silent just because the incoming
+    // track starts quietly. The reference is the whole track's energy, not the
+    // quiet tail's own mean.
+    let reference = out.energy.max(out.tail.mean_energy()).max(0.02);
+    let silence_floor = reference * 0.15;
+    let silence_penalty = if out_energy < silence_floor {
+        ((silence_floor - out_energy) / silence_floor).min(1.0) * 0.20
+    } else {
+        0.0
+    };
+    let score = energy_gap * 0.30
         + timbre_gap * 0.30
-        + loud_gap * 0.15
+        + loud_gap * 0.10
         + skip_penalty
         + short_penalty
         + intro_penalty
-        - drop * 0.10;
+        - drop * 0.20
+        - proximity * 0.15
+        + silence_penalty;
     (score, out_db, in_db)
 }
 
 fn plan_transition(out: &TrackAnalysis, input: &TrackAnalysis) -> TransitionPlan {
     let out_grid = tail_grid(out);
     let in_grid = head_grid(input);
+    let musical_end = musical_end(out);
+    let outro_start = detect_outro_start(out, musical_end);
 
     // `strict` means both windows carried real beat detections; `relaxed` means
     // at least one grid had to fall back to the BPM alone; `fallback` is a
@@ -1179,52 +1417,76 @@ fn plan_transition(out: &TrackAnalysis, input: &TrackAnalysis) -> TransitionPlan
         "fallback"
     };
 
-    let mut out_at = mix_out(out_grid.as_ref(), out.duration, out.tail_offset);
-    let mut in_at = mix_in(in_grid.as_ref(), input.duration);
-    let mut blend = blend_secs(out_grid.as_ref(), out_at, out.duration);
+    // Very short tracks have no room for a planned mix; fade quickly instead of
+    // skipping most of either track.
+    let short_track = out.duration < MIN_TRACK_SECS || input.duration < MIN_TRACK_SECS;
+    let (mut out_at, mut in_at, mut blend) = if short_track {
+        let blend = (out.duration.min(input.duration) * 0.1).clamp(0.5, 1.5);
+        ((musical_end - blend).max(0.0), 0.0, blend)
+    } else {
+        let out_at = mix_out(out_grid.as_ref(), musical_end, out.tail_offset);
+        let in_at = mix_in(in_grid.as_ref(), input.duration);
+        let blend = blend_secs(out_grid.as_ref(), out_at, musical_end);
+        (out_at, in_at, blend)
+    };
     let mut out_db = out.tail.loudness_between(out_at - out.tail_offset, blend);
     let mut in_db = input.head.loudness_between(in_at, blend);
 
     // Whenever both sides have a tempo grid, try every sensible bar/phrase
-    // pair and keep the most musical one. Only a truly tempo-less pair uses
-    // the fixed fallbacks.
-    if let (Some(out_grid), Some(in_grid)) = (out_grid.as_ref(), in_grid.as_ref()) {
-        let outs = mix_out_candidates(Some(out_grid), out.duration, out.tail_offset);
-        let ins = mix_in_candidates(Some(in_grid), input.duration);
-        let mut best: Option<(f32, f32, f32, f32, Option<f32>, Option<f32>)> = None;
-        for candidate_out in outs {
-            let candidate_blend = blend_secs(Some(out_grid), candidate_out, out.duration);
-            if candidate_blend < MIN_BLEND_SECS {
-                continue;
-            }
-            for candidate_in in &ins {
-                if *candidate_in > input.duration.max(0.0) {
+    // pair across the decoded tail and keep the most musical one. Only a truly
+    // tempo-less pair (or a very short track) uses the fixed fallbacks.
+    if !short_track {
+        if let (Some(out_grid), Some(in_grid)) = (out_grid.as_ref(), in_grid.as_ref()) {
+            let outs = mix_out_candidates(
+                Some(out_grid),
+                out.duration,
+                musical_end,
+                out.tail_offset,
+                out.tail_window(),
+            );
+            let ins = mix_in_candidates(Some(in_grid), input.duration, input.head_window());
+            let mut best: Option<(f32, f32, f32, f32, Option<f32>, Option<f32>)> = None;
+            for candidate_out in outs {
+                let candidate_blend = blend_secs(Some(out_grid), candidate_out, musical_end);
+                if candidate_blend < MIN_BLEND_SECS {
                     continue;
                 }
-                let (score, db_out, db_in) =
-                    cue_score(out, input, candidate_out, *candidate_in, candidate_blend);
-                if best
-                    .as_ref()
-                    .map(|current| score < current.0)
-                    .unwrap_or(true)
-                {
-                    best = Some((
-                        score,
+                for candidate_in in &ins {
+                    if *candidate_in > input.duration.max(0.0) {
+                        continue;
+                    }
+                    let (score, db_out, db_in) = cue_score(
+                        out,
+                        input,
                         candidate_out,
                         *candidate_in,
                         candidate_blend,
-                        db_out,
-                        db_in,
-                    ));
+                        musical_end,
+                        outro_start,
+                    );
+                    if best
+                        .as_ref()
+                        .map(|current| score < current.0)
+                        .unwrap_or(true)
+                    {
+                        best = Some((
+                            score,
+                            candidate_out,
+                            *candidate_in,
+                            candidate_blend,
+                            db_out,
+                            db_in,
+                        ));
+                    }
                 }
             }
-        }
-        if let Some((_, best_out, best_in, best_blend, best_out_db, best_in_db)) = best {
-            out_at = best_out;
-            in_at = best_in;
-            blend = best_blend;
-            out_db = best_out_db;
-            in_db = best_in_db;
+            if let Some((_, best_out, best_in, best_blend, best_out_db, best_in_db)) = best {
+                out_at = best_out;
+                in_at = best_in;
+                blend = best_blend;
+                out_db = best_out_db;
+                in_db = best_in_db;
+            }
         }
     }
 
@@ -1234,7 +1496,7 @@ fn plan_transition(out: &TrackAnalysis, input: &TrackAnalysis) -> TransitionPlan
     );
     let in_gain = loudness_gain(out_db, in_db);
 
-    let (cue, _, _) = cue_score(out, input, out_at, in_at, blend);
+    let (cue, _, _) = cue_score(out, input, out_at, in_at, blend, musical_end, outro_start);
     let mode_penalty = match mode {
         "strict" => 0.0,
         "relaxed" => 0.12,
@@ -1461,6 +1723,8 @@ pub fn analyze_playlist(
                     head: EdgeFeatures::default(),
                     tail: EdgeFeatures::default(),
                     tail_offset: 0.0,
+                    head_secs: 0.0,
+                    tail_secs: 0.0,
                     status: "skipped".into(),
                     error: Some(error.to_string()),
                 });
@@ -1498,7 +1762,6 @@ pub fn analyze_playlist(
     ))
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1525,6 +1788,8 @@ mod tests {
                 ..Default::default()
             },
             tail_offset: 0.0,
+            head_secs: 40.0,
+            tail_secs: 60.0,
             status: "ok".into(),
             error: None,
         }
@@ -1706,6 +1971,114 @@ mod tests {
     }
 
     #[test]
+    fn cue_search_reaches_an_outro_beyond_the_last_thirty_seconds() {
+        let mut out = track(120.0, "8A");
+        out.tail_offset = 140.0;
+        out.tail_secs = 60.0;
+        out.tail.beats = vec![0.0, 0.5];
+        // The outro starts at 150 s, i.e. 50 s before the end. The old search
+        // window began at duration - 30 = 170 s and could never reach it.
+        let mut energy = vec![0.8; 120];
+        energy[20..].fill(0.2);
+        out.tail.energy_curve = energy;
+        out.tail.loudness_curve_db = vec![-12.0; 600];
+        out.tail.loudness_curve_resolution_seconds = 0.1;
+        let mut input = track(120.0, "8A");
+        input.head.beats = vec![0.0, 0.5];
+        input.head.energy_curve = vec![0.2; 120];
+        input.head.loudness_curve_db = vec![-12.0; 600];
+        input.head.loudness_curve_resolution_seconds = 0.1;
+
+        let plan = plan_transition(&out, &input);
+        assert!(
+            (148.0..=156.0).contains(&plan.out_at),
+            "expected the early outro start, got {}",
+            plan.out_at
+        );
+        assert!(plan.out_at + plan.blend_secs <= 200.0 + 1e-3);
+    }
+
+    #[test]
+    fn trailing_silence_is_not_a_mix_target() {
+        let mut out = track(120.0, "8A");
+        out.tail_offset = 140.0;
+        out.tail_secs = 60.0;
+        let mut energy = vec![0.8; 120];
+        energy[100..].fill(0.0);
+        out.tail.energy_curve = energy;
+        // Last 10 s are silent, so the musical end is at 190 s.
+        assert!((musical_end(&out) - 190.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn cue_stays_before_a_fading_silent_tail() {
+        let mut out = track(120.0, "8A");
+        out.tail_offset = 140.0;
+        out.tail_secs = 60.0;
+        out.tail.beats = vec![0.0, 0.5];
+        // Full energy until 170 s, a 25 s fade-out, then 5 s of silence.
+        let mut energy = vec![0.8; 120];
+        for (i, value) in energy.iter_mut().enumerate().take(110).skip(60) {
+            let t = (i as f32 - 60.0) / 50.0;
+            *value = 0.8 * (1.0 - t);
+        }
+        energy[110..].fill(0.0);
+        out.tail.energy_curve = energy;
+        // The loudness curve agrees that the last 5 s are silent.
+        let mut loud = vec![-12.0; 600];
+        loud[550..].fill(-120.0);
+        out.tail.loudness_curve_db = loud;
+        out.tail.loudness_curve_resolution_seconds = 0.1;
+        let mut input = track(120.0, "8A");
+        input.head.beats = vec![0.0, 0.5];
+        input.head.energy_curve = vec![0.2; 120];
+        input.head.loudness_curve_db = vec![-12.0; 600];
+        input.head.loudness_curve_resolution_seconds = 0.1;
+
+        let plan = plan_transition(&out, &input);
+        assert!(
+            plan.out_at < 192.0,
+            "expected the cue before the silent tail, got {}",
+            plan.out_at
+        );
+        assert!(plan.out_at > 160.0);
+    }
+
+    #[test]
+    fn edge_windows_scale_with_track_length() {
+        assert!((head_window_secs(240.0) - 45.0).abs() < 1e-3);
+        assert!((tail_window_secs(240.0) - 72.0).abs() < 1e-3);
+        assert!((head_window_secs(60.0) - 20.0).abs() < 1e-3);
+        assert!((tail_window_secs(60.0) - 20.0).abs() < 1e-3);
+        assert!((tail_window_secs(600.0) - 90.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn very_short_tracks_get_a_short_fade() {
+        let mut out = track(120.0, "8A");
+        out.duration = 12.0;
+        out.head_secs = 12.0;
+        out.tail_secs = 12.0;
+        out.head.loudness_curve_db = vec![-12.0; 120];
+        out.head.loudness_curve_resolution_seconds = 0.1;
+        out.tail.loudness_curve_db = vec![-12.0; 120];
+        out.tail.loudness_curve_resolution_seconds = 0.1;
+        let mut input = track(120.0, "8A");
+        input.duration = 12.0;
+        input.head_secs = 12.0;
+        input.tail_secs = 12.0;
+        input.head.loudness_curve_db = vec![-12.0; 120];
+        input.head.loudness_curve_resolution_seconds = 0.1;
+        input.tail.loudness_curve_db = vec![-12.0; 120];
+        input.tail.loudness_curve_resolution_seconds = 0.1;
+
+        let plan = plan_transition(&out, &input);
+        assert!(plan.blend_secs <= 1.5 + 1e-3);
+        assert!(plan.out_at + plan.blend_secs <= 12.0 + 1e-3);
+        assert_eq!(plan.in_at, 0.0);
+    }
+
+    #[test]
     fn plan_is_relaxed_without_beats_but_with_tempo() {
         let plan = plan_transition(&track(120.0, "8A"), &track(120.0, "8A"));
         assert_eq!(plan.mode, "relaxed");
@@ -1742,4 +2115,3 @@ mod tests {
         assert!(!unknown.plan_ready());
     }
 }
-
