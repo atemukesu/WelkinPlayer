@@ -19,4 +19,5 @@ pub mod commands;
 pub mod commands_context;
 pub mod context;
 pub mod engine;
+pub mod fade_eq;
 pub mod source;

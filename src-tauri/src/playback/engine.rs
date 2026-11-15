@@ -28,6 +28,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::core::error::AppError;
+use crate::playback::fade_eq::{FadeEq, BASS_CUT_DB};
 use crate::playback::source::{open_track, open_track_inactive, ReadSeek};
 use crate::streaming::manual_cache::ManualCache;
 use crate::streaming::stream_cache::StreamCache;
@@ -50,6 +51,23 @@ const PREFILL_MILLIS: usize = 150;
 /// cannot seek must not freeze the transport thread decoding minutes of audio.
 const MAX_FORWARD_SEEK_SECONDS: f64 = 8.0;
 const SOURCE_STATE_BLOCK: usize = 256;
+
+/// Normalised crossfade position where the outgoing bass starts leaving.
+const BASS_OUT_START: f32 = 0.30;
+/// Position where the outgoing bass is fully gone.
+const BASS_OUT_END: f32 = 0.62;
+/// Position where the incoming bass starts arriving.
+const BASS_IN_START: f32 = 0.38;
+/// Position where the incoming bass is fully in.
+const BASS_IN_END: f32 = 0.70;
+
+/// Progress of a bass-swap window, clamped to `0..=1`.
+fn swap_progress(t: f32, start: f32, end: f32) -> f32 {
+    if end <= start {
+        return if t >= end { 1.0 } else { 0.0 };
+    }
+    ((t - start) / (end - start)).clamp(0.0, 1.0)
+}
 
 fn output_samples(rate: u32, channels: u16, millis: usize) -> usize {
     (rate as usize * millis / 1000).max(1) * channels.max(1) as usize
@@ -830,6 +848,31 @@ impl Shared {
         }
     }
 
+    /// Bass-shelf gain (dB) for one deck during a crossfade.
+    ///
+    /// Both decks keep the equal-power envelope above, but their low end is
+    /// swapped in the middle of the fade: the outgoing bass is cut away before
+    /// the incoming bass is brought in. This is what stops two kick drums and
+    /// two basslines from piling up in the overlap.
+    ///
+    /// Outside a fade the shelf is at 0 dB (exactly unity, so `RingSource`
+    /// skips it entirely).
+    fn deck_bass_db(&self, deck: u8) -> f32 {
+        if !self.fade_active.load(Ordering::Relaxed) {
+            return 0.0;
+        }
+        let from = self.fade_from_deck.load(Ordering::Relaxed);
+        let clock = self.fade_clock.load(Ordering::Relaxed);
+        let start = self.fade_start_frame.load(Ordering::Relaxed);
+        let frames = self.fade_frames.load(Ordering::Relaxed).max(1);
+        let t = (clock.saturating_sub(start) as f32 / frames as f32).clamp(0.0, 1.0);
+        if deck == from {
+            BASS_CUT_DB * swap_progress(t, BASS_OUT_START, BASS_OUT_END)
+        } else {
+            BASS_CUT_DB * (1.0 - swap_progress(t, BASS_IN_START, BASS_IN_END))
+        }
+    }
+
     /// Whether an overlapping crossfade is currently being mixed.
     fn crossfade_active(&self) -> bool {
         self.fade_active.load(Ordering::Relaxed)
@@ -1097,6 +1140,10 @@ struct RingSource {
     target_gain: f32,
     gain_step: f32,
     ramp_frames: u32,
+    /// Bass shelf for this deck, used only during a crossfade.
+    bands: FadeEq,
+    /// Bass-shelf gain in dB for the current state block.
+    bass_db: f32,
     channel_cursor: u16,
     waveform_peak: f32,
     waveform_frames: usize,
@@ -1139,6 +1186,11 @@ impl Iterator for RingSource {
                 self.ramp_frames = (self.rate / 100).max(1);
                 self.gain_step = (target - self.gain) / self.ramp_frames as f32;
             }
+            self.bass_db = if fading {
+                self.shared.deck_bass_db(self.deck)
+            } else {
+                0.0
+            };
             self.state_left =
                 SOURCE_STATE_BLOCK.div_ceil(self.channels as usize) * self.channels as usize;
         }
@@ -1201,7 +1253,13 @@ impl Iterator for RingSource {
                 {
                     self.shared.fade_done.store(true, Ordering::Release);
                 }
-                Some(value * self.gain)
+                let sample = if fading {
+                    self.bands.set_gain_db(self.bass_db);
+                    self.bands.process(value, self.channel_cursor as usize)
+                } else {
+                    value
+                };
+                Some(sample * self.gain)
             }
             None => {
                 if done {
@@ -3401,6 +3459,8 @@ mod worker {
                 target_gain: -1.0,
                 gain_step: 0.0,
                 ramp_frames: 0,
+                bands: FadeEq::new(rate),
+                bass_db: 0.0,
                 channel_cursor: 0,
                 waveform_peak: 0.0,
                 waveform_frames: 0,
@@ -3460,6 +3520,8 @@ mod tests {
             target_gain: -1.0,
             gain_step: 0.0,
             ramp_frames: 0,
+            bands: FadeEq::new(1000),
+            bass_db: 0.0,
             channel_cursor: 0,
             waveform_peak: 0.0,
             waveform_frames: 0,
@@ -3610,6 +3672,53 @@ mod tests {
         }
         assert!((shared.deck_gain(0) - 0.0).abs() < 0.001);
         assert!((shared.deck_gain(1) - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn crossfade_swaps_bass_before_mids_and_highs() {
+        let shared = Shared::new();
+        shared.active_deck.store(0, Ordering::Relaxed);
+        shared.fade_from_deck.store(0, Ordering::Relaxed);
+        shared.fade_start_frame.store(0, Ordering::Relaxed);
+        shared.fade_frames.store(1000, Ordering::Relaxed);
+        shared.fade_active.store(true, Ordering::Relaxed);
+
+        // At the start the outgoing deck has its original bass and the
+        // incoming deck is fully cut (and silent anyway).
+        shared.fade_clock.store(0, Ordering::Relaxed);
+        assert_eq!(shared.deck_bass_db(0), 0.0);
+        assert_eq!(shared.deck_bass_db(1), BASS_CUT_DB);
+
+        // Early on the outgoing bass is still untouched.
+        shared.fade_clock.store(250, Ordering::Relaxed);
+        assert_eq!(shared.deck_bass_db(0), 0.0);
+        assert_eq!(shared.deck_bass_db(1), BASS_CUT_DB);
+
+        // Around the middle both low ends are heavily cut: the swap overlaps
+        // briefly instead of leaving both basslines at full level.
+        shared.fade_clock.store(500, Ordering::Relaxed);
+        let out_db = shared.deck_bass_db(0);
+        let in_db = shared.deck_bass_db(1);
+        assert!(out_db < -12.0, "out {out_db}");
+        assert!(in_db < -12.0, "in {in_db}");
+
+        // By the handover the outgoing bass is gone and the incoming one is
+        // fully open again.
+        shared.fade_clock.store(1000, Ordering::Relaxed);
+        assert!((shared.deck_bass_db(0) - BASS_CUT_DB).abs() < 1e-3);
+        assert_eq!(shared.deck_bass_db(1), 0.0);
+        // Mids and highs keep the equal-power envelope.
+        assert!(shared.deck_gain(0) < 1e-3);
+        assert!((shared.deck_gain(1) - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn bass_eq_is_bypassed_outside_a_fade() {
+        let shared = Shared::new();
+        shared.active_deck.store(1, Ordering::Relaxed);
+        shared.fade_active.store(false, Ordering::Relaxed);
+        assert_eq!(shared.deck_bass_db(0), 0.0);
+        assert_eq!(shared.deck_bass_db(1), 0.0);
     }
 
     #[test]
