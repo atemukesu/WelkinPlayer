@@ -76,13 +76,14 @@ fn bus_headroom(peak_a: f32, peak_b: f32) -> f32 {
 }
 
 /// Normalised crossfade position where the outgoing bass starts leaving.
-const BASS_OUT_START: f32 = 0.30;
+const BASS_OUT_START: f32 = 0.25;
 /// Position where the outgoing bass is fully gone.
-const BASS_OUT_END: f32 = 0.62;
-/// Position where the incoming bass starts arriving.
-const BASS_IN_START: f32 = 0.38;
+const BASS_OUT_END: f32 = 0.50;
+/// Position where the incoming bass starts arriving. It is the same point the
+/// outgoing bass disappears, so the two low ends never play together.
+const BASS_IN_START: f32 = 0.50;
 /// Position where the incoming bass is fully in.
-const BASS_IN_END: f32 = 0.70;
+const BASS_IN_END: f32 = 0.78;
 
 /// Progress of a bass-swap window, clamped to `0..=1`.
 fn swap_progress(t: f32, start: f32, end: f32) -> f32 {
@@ -3805,13 +3806,18 @@ mod tests {
         assert_eq!(shared.deck_bass_db(0), 0.0);
         assert_eq!(shared.deck_bass_db(1), BASS_CUT_DB);
 
-        // Around the middle both low ends are heavily cut: the swap overlaps
-        // briefly instead of leaving both basslines at full level.
+        // Around the middle the outgoing bass is fully gone before the incoming
+        // one starts to arrive: the swap is sequential, never double bass.
         shared.fade_clock.store(500, Ordering::Relaxed);
         let out_db = shared.deck_bass_db(0);
         let in_db = shared.deck_bass_db(1);
-        assert!(out_db < -12.0, "out {out_db}");
-        assert!(in_db < -12.0, "in {in_db}");
+        assert!((out_db - BASS_CUT_DB).abs() < 1e-3, "out {out_db}");
+        assert!((in_db - BASS_CUT_DB).abs() < 1e-3, "in {in_db}");
+
+        // The incoming bass then opens over the second half of the fade.
+        shared.fade_clock.store(640, Ordering::Relaxed);
+        let in_db = shared.deck_bass_db(1);
+        assert!((in_db - BASS_CUT_DB * 0.5).abs() < 1e-3, "in {in_db}");
 
         // By the handover the outgoing bass is gone and the incoming one is
         // fully open again.
