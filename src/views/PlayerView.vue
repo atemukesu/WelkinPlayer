@@ -29,6 +29,7 @@ import { coverPending, initial, percent } from "../lib/format";
 import { cssFontFamily } from "../lib/fonts";
 import { useWakeLock } from "../composables/useWakeLock";
 import RealtimeWaveform from "../components/RealtimeWaveform.vue";
+import TransitionIndicator from "../components/TransitionIndicator.vue";
 import { Virtualizer } from "virtua/vue";
 import type { VirtualizerHandle } from "virtua/vue";
 import type { View } from "../lib/app";
@@ -716,6 +717,15 @@ watch(
           <img v-if="player.currentTrack.cover" :key="player.currentTrack.cover" :src="player.currentTrack.cover" alt="" decoding="async" class="player-art-in h-full w-full object-cover" />
           <span v-else-if="coverPending(player.currentTrack)" class="grid h-full w-full place-items-center text-white/90"><LoaderCircle :size="40" :stroke-width="1.8" class="animate-spin" /></span>
           <span v-else-if="player.currentTrack.metaLoaded" class="grid h-full w-full place-items-center text-8xl font-black text-white/90">{{ initial(player.currentTrack) }}</span>
+          <img
+            v-if="player.transition?.phase === 'crossfading' && player.transitionNext?.cover"
+            :src="player.transitionNext.cover"
+            alt=""
+            aria-hidden="true"
+            decoding="async"
+            class="player-art-preview pointer-events-none absolute inset-y-0 right-0 h-full w-[38%] object-cover"
+            :style="{ transform: `translateX(${Math.max(0, 1 - player.transition.progress) * 100}%)` }"
+          />
           <img v-if="artTransition && outgoingArt?.cover" :src="outgoingArt.cover" alt="" decoding="async" class="player-art-out absolute inset-0 h-full w-full object-cover" />
         </div>
         <div :key="`meta-${player.currentTrack.sourceId}-${player.currentTrack.path}-${player.currentTrack.id}`" class="player-meta-in mx-auto mt-4 hidden w-full max-w-[420px] md:block">
@@ -723,6 +733,7 @@ watch(
           <button v-if="player.currentTrack.artist" type="button" class="mt-2 block w-fit max-w-full truncate text-left text-base text-dim transition-colors hover:text-accent" :title="t('library.openArtist')" @click="emit('openArtist', player.currentTrack.artist)">{{ player.currentTrack.artist }}</button>
         </div>
         <div class="mx-auto w-full max-w-[420px] md:mt-4">
+          <TransitionIndicator class="mb-2 w-full" />
           <div class="flex h-6 items-center">
             <input
               :value="sliderValue"
@@ -1051,6 +1062,15 @@ watch(
 
 .player-art-out {
   animation: player-art-out 820ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+/* The incoming cover peeks in from the right during a smart mix, so the
+ * visual overlap matches the audio overlap instead of only switching at the
+ * handover. */
+.player-art-preview {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 42%);
+  mask-image: linear-gradient(to right, transparent, #000 42%);
+  opacity: 0.85;
 }
 
 .player-meta-in {

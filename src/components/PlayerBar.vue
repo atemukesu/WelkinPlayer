@@ -26,6 +26,7 @@ import { seekPercent } from "../lib/audio";
 import * as audioQuality from "../lib/audioQuality";
 import LayeredSelect from "./LayeredSelect.vue";
 import RealtimeWaveform from "./RealtimeWaveform.vue";
+import TransitionIndicator from "./TransitionIndicator.vue";
 
 defineProps<{ waveform?: boolean }>();
 const emit = defineEmits<{ open: []; queue: []; openArtist: [artist: string]; openAlbum: [album: string] }>();
@@ -126,6 +127,9 @@ function endSeek() {
 
 <template>
   <footer class="relative border-t border-line bg-surface">
+    <div v-if="player.transition" class="pointer-events-none absolute inset-x-0 bottom-0 z-20 h-[2px] bg-accent/20">
+      <span class="block h-full bg-accent transition-[width] duration-150 ease-linear" :style="{ width: `${player.transition.progress * 100}%` }" />
+    </div>
     <input
       :value="sliderValue"
       :style="{ '--fill': percent(sliderValue), '--buffered': percent(player.bufferedProgress) }"
@@ -196,6 +200,9 @@ function endSeek() {
       </div>
 
       <div class="ml-auto flex items-center gap-2">
+        <div class="hidden min-w-0 lg:block">
+          <TransitionIndicator compact class="max-w-[22rem]" />
+        </div>
         <span class="hidden font-mono text-[13px] tabular-nums text-muted lg:block">
           {{ player.elapsedTime }} / {{ player.totalTime }}
         </span>
@@ -282,6 +289,7 @@ function endSeek() {
       <div v-if="expanded" class="player-tray md:hidden">
       <div class="overflow-hidden">
       <div class="grid gap-3 border-t border-line px-4 py-3">
+      <TransitionIndicator compact class="w-full" />
       <div class="flex items-center justify-between">
         <button class="grid h-10 w-10 place-items-center" :class="player.orderLocked ? 'text-accent' : player.shuffle ? 'text-accent' : 'text-muted'" :title="shuffleTitle" :aria-label="shuffleTitle" :disabled="player.orderLocked" @click="player.toggleShuffle()">
           <Sparkles v-if="player.orderLocked" :size="17" :stroke-width="1.8" />

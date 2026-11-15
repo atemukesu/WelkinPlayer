@@ -38,7 +38,7 @@ function bootMediaControl() {
 }
 import { pushToast } from "./lib/toast";
 import { usePlayerStore } from "./stores/player";
-import type { Track, PlaybackSnapshot } from "./stores/player";
+import type { Track, PlaybackSnapshot, TransitionStatus } from "./stores/player";
 import { useSourcesStore } from "./stores/sources";
 import { useProfileStore, tracksForPaths } from "./stores/profile";
 import { useSmartTransitionStore } from "./stores/smartTransition";
@@ -131,6 +131,8 @@ const POSITION_SAVE_INTERVAL_MS = 30_000;
 
 /** Listener for the Rust `playback:changed` snapshot that mirrors into the store. */
 let unlistenPlayback: UnlistenFn | null = null;
+/** Listener for live smart-transition progress. */
+let unlistenTransition: UnlistenFn | null = null;
 
 // The full-screen player, track-info, the track editors and the sponsor view are
 // overlays that sit on top of whatever page was open, so they must not change
@@ -394,7 +396,7 @@ function onGlobalKeydown(event: KeyboardEvent) {
 }
 
 onMounted(() => { windowBehavior.sync(); window.addEventListener("hashchange", syncViewFromHash); window.addEventListener("keydown", onGlobalKeydown); window.addEventListener("beforeunload", savePlaybackPositionOnLeave); window.addEventListener("pagehide", savePlaybackPositionOnLeave); window.addEventListener("focus", recheckLicense); document.addEventListener("visibilitychange", onVisibilityChange); void initAudio(); void network.start(); void cache.start(); bootDesktopLyrics(); bootMediaControl(); void invoke<string>("ping").catch((error) => console.warn("[welkin] ping failed", describeError(error))); void bootstrap(); });
-onUnmounted(() => { savePlaybackPosition(true); stopDesktopLyrics(); stopMediaControl(); window.removeEventListener("hashchange", syncViewFromHash); window.removeEventListener("keydown", onGlobalKeydown); window.removeEventListener("beforeunload", savePlaybackPositionOnLeave); window.removeEventListener("pagehide", savePlaybackPositionOnLeave); window.removeEventListener("focus", recheckLicense); document.removeEventListener("visibilitychange", onVisibilityChange); unlistenPlayback?.(); unlistenPlayback = null; void profile.flush(); });
+onUnmounted(() => { savePlaybackPosition(true); stopDesktopLyrics(); stopMediaControl(); window.removeEventListener("hashchange", syncViewFromHash); window.removeEventListener("keydown", onGlobalKeydown); window.removeEventListener("beforeunload", savePlaybackPositionOnLeave); window.removeEventListener("pagehide", savePlaybackPositionOnLeave); window.removeEventListener("focus", recheckLicense); document.removeEventListener("visibilitychange", onVisibilityChange); unlistenPlayback?.(); unlistenPlayback = null; unlistenTransition?.(); unlistenTransition = null; void profile.flush(); });
 
 // Mirror the Rust playback context into the store. The queue / play intent / next
 // / previous all live in Rust now; this is the single channel that keeps the UI
@@ -404,6 +406,9 @@ onUnmounted(() => { savePlaybackPosition(true); stopDesktopLyrics(); stopMediaCo
 listen<PlaybackSnapshot>("playback:changed", (event) => {
   player.applySnapshot(event.payload);
 }).then((stop) => { unlistenPlayback = stop; }).catch(() => {});
+listen<TransitionStatus>("playback:transition", (event) => {
+  player.applyTransition(event.payload);
+}).then((stop) => { unlistenTransition = stop; }).catch(() => {});
 </script>
 
 <template>

@@ -54,6 +54,23 @@ export interface PlaybackSnapshot {
   orderLocked: boolean;
 }
 
+/** Live smart-transition state pushed on `playback:transition`. */
+export interface TransitionStatus {
+  active: boolean;
+  /** `idle` only appears on the clearing event; active states are the others. */
+  phase: "idle" | "preparing" | "crossfading";
+  /** Envelope progress, 0..1. Zero while preparing. */
+  progress: number;
+  /** Track key of the outgoing deck. */
+  from: string;
+  /** Track key of the incoming deck. */
+  to: string;
+  /** Fade length in seconds. */
+  blendSecs: number;
+  /** Seconds until the fade starts; zero once it is running. */
+  startsIn: number;
+}
+
 /** Restore the locally saved output volume, falling back to the default. */
 function readStoredVolume(): number {
   const raw = localStorage.getItem(VOLUME_STORAGE_KEY);
@@ -139,6 +156,8 @@ export const usePlayerStore = defineStore("player", () => {
   const shuffle = ref(localStorage.getItem(SHUFFLE_STORAGE_KEY) === "1");
   /** True while the queue is pinned to a smart-transition order. */
   const orderLocked = ref(false);
+  /** Live smart-transition state; `null` when nothing is mixing. */
+  const transition = ref<TransitionStatus | null>(null);
   const repeat = ref<RepeatMode>(localStorage.getItem(REPEAT_STORAGE_KEY) === "all" ? "all" : localStorage.getItem(REPEAT_STORAGE_KEY) === "one" ? "one" : "off");
 
   const currentTrack = ref<Track | null>(null);
@@ -208,6 +227,20 @@ export const usePlayerStore = defineStore("player", () => {
   const remainingTime = computed(() =>
     duration.value > 0 ? formatClock(Math.max(0, duration.value - position.value)) : totalTime.value,
   );
+  /** Metadata for the deck that is entering, resolved from the live queue. */
+  const transitionNext = computed<Track | null>(() => {
+    const key = transition.value?.to;
+    if (!key) return null;
+    return queue.value.find((track) => trackKey(track) === key) ?? placeholderFromKey(key);
+  });
+
+  /**
+   * Mirror the live crossfade state. The backend only emits while a smart
+   * transition is preparing or actively mixing, plus one clearing event.
+   */
+  function applyTransition(status: TransitionStatus) {
+    transition.value = status.active ? status : null;
+  }
 
   /**
    * Mirror a Rust `playback:changed` snapshot into the store. Track *metadata*
@@ -558,6 +591,7 @@ export const usePlayerStore = defineStore("player", () => {
     shuffle,
     orderLocked,
     repeat,
+    transition,
     currentTrack,
     isPlaying,
     progress,
@@ -575,7 +609,9 @@ export const usePlayerStore = defineStore("player", () => {
     elapsedTime,
     totalTime,
     remainingTime,
+    transitionNext,
     applySnapshot,
+    applyTransition,
     setTracks,
     queueKeys,
     restoreQueue,

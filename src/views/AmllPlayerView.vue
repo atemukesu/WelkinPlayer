@@ -26,6 +26,7 @@ import "@applemusic-like-lyrics/core/style.css";
 import AmllBackground from "../components/AmllBackground.vue";
 import AmllLyrics from "../components/AmllLyrics.vue";
 import RealtimeWaveform from "../components/RealtimeWaveform.vue";
+import TransitionIndicator from "../components/TransitionIndicator.vue";
 import { usePlayerStore } from "../stores/player";
 import { useLyricsStore } from "../stores/lyrics";
 import { currentTime, seekPercent, seekTo } from "../lib/audio";
@@ -405,6 +406,7 @@ function onLyricSeek(timeMs: number) {
               <template v-else>{{ player.totalTime }}</template>
             </button>
           </div>
+          <TransitionIndicator tone="light" compact class="mb-3 w-full" />
           <div class="mt-4 flex items-center justify-between gap-3">
             <button type="button" class="transition" :class="player.orderLocked ? 'text-white' : player.shuffle ? 'text-white' : 'text-white/50'" :title="shuffleTitle" :disabled="player.orderLocked" @click="player.toggleShuffle()">
               <Sparkles v-if="player.orderLocked" :size="20" :stroke-width="2" />
