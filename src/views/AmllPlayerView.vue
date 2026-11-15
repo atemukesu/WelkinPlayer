@@ -17,6 +17,7 @@ import {
   Shuffle,
   SkipBack,
   SkipForward,
+  Sparkles,
 } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { invoke } from "@tauri-apps/api/core";
@@ -405,8 +406,9 @@ function onLyricSeek(timeMs: number) {
             </button>
           </div>
           <div class="mt-4 flex items-center justify-between gap-3">
-            <button type="button" class="transition" :class="player.orderLocked ? 'text-white/25' : player.shuffle ? 'text-white' : 'text-white/50'" :title="shuffleTitle" :disabled="player.orderLocked" @click="player.toggleShuffle()">
-              <Shuffle :size="20" :stroke-width="2" />
+            <button type="button" class="transition" :class="player.orderLocked ? 'text-white' : player.shuffle ? 'text-white' : 'text-white/50'" :title="shuffleTitle" :disabled="player.orderLocked" @click="player.toggleShuffle()">
+              <Sparkles v-if="player.orderLocked" :size="20" :stroke-width="2" />
+              <Shuffle v-else :size="20" :stroke-width="2" />
             </button>
             <div class="flex items-center gap-3 sm:gap-5">
               <button type="button" class="grid h-12 w-12 place-items-center rounded-full text-white transition hover:scale-105 hover:bg-white/15 active:scale-95" @click="player.previous()">

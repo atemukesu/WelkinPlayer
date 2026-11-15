@@ -17,6 +17,7 @@ import {
   Shuffle,
   SkipBack,
   SkipForward,
+  Sparkles,
 } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -749,8 +750,9 @@ watch(
             </button>
           </div>
           <div class="mt-3 flex items-center justify-between gap-3">
-            <button class="grid h-9 w-9 place-items-center" :class="player.orderLocked ? 'text-dim opacity-50' : player.shuffle ? 'text-accent' : 'text-muted'" :title="shuffleTitle" :disabled="player.orderLocked" @click="player.toggleShuffle()">
-              <Shuffle :size="16" :stroke-width="1.8" />
+            <button class="grid h-9 w-9 place-items-center" :class="player.orderLocked ? 'text-accent' : player.shuffle ? 'text-accent' : 'text-muted'" :title="shuffleTitle" :disabled="player.orderLocked" @click="player.toggleShuffle()">
+              <Sparkles v-if="player.orderLocked" :size="16" :stroke-width="1.8" />
+              <Shuffle v-else :size="16" :stroke-width="1.8" />
             </button>
             <div class="flex items-center gap-2">
               <button class="grid h-10 w-10 place-items-center text-fg transition-colors hover:text-accent" @click="player.previous()">

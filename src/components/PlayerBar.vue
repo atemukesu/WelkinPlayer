@@ -14,6 +14,7 @@ import {
   Shuffle,
   SkipBack,
   SkipForward,
+  Sparkles,
   Volume2,
   VolumeX,
 } from "@lucide/vue";
@@ -170,8 +171,9 @@ function endSeek() {
       </div>
 
       <div class="absolute left-1/2 hidden -translate-x-1/2 items-center gap-2 md:flex">
-        <button class="grid h-9 w-9 place-items-center" :class="player.orderLocked ? 'text-dim opacity-50' : player.shuffle ? 'text-accent' : 'text-muted'" :title="shuffleTitle" :disabled="player.orderLocked" @click="player.toggleShuffle()">
-          <Shuffle :size="16" :stroke-width="1.8" />
+        <button class="grid h-9 w-9 place-items-center" :class="player.orderLocked ? 'text-accent' : player.shuffle ? 'text-accent' : 'text-muted'" :title="shuffleTitle" :disabled="player.orderLocked" @click="player.toggleShuffle()">
+          <Sparkles v-if="player.orderLocked" :size="16" :stroke-width="1.8" />
+          <Shuffle v-else :size="16" :stroke-width="1.8" />
         </button>
         <button class="grid h-10 w-10 place-items-center text-fg transition-colors hover:text-accent" @click="player.previous()">
           <SkipBack :size="18" :stroke-width="2" />
@@ -281,8 +283,9 @@ function endSeek() {
       <div class="overflow-hidden">
       <div class="grid gap-3 border-t border-line px-4 py-3">
       <div class="flex items-center justify-between">
-        <button class="grid h-10 w-10 place-items-center" :class="player.orderLocked ? 'text-dim opacity-50' : player.shuffle ? 'text-accent' : 'text-muted'" :title="shuffleTitle" :aria-label="shuffleTitle" :disabled="player.orderLocked" @click="player.toggleShuffle()">
-          <Shuffle :size="17" :stroke-width="1.8" />
+        <button class="grid h-10 w-10 place-items-center" :class="player.orderLocked ? 'text-accent' : player.shuffle ? 'text-accent' : 'text-muted'" :title="shuffleTitle" :aria-label="shuffleTitle" :disabled="player.orderLocked" @click="player.toggleShuffle()">
+          <Sparkles v-if="player.orderLocked" :size="17" :stroke-width="1.8" />
+          <Shuffle v-else :size="17" :stroke-width="1.8" />
         </button>
         <button class="grid h-10 w-10 place-items-center text-fg transition-colors hover:text-accent" :title="t('controls.previous')" :aria-label="t('controls.previous')" @click="player.previous()">
           <SkipBack :size="20" :stroke-width="2" />
