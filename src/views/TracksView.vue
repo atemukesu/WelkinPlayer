@@ -9,7 +9,7 @@ import { ListChecks, Pencil, Play, RefreshCw, Search, Sparkles } from "@lucide/v
 import { useI18n } from "vue-i18n";
 import { usePlayerStore } from "../stores/player";
 import type { Track } from "../stores/player";
-import { tracksForPaths, useProfileStore } from "../stores/profile";
+import { profileKeyForTrack, tracksForPaths, useProfileStore } from "../stores/profile";
 import type { Playlist } from "../lib/profile";
 import { useSmartTransitionStore } from "../stores/smartTransition";
 import { useSourcesStore } from "../stores/sources";
@@ -218,6 +218,17 @@ watch(smartLocked, async (locked) => {
 function openSmart() { smartOpen.value = true; }
 function openContextMenu(event: MouseEvent, track: Track) { contextTrack.value = track; contextPosition.value = { x: event.clientX, y: event.clientY }; }
 function downloadMetadata(track: Track) { emit("downloadMetadata", track); }
+/**
+ * Remove a row from the open playlist. Unavailable rows only carry a
+ * `profileKey`, so prefer it over the device-local track key; otherwise a
+ * synced-from-another-device entry could never be deleted here.
+ */
+function removeTrack(track: Track) {
+  const playlist = activePlaylist.value;
+  if (!playlist) return;
+  const key = track.profileKey ?? profileKeyForTrack(track) ?? trackKey(track);
+  if (key) profile.removeFromPlaylist(playlist.id, key);
+}
 </script>
 
 <template>
@@ -291,7 +302,7 @@ function downloadMetadata(track: Track) { emit("downloadMetadata", track); }
         <template v-if="loading"><span class="ak-pulse"></span><p class="text-sm font-semibold uppercase tracking-[0.2em] text-muted">{{ t("library.loading") }}</p></template>
         <template v-else><p class="max-w-md text-sm text-muted">{{ t("library.emptyDesc") }}</p></template>
       </div>
-      <div v-else class="min-h-0 flex-1"><TrackList v-model:selected="selected" :tracks="tracks" :scroller="scrollEl" :letter-index="letterIndex" empty-key="library.playlists.noTracks" :selectable="selectMode" @play="play" @menu="openContextMenu" @open-artist="emit('openArtist', $event)" @open-album="emit('openAlbum', $event)" /></div>
+      <div v-else class="min-h-0 flex-1"><TrackList v-model:selected="selected" :tracks="tracks" :scroller="scrollEl" :letter-index="letterIndex" :removable="!!activePlaylist" empty-key="library.playlists.noTracks" :selectable="selectMode" @play="play" @menu="openContextMenu" @remove="removeTrack" @open-artist="emit('openArtist', $event)" @open-album="emit('openAlbum', $event)" /></div>
 
       <TrackContextMenu v-if="contextTrack" :track="contextTrack" :x="contextPosition.x" :y="contextPosition.y" :selected-paths="[...selected]" :playlist-id="activePlaylist?.id ?? null" :downloading="downloadingTrackId === contextTrack.id" @close="contextTrack = null" @download-metadata="downloadMetadata" @edit-lyrics="emit('editLyrics', $event)" @edit-info="emit('editInfo', $event)" @show-info="emit('showInfo', $event)" />
       <SmartTransitionDialog v-if="activePlaylist" :playlist-id="activePlaylist.id" :open="smartOpen" @close="smartOpen = false" />

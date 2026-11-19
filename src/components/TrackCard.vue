@@ -22,12 +22,11 @@ const { t } = useI18n();
 const unavailable = computed(() => !!props.track.unavailable);
 
 function activate(event: MouseEvent) {
-  if (unavailable.value) { pushToast("warning", t("library.unavailableHint")); return; }
   if (props.selectable) emit("toggle", props.track, event);
+  else if (unavailable.value) pushToast("warning", t("library.unavailableHint"));
   else emit("play", props.track);
 }
 function openMenu(event: MouseEvent) {
-  if (unavailable.value) return;
   emit("menu", event, props.track);
 }
 </script>
@@ -37,7 +36,7 @@ function openMenu(event: MouseEvent) {
     v-request-meta="track"
     class="group relative border bg-surface p-3 transition-all"
     :title="unavailable ? t('library.unavailableHint') : undefined"
-    :class="[unavailable ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:-translate-y-0.5', selected ? 'border-accent ring-1 ring-accent' : 'border-line', !unavailable && !selected ? 'hover:border-accent' : '', active ? 'border-accent' : '']"
+    :class="[unavailable ? (selectable ? 'cursor-pointer opacity-60' : 'cursor-not-allowed opacity-50') : 'cursor-pointer hover:-translate-y-0.5', selected ? 'border-accent ring-1 ring-accent' : 'border-line', !unavailable && !selected ? 'hover:border-accent' : '', active ? 'border-accent' : '']"
     @click="activate($event)"
     @contextmenu.prevent="openMenu($event)"
   >

@@ -123,34 +123,38 @@ function gridTrack(row: number, col: number): Track { return props.tracks[row * 
 function gridInRange(row: number, col: number): boolean { return row * columns.value + col < props.tracks.length; }
 
 const selection = computed(() => props.selected ?? new Set<string>());
-const selectableTracks = computed(() => props.tracks.filter((track) => trackKey(track)));
-const allSelected = computed(() => selectableTracks.value.length > 0 && selectableTracks.value.every((track) => selection.value.has(trackKey(track) as string)));
+/** Profile keys of unavailable rows survive selection; only real tracks have a trackKey. */
+function keyOf(track: Track): string | undefined {
+  return trackKey(track) ?? track.profileKey;
+}
+const selectableTracks = computed(() => props.tracks.filter((track) => keyOf(track)));
+const allSelected = computed(() => selectableTracks.value.length > 0 && selectableTracks.value.every((track) => selection.value.has(keyOf(track) as string)));
 const selectedCount = computed(() => props.tracks.filter(isSelected).length);
 let anchorKey: string | null = null;
 
 function isSelected(track: Track): boolean {
-  const key = trackKey(track);
+  const key = keyOf(track);
   return !!key && selection.value.has(key);
 }
 function commit(next: Set<string>) { emit("update:selected", next); }
 function toggleAll() {
   if (allSelected.value) commit(new Set());
-  else commit(new Set(selectableTracks.value.map((track) => trackKey(track) as string)));
+  else commit(new Set(selectableTracks.value.map((track) => keyOf(track) as string)));
 }
 function selectRange(track: Track) {
-  const keys = selectableTracks.value.map((item) => trackKey(item) as string);
-  const to = keys.indexOf(trackKey(track) as string);
+  const keys = selectableTracks.value.map((item) => keyOf(item) as string);
+  const to = keys.indexOf(keyOf(track) as string);
   if (to < 0) return;
   const from = anchorKey ? keys.indexOf(anchorKey) : to;
-  if (from < 0) { commit(new Set([trackKey(track) as string])); return; }
+  if (from < 0) { commit(new Set([keyOf(track) as string])); return; }
   commit(new Set(keys.slice(Math.min(from, to), Math.max(from, to) + 1)));
 }
 function selectOnly(track: Track) {
-  const key = trackKey(track);
+  const key = keyOf(track);
   if (key) commit(new Set([key]));
 }
 function toggleOne(track: Track) {
-  const key = trackKey(track);
+  const key = keyOf(track);
   if (!key) return;
   const next = new Set(selection.value);
   if (next.has(key)) next.delete(key);
@@ -158,9 +162,12 @@ function toggleOne(track: Track) {
   commit(next);
 }
 function activate(track: Track, event?: MouseEvent) {
-  if (track.unavailable) { pushToast("warning", t("library.unavailableHint")); return; }
-  if (!props.selectable) { emit("play", track); return; }
-  const key = trackKey(track);
+  if (!props.selectable) {
+    if (track.unavailable) { pushToast("warning", t("library.unavailableHint")); return; }
+    emit("play", track);
+    return;
+  }
+  const key = keyOf(track);
   if (!key) return;
   if (event?.shiftKey) { selectRange(track); return; }
   anchorKey = key;
@@ -168,7 +175,6 @@ function activate(track: Track, event?: MouseEvent) {
   else toggleOne(track);
 }
 function openMenu(event: MouseEvent, track: Track) {
-  if (track.unavailable) return;
   emit("menu", event, track);
 }
 
@@ -282,7 +288,7 @@ function jumpToLetter(entry: LetterIndexEntry) {
               :key="trackKey(track) ?? track.id"
               class="grid w-full items-center gap-4 border-t border-line px-3 py-2 text-left"
               :title="track.unavailable ? t('library.unavailableHint') : undefined"
-              :class="[listGrid, track.unavailable ? 'cursor-not-allowed opacity-50' : (selectable ? (isSelected(track) ? 'cursor-pointer bg-accent/10' : 'cursor-pointer ak-hover') : (track.id === currentId ? 'cursor-pointer ak-select relative z-10 border-transparent' : 'cursor-pointer ak-hover'))]"
+              :class="[listGrid, track.unavailable ? (selectable ? (isSelected(track) ? 'cursor-pointer bg-accent/10 opacity-60' : 'cursor-pointer opacity-60 ak-hover') : 'cursor-not-allowed opacity-50') : (selectable ? (isSelected(track) ? 'cursor-pointer bg-accent/10' : 'cursor-pointer ak-hover') : (track.id === currentId ? 'cursor-pointer ak-select relative z-10 border-transparent' : 'cursor-pointer ak-hover'))]"
               @click="activate(track, $event)"
               @keydown.enter="activate(track)"
               @keydown.space.prevent="activate(track)"

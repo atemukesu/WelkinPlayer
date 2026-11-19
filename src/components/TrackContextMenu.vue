@@ -54,7 +54,7 @@ function onWindowResize() {
   scheduleClamp();
 }
 
-const currentKey = computed(() => trackKey(props.track));
+const currentKey = computed(() => trackKey(props.track) ?? props.track.profileKey);
 const paths = computed(() => props.selectedPaths.length > 0 ? props.selectedPaths : (currentKey.value ? [currentKey.value] : []));
 const isSelection = computed(() => props.selectedPaths.length > 0);
 const allFavorite = computed(() => paths.value.length > 0 && paths.value.every((key) => profile.isFavorite(key)));
@@ -145,8 +145,8 @@ onBeforeUnmount(() => {
             <template v-if="isSelection"><p class="truncate text-xs font-semibold tracking-wide">{{ t("library.menu.selectedCount", { count: paths.length }) }}</p></template>
             <template v-else><p class="truncate text-xs font-semibold tracking-wide">{{ track.title }}</p><p class="truncate text-[11px] text-black/60">{{ track.artist }}</p></template>
           </div>
-          <button v-if="paths.length" type="button" role="menuitem" class="track-menu__item" @click="toggleFavorite"><HeartOff v-if="isSelection ? allFavorite : favorite" :size="16" /><Heart v-else :size="16" />{{ (isSelection ? allFavorite : favorite) ? t("library.menu.unfavorite") : t("library.menu.favorite") }}</button>
-          <button type="button" role="menuitem" class="track-menu__item" @click="showPlaylists = !showPlaylists"><ListPlus :size="16" /><span class="flex-1">{{ t("library.menu.addToPlaylist") }}</span><ChevronRight :size="14" class="transition-transform" :class="showPlaylists ? 'rotate-90' : ''" /></button>
+          <button v-if="paths.length && !track.unavailable" type="button" role="menuitem" class="track-menu__item" @click="toggleFavorite"><HeartOff v-if="isSelection ? allFavorite : favorite" :size="16" /><Heart v-else :size="16" />{{ (isSelection ? allFavorite : favorite) ? t("library.menu.unfavorite") : t("library.menu.favorite") }}</button>
+          <button v-if="!track.unavailable" type="button" role="menuitem" class="track-menu__item" @click="showPlaylists = !showPlaylists"><ListPlus :size="16" /><span class="flex-1">{{ t("library.menu.addToPlaylist") }}</span><ChevronRight :size="14" class="transition-transform" :class="showPlaylists ? 'rotate-90' : ''" /></button>
           <div v-if="showPlaylists" class="track-menu__submenu"><p v-if="profile.playlists.length === 0" class="px-3 py-2 text-[11px] text-black/50">{{ t("library.menu.noPlaylists") }}</p><button v-for="playlist in profile.playlists" :key="playlist.id" type="button" class="track-menu__subitem" @click="addToPlaylist(playlist.id)"><span class="truncate">{{ playlist.name }}</span><span class="ml-auto font-mono text-[10px] text-black/40">{{ playlist.tracks.length }}</span></button></div>
           <button v-if="playlistId && !isSelection && canMoveUp" type="button" role="menuitem" class="track-menu__item" @click="moveTrack('up')"><ArrowUp :size="16" />{{ t("library.menu.moveUp") }}</button>
           <button v-if="playlistId && !isSelection && canMoveDown" type="button" role="menuitem" class="track-menu__item" @click="moveTrack('down')"><ArrowDown :size="16" />{{ t("library.menu.moveDown") }}</button>
@@ -155,7 +155,7 @@ onBeforeUnmount(() => {
           <button v-if="!isSelection && track.path" type="button" role="menuitem" class="track-menu__item" @click="editInfo"><Pencil :size="16" />{{ t("library.menu.edit") }}</button>
           <button v-if="!isSelection && track.path" type="button" role="menuitem" class="track-menu__item" @click="editLyrics"><FileText :size="16" />{{ t("library.menu.editLyrics") }}</button>
           <button v-if="!isSelection && track.path" type="button" role="menuitem" class="track-menu__item" @click="toggleLyrics"><EyeOff v-if="!lyricsDisabled" :size="16" /><Eye v-else :size="16" />{{ lyricsDisabled ? t("library.menu.enableLyrics") : t("library.menu.disableLyrics") }}</button>
-          <button v-if="paths.length" type="button" role="menuitem" class="track-menu__item" @click="toggleCache"><CircleX v-if="allCached" :size="16" /><HardDriveDownload v-else :size="16" />{{ allCached ? (isSelection ? t("downloads.uncacheSelectedCount", { count: paths.length }) : t("library.menu.uncacheTrack")) : (isSelection ? t("downloads.cacheSelectedCount", { count: paths.length }) : t("library.menu.cacheTrack")) }}</button>
+          <button v-if="paths.length && !track.unavailable" type="button" role="menuitem" class="track-menu__item" @click="toggleCache"><CircleX v-if="allCached" :size="16" /><HardDriveDownload v-else :size="16" />{{ allCached ? (isSelection ? t("downloads.uncacheSelectedCount", { count: paths.length }) : t("library.menu.uncacheTrack")) : (isSelection ? t("downloads.cacheSelectedCount", { count: paths.length }) : t("library.menu.cacheTrack")) }}</button>
           <div class="track-menu__divider"></div>
           <button type="button" role="menuitem" class="track-menu__item track-menu__item--last" :disabled="downloading || !track.path" @click="downloadMetadata"><Download :size="16" /><span>{{ downloading ? t("library.menu.downloadingMetadata") : t("library.menu.downloadMetadata") }}</span></button>
         </div>
