@@ -58,6 +58,7 @@ import MeteredPlaybackModal from "./components/MeteredPlaybackModal.vue";
 import SetupWizard from "./components/SetupWizard.vue";
 import ToastStack from "./components/ToastStack.vue";
 import UpdateModal from "./components/UpdateModal.vue";
+import ProfileConflictDialog from "./components/ProfileConflictDialog.vue";
 import LibraryView from "./views/LibraryView.vue";
 import PlayerView from "./views/PlayerView.vue";
 import SettingsView from "./views/SettingsView.vue";
@@ -382,7 +383,7 @@ async function downloadMetadata(track: Track) {
 }
 function toggleSidebar() { sidebarCollapsed.value = !sidebarCollapsed.value; localStorage.setItem("welkin-sidebar-collapsed", sidebarCollapsed.value ? "1" : "0"); }
 /** Re-verify the Pro license from scratch whenever the app regains focus. */
-function recheckLicense() { void license.refresh(); }
+function recheckLicense() { void license.refresh(); if (profile.ready && !profile.firstRun && !profile.conflict) void profile.syncRemote(); }
 function onGlobalKeydown(event: KeyboardEvent) {
   if (event.code !== "Space" && event.key !== " ") return;
   const target = event.target as HTMLElement | null;
@@ -448,5 +449,6 @@ listen<TransitionStatus>("playback:transition", (event) => {
     <AudioQualityModal />
     <MeteredPlaybackModal />
     <UpdateModal @friendly-error="showError" />
+    <ProfileConflictDialog v-if="profile.conflict" :conflicts="profile.conflict.conflicts" :saving="profile.saving" @choose="profile.resolveConflict" />
   </div>
 </template>

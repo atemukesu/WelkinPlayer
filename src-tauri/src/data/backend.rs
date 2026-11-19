@@ -21,7 +21,7 @@ use tauri::AppHandle;
 
 use crate::commands::webdav::{enforce_url_policy, source_password};
 use crate::core::error::AppError;
-use crate::data::dav::{is_audio_file, Depth, RemoteEntry, WebDavClient};
+use crate::data::dav::{hash_revision, is_audio_file, Depth, RemoteEntry, WebDavClient};
 use crate::data::sources::{find_source, SourceConfig, LOCAL_KIND, WEBDAV_KIND};
 
 /// A resolved source transport.
@@ -55,6 +55,19 @@ impl Backend {
         }
     }
 
+    /// Read a whole text resource together with an opaque revision token.
+    pub async fn read_text_with_revision(&self, path: &str) -> Result<(String, String), AppError> {
+        match self {
+            Backend::Webdav(client) => client.get_text_with_revision(path).await,
+            Backend::Local { root } => {
+                let file = safe_join(root, path)?;
+                let text = std::fs::read_to_string(&file).map_err(map_local_read_error)?;
+                let revision = hash_revision(text.as_bytes());
+                Ok((text, revision))
+            }
+        }
+    }
+
     /// Read at most `max_bytes` from the start of a resource.
     pub async fn read_range(&self, path: &str, max_bytes: u64) -> Result<Vec<u8>, AppError> {
         match self {
@@ -80,6 +93,35 @@ impl Backend {
                 }
                 std::fs::write(file, body)?;
                 Ok(())
+            }
+        }
+    }
+
+    /// Write bytes only when the resource still matches `expected_revision`.
+    ///
+    /// Returns `(false, None)` on a stale revision. A local directory has no
+    /// concurrent writers besides this app, so it always succeeds.
+    pub async fn put_if_match(
+        &self,
+        path: &str,
+        content_type: &str,
+        body: Vec<u8>,
+        expected_revision: Option<&str>,
+    ) -> Result<(bool, Option<String>), AppError> {
+        match self {
+            Backend::Webdav(client) => {
+                client
+                    .put_if_match(path, content_type, body, expected_revision)
+                    .await
+            }
+            Backend::Local { root } => {
+                let file = safe_join(root, path)?;
+                if let Some(parent) = file.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                let revision = hash_revision(&body);
+                std::fs::write(file, body)?;
+                Ok((true, Some(revision)))
             }
         }
     }

@@ -12,6 +12,14 @@ import {
   parseProfile,
 } from "../lib/profile";
 import type { Playlist, Profile } from "../lib/profile";
+import {
+  clearProfileSyncState,
+  cloneProfile,
+  loadProfileSyncState,
+  replayProfileOps,
+  saveProfileSyncState,
+} from "../lib/profileSync";
+import type { PlaylistPatch, ProfileConflict, ProfileOp } from "../lib/profileSync";
 import { coverUrl } from "../lib/remote";
 import { deleteSmartTransition } from "../lib/smartTransition";
 import { profileTrackKey, sourceProfileId, splitTrackKey, trackKey } from "../lib/sources";
@@ -29,12 +37,23 @@ interface LoadedProfile {
   source: ProfileSource;
   remoteError: string | null;
   remoteMissing: boolean;
+  revision: string | null;
 }
 
 interface SaveProfileResult {
   remote: boolean;
   local: boolean;
   warning: string | null;
+  conflict: boolean;
+  revision: string | null;
+}
+
+/** A conflict awaiting the user's choice in the sync dialog. */
+export interface ProfileConflictSession {
+  conflicts: ProfileConflict[];
+  local: Profile;
+  remote: Profile;
+  remoteRevision: string | null;
 }
 
 /** Mirrors the Rust `UploadedCover` struct returned by `upload_playlist_cover`. */
@@ -64,12 +83,23 @@ export const useProfileStore = defineStore("profile", () => {
   const lastSaveWarning = ref<string | null>(null);
   /** Bumped whenever the profile is (re)applied, so views can re-sync. */
   const revision = ref(0);
+  /** Pending cloud conflict; non-null while the user must pick a version. */
+  const conflict = ref<ProfileConflictSession | null>(null);
   /** Resolved local asset URLs for uploaded covers, keyed by remote file name. */
   const coverUrls = ref<Record<string, string>>({});
 
   let saveTimer = 0;
   let pending = false;
-  let hadLocalCopy = false;
+  /** Snapshot of the last cloud profile the queued operations were based on. */
+  let baseProfile: Profile = createDefaultProfile();
+  let baseRevision: string | null = null;
+  /** Local edits that have not reached the cloud yet, in order. */
+  let outbox: ProfileOp[] = [];
+  let running = false;
+  let rerun = false;
+  let retryTimer = 0;
+  /** Cover objects to delete once a merge has safely reached the cloud. */
+  const pendingCoverPrunes = new Set<string>();
 
   function profileKey(key: string): string {
     const { sourceId, path } = splitTrackKey(key);
@@ -124,11 +154,26 @@ export const useProfileStore = defineStore("profile", () => {
     const fallback = createDefaultProfile();
     try {
       const local = await invoke<LoadedProfile>("load_local_profile");
-      hadLocalCopy = local.content !== null;
       source.value = local.source;
       const migrated = migrateKeys(parseProfile(local.content, fallback));
       profile.value = migrated.value;
-      if (migrated.changed) scheduleSave();
+      // Resume an offline queue from a previous session; otherwise the local
+      // profile becomes the baseline for the first cloud merge.
+      const restored = loadProfileSyncState();
+      if (restored) {
+        outbox = restored.ops;
+        baseRevision = restored.baseRevision;
+        baseProfile = restored.baseProfile;
+        // The local cache may have been overwritten by the last cloud read;
+        // rebuilding from the baseline + queue restores this device's view.
+        profile.value = replayProfileOps(baseProfile, baseProfile, outbox).profile;
+        pending = true;
+        scheduleSave();
+      } else {
+        baseProfile = cloneProfile(profile.value);
+        baseRevision = null;
+        if (migrated.changed) scheduleSave();
+      }
       firstRun.value = local.content === null || !profile.value.initialized;
       revision.value += 1;
     } catch (error) {
@@ -142,33 +187,243 @@ export const useProfileStore = defineStore("profile", () => {
     return firstRun.value;
   }
 
-  /** Fetch the authoritative remote copy and replace the cache when available. */
-  async function syncRemote(): Promise<void> {
+  /** Persist the queue + baseline so a restart can resume pending edits. */
+  function persistSyncState() {
+    if (outbox.length > 0) saveProfileSyncState({ ops: outbox, baseRevision, baseProfile });
+    else clearProfileSyncState();
+  }
+
+  function enqueue(op: ProfileOp) {
+    outbox.push(op);
+    persistSyncState();
+    scheduleSave();
+  }
+
+  function errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+  }
+
+  async function saveContent(
+    content: Profile,
+    expectedRevision: string | null,
+    force: boolean,
+  ): Promise<SaveProfileResult> {
     try {
-      const remote = await invoke<LoadedProfile>("load_remote_profile");
-      remoteError.value = remote.remoteError;
-      if (remote.source === "remote" && remote.content !== null) {
-        const migrated = migrateKeys(parseProfile(remote.content, profile.value));
-        profile.value = migrated.value;
-        if (migrated.changed) scheduleSave();
-        source.value = "remote";
-        firstRun.value = !profile.value.initialized;
-        revision.value += 1;
-        void resolveCovers();
-        void migrateLegacyCovers();
-        return;
-      }
-      // Server reachable but has no document: seed it with the local cache so
-      // the cloud becomes authoritative from here on.
-      if (remote.remoteMissing && hadLocalCopy) {
-        void migrateLegacyCovers();
-        scheduleSave();
-        return;
-      }
-      source.value = remote.source;
+      return await invoke<SaveProfileResult>("save_profile", {
+        content: JSON.stringify(content),
+        expectedRevision,
+        force,
+      });
     } catch (error) {
-      remoteError.value = error instanceof Error ? error.message : String(error);
+      return {
+        remote: false,
+        local: false,
+        warning: errorMessage(error),
+        conflict: false,
+        revision: null,
+      };
     }
+  }
+
+  /** Adopt an unmodified cloud document, discarding nothing local. */
+  function adoptRemote(remote: Profile, remoteRevision: string | null) {
+    profile.value = cloneProfile(remote);
+    baseProfile = cloneProfile(remote);
+    baseRevision = remoteRevision;
+    outbox = [];
+    pending = false;
+    source.value = "remote";
+    firstRun.value = !profile.value.initialized;
+    lastSavedAt.value = Date.now();
+    revision.value += 1;
+    clearProfileSyncState();
+    void resolveCovers();
+    void migrateLegacyCovers();
+    void runCoverPrunes();
+  }
+
+  /** The local queue is now part of the cloud document. */
+  function onSaved(merged: Profile, revisionToken: string | null, applied: ProfileOp[]) {
+    outbox = outbox.slice(applied.length);
+    const remaining = [...outbox];
+    let working = merged;
+    if (remaining.length > 0) {
+      working = replayProfileOps(merged, working, remaining).profile;
+    }
+    profile.value = working;
+    baseProfile = cloneProfile(merged);
+    baseRevision = revisionToken;
+    pending = outbox.length > 0;
+    source.value = "remote";
+    lastSavedAt.value = Date.now();
+    lastSaveWarning.value = null;
+    revision.value += 1;
+    if (pending) {
+      persistSyncState();
+      scheduleSave();
+    } else {
+      clearProfileSyncState();
+    }
+    void resolveCovers();
+    void migrateLegacyCovers();
+    void runCoverPrunes();
+  }
+
+  function raiseConflict(conflicts: ProfileConflict[], remote: Profile, remoteRevision: string | null) {
+    conflict.value = {
+      conflicts,
+      local: cloneProfile(profile.value),
+      remote,
+      remoteRevision,
+    };
+  }
+
+  /**
+   * One read-merge-write pass.
+   *
+   * - Pulls the authoritative cloud copy first.
+   * - Replays locally queued operations on top of it.
+   * - Skips the write entirely when the cloud already contains everything.
+   * - Retries once on a stale revision (HTTP 412), then asks the user.
+   */
+  async function syncOnce(): Promise<"done" | "retry" | "conflict"> {
+    if (conflict.value) return "conflict";
+    let lastRemote: Profile | null = null;
+    let lastRevision: string | null = null;
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      let loaded: LoadedProfile;
+      try {
+        loaded = await invoke<LoadedProfile>("load_remote_profile");
+      } catch (error) {
+        lastSaveWarning.value = errorMessage(error);
+        return "retry";
+      }
+      remoteError.value = loaded.remoteError;
+      if (loaded.remoteError) {
+        // Do not overwrite a cloud document we could not read.
+        lastSaveWarning.value = loaded.remoteError;
+        return "retry";
+      }
+
+      if (loaded.source !== "remote") {
+        // Either no sync source is configured or the server has no document.
+        // Without a remote and without pending edits there is nothing to push.
+        if (outbox.length === 0 && !loaded.remoteMissing) {
+          lastSaveWarning.value = null;
+          return "done";
+        }
+        const ops = [...outbox];
+        const local = cloneProfile(profile.value);
+        const result = await saveContent(local, null, false);
+        if (result.conflict) continue;
+        const noRemote = !loaded.remoteMissing;
+        if (noRemote || result.remote) {
+          outbox = outbox.slice(ops.length);
+          baseProfile = cloneProfile(local);
+          baseRevision = result.revision ?? null;
+          pending = outbox.length > 0;
+          source.value = result.remote ? "remote" : "local";
+          lastSavedAt.value = Date.now();
+          lastSaveWarning.value = result.warning;
+          if (pending) {
+            persistSyncState();
+            scheduleSave();
+          } else {
+            clearProfileSyncState();
+            void runCoverPrunes();
+          }
+          return "done";
+        }
+        lastSaveWarning.value = result.warning;
+        return "retry";
+      }
+
+      if (loaded.content === null || loaded.revision === null) return "retry";
+      const migrated = migrateKeys(parseProfile(loaded.content, createDefaultProfile()));
+      const remoteProfile = migrated.value;
+      lastRemote = remoteProfile;
+      lastRevision = loaded.revision;
+
+      const ops = [...outbox];
+      const replayed = ops.length > 0
+        ? replayProfileOps(baseProfile, remoteProfile, ops)
+        : { profile: remoteProfile, conflicts: [] as ProfileConflict[] };
+      if (replayed.conflicts.length > 0) {
+        raiseConflict(replayed.conflicts, remoteProfile, loaded.revision);
+        return "conflict";
+      }
+
+      const merged = replayed.profile;
+      const needWrite = ops.length > 0 || migrated.changed;
+      if (!needWrite) {
+        if (outbox.length === 0) {
+          adoptRemote(remoteProfile, loaded.revision);
+          return "done";
+        }
+        // New edits arrived while the read was in flight; replay them too.
+        rerun = true;
+        continue;
+      }
+
+      merged.updatedAt = Date.now();
+      const saved = await saveContent(merged, loaded.revision, false);
+      if (saved.conflict) continue;
+      if (!saved.remote) {
+        lastSaveWarning.value = saved.warning;
+        return "retry";
+      }
+      onSaved(merged, saved.revision ?? loaded.revision, ops);
+      return "done";
+    }
+
+    // Two consecutive 412s: another device is writing continuously. Ask.
+    if (lastRemote) {
+      raiseConflict(
+        [{ id: "remote", kind: "remoteChanged", name: "" }],
+        lastRemote,
+        lastRevision,
+      );
+      return "conflict";
+    }
+    return "retry";
+  }
+
+  /**
+   * Serialized synchronization loop. Every queued edit goes through this, and
+   * an explicit call (startup / focus) also pulls remote-only changes.
+   */
+  async function syncNow(): Promise<void> {
+    window.clearTimeout(saveTimer);
+    window.clearTimeout(retryTimer);
+    if (conflict.value) return;
+    if (running) {
+      rerun = true;
+      return;
+    }
+    running = true;
+    saving.value = true;
+    let status: "done" | "retry" | "conflict" = "done";
+    try {
+      do {
+        rerun = false;
+        status = await syncOnce();
+        if (status === "conflict") break;
+      } while (status === "done" && (rerun || outbox.length > 0));
+    } finally {
+      running = false;
+      saving.value = false;
+    }
+    if (status === "retry") {
+      retryTimer = window.setTimeout(() => void syncNow(), 30_000);
+    } else if (status === "done" && pending) {
+      scheduleSave();
+    }
+  }
+
+  /** Fetch the authoritative remote copy (merging any pending local edits). */
+  async function syncRemote(): Promise<void> {
+    await syncNow();
   }
 
   /**
@@ -185,52 +440,78 @@ export const useProfileStore = defineStore("profile", () => {
       if (remote.source === "remote" && remote.content !== null) {
         const migrated = migrateKeys(parseProfile(remote.content, profile.value));
         profile.value = migrated.value;
-        if (migrated.changed) scheduleSave();
+        baseProfile = cloneProfile(profile.value);
+        baseRevision = remote.revision;
+        outbox = [];
+        pending = false;
+        clearProfileSyncState();
         source.value = "remote";
         revision.value += 1;
         void resolveCovers();
         void migrateLegacyCovers();
+        if (migrated.changed) scheduleSave();
         return profile.value.initialized ? "found" : "missing";
       }
       source.value = remote.source;
+      baseProfile = cloneProfile(profile.value);
+      baseRevision = null;
       return remote.remoteError ? "error" : "missing";
     } catch (error) {
-      remoteError.value = error instanceof Error ? error.message : String(error);
+      remoteError.value = errorMessage(error);
       return "error";
     }
   }
 
   async function flush(): Promise<void> {
-    window.clearTimeout(saveTimer);
-    if (pending) {
-      pending = false;
-      saving.value = true;
-      try {
-        const result = await invoke<SaveProfileResult>("save_profile", {
-          content: JSON.stringify(profile.value),
-        });
-        lastSaveWarning.value = result.warning;
-        if (result.remote) source.value = "remote";
-        else if (result.warning) source.value = "local";
-        lastSavedAt.value = Date.now();
-      } catch (error) {
-        lastSaveWarning.value = error instanceof Error ? error.message : String(error);
-      } finally {
-        saving.value = false;
-      }
-    }
+    await syncNow();
   }
 
-  /** Schedule a debounced persist, coalescing bursts of edits. */
+  /** Schedule a debounced sync, coalescing bursts of edits. */
   function scheduleSave() {
     pending = true;
     window.clearTimeout(saveTimer);
-    saveTimer = window.setTimeout(() => void flush(), SAVE_DEBOUNCE_MS);
+    saveTimer = window.setTimeout(() => void syncNow(), SAVE_DEBOUNCE_MS);
+  }
+
+  /** Resolve a pending conflict with the version the user chose. */
+  async function resolveConflict(choice: "local" | "remote"): Promise<void> {
+    const session = conflict.value;
+    if (!session) return;
+    if (choice === "remote") {
+      adoptRemote(session.remote, session.remoteRevision);
+      conflict.value = null;
+      return;
+    }
+    // Keep the local version: force a write that ignores the cloud revision.
+    saving.value = true;
+    try {
+      touch();
+      const result = await saveContent(profile.value, null, true);
+      if (!result.local) {
+        lastSaveWarning.value = result.warning;
+        return;
+      }
+      outbox = [];
+      pending = false;
+      baseProfile = cloneProfile(profile.value);
+      baseRevision = result.revision ?? null;
+      source.value = result.remote ? "remote" : "local";
+      lastSavedAt.value = Date.now();
+      lastSaveWarning.value = result.warning;
+      clearProfileSyncState();
+      conflict.value = null;
+      revision.value += 1;
+      void resolveCovers();
+      void runCoverPrunes();
+    } finally {
+      saving.value = false;
+    }
   }
 
   function setNickname(value: string) {
     profile.value.nickname = value;
     touch();
+    enqueue({ type: "setNickname", value });
     scheduleSave();
   }
 
@@ -238,6 +519,7 @@ export const useProfileStore = defineStore("profile", () => {
     profile.value.initialized = true;
     firstRun.value = false;
     touch();
+    enqueue({ type: "setInitialized", value: true });
     return flush();
   }
 
@@ -254,6 +536,7 @@ export const useProfileStore = defineStore("profile", () => {
     path = profileKey(path);
     profile.value.playCounts[path] = (profile.value.playCounts[path] ?? 0) + 1;
     profile.value.recent = [path, ...profile.value.recent.filter((item) => item !== path)].slice(0, RECENT_LIMIT);
+    enqueue({ type: "recordPlay", key: path });
     scheduleSave();
   }
 
@@ -266,6 +549,7 @@ export const useProfileStore = defineStore("profile", () => {
     delete profile.value.lastTrack;
     delete profile.value.lastPosition;
     touch();
+    enqueue({ type: "clearLegacyPlayback" });
     scheduleSave();
   }
 
@@ -277,8 +561,10 @@ export const useProfileStore = defineStore("profile", () => {
     if (!path) return;
     path = profileKey(path);
     const index = profile.value.favorites.indexOf(path);
-    if (index >= 0) profile.value.favorites.splice(index, 1);
-    else profile.value.favorites.push(path);
+    const value = index < 0;
+    if (value) profile.value.favorites.push(path);
+    else profile.value.favorites.splice(index, 1);
+    enqueue({ type: "setFavorite", key: path, value });
     scheduleSave();
   }
 
@@ -295,6 +581,7 @@ export const useProfileStore = defineStore("profile", () => {
     if (disabled === has) return;
     if (disabled) profile.value.disabledLyrics.push(path);
     else profile.value.disabledLyrics = profile.value.disabledLyrics.filter((item) => item !== path);
+    enqueue({ type: "setLyricsDisabled", key: path, value: disabled });
     scheduleSave();
   }
 
@@ -306,6 +593,7 @@ export const useProfileStore = defineStore("profile", () => {
   function createPlaylist(name: string): Playlist {
     const playlist: Playlist = { id: createId(), name: name.trim() || "Playlist", tracks: [] };
     profile.value.playlists.push(playlist);
+    enqueue({ type: "createPlaylist", playlist: JSON.parse(JSON.stringify(playlist)) as Playlist });
     scheduleSave();
     return playlist;
   }
@@ -314,6 +602,7 @@ export const useProfileStore = defineStore("profile", () => {
     const playlist = profile.value.playlists.find((item) => item.id === id);
     if (!playlist) return;
     playlist.name = name.trim() || playlist.name;
+    enqueue({ type: "renamePlaylist", id, name: playlist.name });
     scheduleSave();
   }
 
@@ -327,6 +616,25 @@ export const useProfileStore = defineStore("profile", () => {
     if ("coverFile" in patch) playlist.coverFile = patch.coverFile;
     if ("coverTrack" in patch) playlist.coverTrack = patch.coverTrack;
     if ("smartTransition" in patch) playlist.smartTransition = patch.smartTransition;
+    const op: PlaylistPatch = {};
+    if (patch.name !== undefined) op.name = playlist.name;
+    if (patch.tracks !== undefined) op.tracks = [...patch.tracks];
+    if ("cover" in patch || "coverFile" in patch) {
+      if (patch.cover === undefined && patch.coverFile === undefined) op.clearCover = true;
+      else {
+        op.cover = patch.cover;
+        op.coverFile = patch.coverFile;
+      }
+    }
+    if ("coverTrack" in patch) {
+      if (patch.coverTrack === undefined) op.clearCoverTrack = true;
+      else op.coverTrack = patch.coverTrack;
+    }
+    if ("smartTransition" in patch) {
+      if (patch.smartTransition === undefined) op.clearSmartTransition = true;
+      else op.smartTransition = patch.smartTransition;
+    }
+    enqueue({ type: "updatePlaylist", id, patch: op });
     scheduleSave();
   }
 
@@ -335,6 +643,7 @@ export const useProfileStore = defineStore("profile", () => {
     const playlist = profile.value.playlists.find((item) => item.id === id);
     if (!playlist?.smartTransition || playlist.smartTransition.status !== "ready") return;
     playlist.smartTransition = { ...playlist.smartTransition, status: "stale" };
+    enqueue({ type: "markSmartTransitionStale", id });
     scheduleSave();
   }
 
@@ -396,14 +705,26 @@ export const useProfileStore = defineStore("profile", () => {
 
   /** Delete a cover object unless another playlist still shares its content. */
   async function pruneCover(file: string): Promise<void> {
-    if (profile.value.playlists.some((item) => item.coverFile === file)) return;
-    const next = { ...coverUrls.value };
-    delete next[file];
-    coverUrls.value = next;
-    try {
-      await invoke("delete_playlist_cover", { file });
-    } catch (error) {
-      console.warn("[welkin] failed to delete playlist cover", error);
+    // Defer deletion until the profile merge has reached the cloud; otherwise a
+    // conflict could leave the other version referencing a now-missing file.
+    pendingCoverPrunes.add(file);
+  }
+
+  /** Actually delete queued cover objects that nothing references any more. */
+  async function runCoverPrunes(): Promise<void> {
+    if (pendingCoverPrunes.size === 0) return;
+    const files = [...pendingCoverPrunes];
+    pendingCoverPrunes.clear();
+    for (const file of files) {
+      if (profile.value.playlists.some((item) => item.coverFile === file)) continue;
+      const next = { ...coverUrls.value };
+      delete next[file];
+      coverUrls.value = next;
+      try {
+        await invoke("delete_playlist_cover", { file });
+      } catch (error) {
+        console.warn("[welkin] failed to delete playlist cover", error);
+      }
     }
   }
 
@@ -425,6 +746,7 @@ export const useProfileStore = defineStore("profile", () => {
         if (!target) continue;
         target.cover = undefined;
         target.coverFile = file;
+        enqueue({ type: "updatePlaylist", id: playlist.id, patch: { clearCover: true, coverFile: file } });
       } catch (error) {
         console.warn("[welkin] failed to migrate playlist cover", error);
       }
@@ -437,6 +759,7 @@ export const useProfileStore = defineStore("profile", () => {
     const file = profile.value.playlists.find((item) => item.id === id)?.coverFile;
     const smart = profile.value.playlists.find((item) => item.id === id)?.smartTransition;
     profile.value.playlists = profile.value.playlists.filter((item) => item.id !== id);
+    enqueue({ type: "deletePlaylist", id });
     scheduleSave();
     if (file) void pruneCover(file);
     if (smart) {
@@ -454,6 +777,7 @@ export const useProfileStore = defineStore("profile", () => {
     if (!playlist || playlist.tracks.includes(path)) return;
     playlist.tracks.push(path);
     markSmartTransitionStale(id);
+    enqueue({ type: "addTrack", id, key: path });
     scheduleSave();
   }
 
@@ -463,6 +787,7 @@ export const useProfileStore = defineStore("profile", () => {
     if (!playlist) return;
     playlist.tracks = playlist.tracks.filter((item) => item !== path);
     markSmartTransitionStale(id);
+    enqueue({ type: "removeTrack", id, key: path });
     scheduleSave();
   }
 
@@ -478,10 +803,12 @@ export const useProfileStore = defineStore("profile", () => {
     [next[index], next[target]] = [next[target], next[index]];
     playlist.tracks = next;
     markSmartTransitionStale(id);
+    enqueue({ type: "moveTrack", id, key: path, direction });
     scheduleSave();
   }
 
   function getTrackIndexInPlaylist(id: string, path: string): { index: number; total: number } {
+    path = profileKey(path);
     const playlist = profile.value.playlists.find((item) => item.id === id);
     if (!playlist) return { index: -1, total: 0 };
     return { index: playlist.tracks.indexOf(path), total: playlist.tracks.length };
@@ -497,6 +824,7 @@ export const useProfileStore = defineStore("profile", () => {
     lastSavedAt,
     lastSaveWarning,
     revision,
+    conflict,
     coverUrls,
     nickname,
     playlists,
@@ -509,6 +837,7 @@ export const useProfileStore = defineStore("profile", () => {
     fetchRemote,
     flush,
     scheduleSave,
+    resolveConflict,
     setNickname,
     completeSetup,
     finishExisting,

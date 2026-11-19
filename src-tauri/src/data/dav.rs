@@ -20,11 +20,29 @@ use quick_xml::events::{BytesEnd, BytesStart, Event};
 use quick_xml::Reader;
 use reqwest::{header, Client, Method, StatusCode, Url};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::core::error::AppError;
 
 const AUDIO_EXTENSIONS: [&str; 8] = ["mp3", "flac", "m4a", "ogg", "wav", "aac", "opus", "wma"];
+
+/// Prefix for an opaque revision backed by a WebDAV `ETag`.
+pub const REVISION_ETAG_PREFIX: &str = "etag:";
+/// Prefix for a content-hash revision used when the server exposes no `ETag`.
+pub const REVISION_HASH_PREFIX: &str = "hash:";
+
+/// Hash raw bytes for a content-addressed revision token.
+pub fn hash_revision(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{REVISION_HASH_PREFIX}{:x}", hasher.finalize())
+}
+
+/// Extract the raw `ETag` value from a revision token, if it is one.
+pub fn etag_from_revision(revision: &str) -> Option<&str> {
+    revision.strip_prefix(REVISION_ETAG_PREFIX)
+}
 
 /// Maximum number of PROPFIND requests kept in flight while walking a library.
 const LIST_CONCURRENCY: usize = 8;
@@ -204,6 +222,24 @@ impl WebDavClient {
         self.finish(response).await
     }
 
+    /// `GET` a UTF-8 resource together with an opaque revision token.
+    ///
+    /// The ETag is preferred because conditional writes can use it directly;
+    /// content hashing keeps conflict detection working on servers that omit it.
+    pub async fn get_text_with_revision(&self, path: &str) -> Result<(String, String), AppError> {
+        let response = self.get(path).await?;
+        let etag = response
+            .headers()
+            .get(header::ETAG)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let text = response.text().await?;
+        let revision = etag
+            .map(|value| format!("{REVISION_ETAG_PREFIX}{value}"))
+            .unwrap_or_else(|| hash_revision(text.as_bytes()));
+        Ok((text, revision))
+    }
+
     /// `HEAD` a resource.
     pub async fn head(&self, path: &str) -> Result<reqwest::Response, AppError> {
         let url = self.resolve(path)?;
@@ -258,6 +294,42 @@ impl WebDavClient {
             .await?;
         self.finish(response).await?;
         Ok(())
+    }
+
+    /// `PUT` bytes only when the resource still matches `expected_revision`.
+    ///
+    /// Returns `(false, None)` when the server rejects the precondition, and
+    /// `(true, revision)` with a fresh revision token after a successful write.
+    /// Hash-based revisions cannot be sent as `If-Match`; callers compare them
+    /// immediately before writing, which is the best a server without ETags
+    /// allows.
+    pub async fn put_if_match(
+        &self,
+        path: &str,
+        content_type: &str,
+        body: Vec<u8>,
+        expected_revision: Option<&str>,
+    ) -> Result<(bool, Option<String>), AppError> {
+        let url = self.resolve(path)?;
+        let body_revision = hash_revision(&body);
+        let mut request = self
+            .request(Method::PUT, url)
+            .header(header::CONTENT_TYPE, content_type.to_string());
+        if let Some(etag) = expected_revision.and_then(etag_from_revision) {
+            request = request.header(header::IF_MATCH, etag);
+        }
+        let response = request.body(body).send().await?;
+        if response.status() == StatusCode::PRECONDITION_FAILED {
+            return Ok((false, None));
+        }
+        let response = self.finish(response).await?;
+        let revision = response
+            .headers()
+            .get(header::ETAG)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| format!("{REVISION_ETAG_PREFIX}{value}"))
+            .unwrap_or(body_revision);
+        Ok((true, Some(revision)))
     }
 
     /// `MOVE` a resource to a new path within the same server.

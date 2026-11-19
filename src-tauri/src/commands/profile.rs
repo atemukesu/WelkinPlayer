@@ -37,6 +37,8 @@ pub struct LoadedProfile {
     pub remote_error: Option<String>,
     /// Whether the server was reachable but has no profile document yet.
     pub remote_missing: bool,
+    /// Opaque revision token (`etag:…` or `hash:…`) for the remote document.
+    pub revision: Option<String>,
 }
 
 /// Result of persisting a profile.
@@ -49,6 +51,10 @@ pub struct SaveProfileResult {
     pub local: bool,
     /// Human-readable reason the remote write failed.
     pub warning: Option<String>,
+    /// Whether the remote copy changed underneath us (HTTP 412).
+    pub conflict: bool,
+    /// Revision token for the document we just wrote.
+    pub revision: Option<String>,
 }
 
 /// Read the nickname from the cached local profile document, if any.
@@ -95,6 +101,7 @@ pub fn load_local_profile(app: AppHandle) -> Result<LoadedProfile, AppError> {
         source: source.to_string(),
         remote_error: None,
         remote_missing: false,
+        revision: None,
     })
 }
 
@@ -113,6 +120,7 @@ pub async fn load_remote_profile(app: AppHandle) -> Result<LoadedProfile, AppErr
                 source: "local".to_string(),
                 remote_error: Some(error.to_string()),
                 remote_missing: false,
+                revision: None,
             });
         }
     };
@@ -124,17 +132,19 @@ pub async fn load_remote_profile(app: AppHandle) -> Result<LoadedProfile, AppErr
             content: local,
             remote_error: None,
             remote_missing: false,
+            revision: None,
         });
     };
 
-    match client.read_text(REMOTE_PATH).await {
-        Ok(text) => {
+    match client.read_text_with_revision(REMOTE_PATH).await {
+        Ok((text, revision)) => {
             if text.len() > MAX_PROFILE_BYTES {
                 return Ok(LoadedProfile {
                     content: local,
                     source: "local".to_string(),
                     remote_error: Some("远程配置过大，已忽略".to_string()),
                     remote_missing: false,
+                    revision: None,
                 });
             }
             if text.trim().is_empty() {
@@ -144,6 +154,7 @@ pub async fn load_remote_profile(app: AppHandle) -> Result<LoadedProfile, AppErr
                     content: local,
                     remote_error: None,
                     remote_missing: true,
+                    revision: None,
                 });
             }
             // Keep the local cache in sync with the authoritative copy.
@@ -155,6 +166,7 @@ pub async fn load_remote_profile(app: AppHandle) -> Result<LoadedProfile, AppErr
                 source: "remote".to_string(),
                 remote_error: None,
                 remote_missing: false,
+                revision: Some(revision),
             })
         }
         Err(AppError::WebdavNotFound(_)) => {
@@ -164,6 +176,7 @@ pub async fn load_remote_profile(app: AppHandle) -> Result<LoadedProfile, AppErr
                 content: local,
                 remote_error: None,
                 remote_missing: true,
+                revision: None,
             })
         }
         Err(error) => {
@@ -173,14 +186,26 @@ pub async fn load_remote_profile(app: AppHandle) -> Result<LoadedProfile, AppErr
                 source: "local".to_string(),
                 remote_error: Some(error.to_string()),
                 remote_missing: false,
+                revision: None,
             })
         }
     }
 }
 
 /// Persist the profile locally and, when configured, to WebDAV.
+///
+/// `expected_revision` is the opaque token returned by
+/// [`load_remote_profile`]; a stale token makes the write fail with
+/// `conflict: true` instead of overwriting another device's changes. `force`
+/// skips the precondition, used only after the user explicitly chooses the
+/// local version in the conflict dialog.
 #[tauri::command]
-pub async fn save_profile(app: AppHandle, content: String) -> Result<SaveProfileResult, AppError> {
+pub async fn save_profile(
+    app: AppHandle,
+    content: String,
+    expected_revision: Option<String>,
+    force: bool,
+) -> Result<SaveProfileResult, AppError> {
     let local = local_set(&app, &content).is_ok();
 
     let Some(client) = client(&app)? else {
@@ -188,17 +213,38 @@ pub async fn save_profile(app: AppHandle, content: String) -> Result<SaveProfile
             remote: false,
             local,
             warning: None,
+            conflict: false,
+            revision: None,
         });
     };
 
+    let expected = if force {
+        None
+    } else {
+        expected_revision.as_deref()
+    };
     match client
-        .put(REMOTE_PATH, "application/json", content.into_bytes())
+        .put_if_match(
+            REMOTE_PATH,
+            "application/json",
+            content.into_bytes(),
+            expected,
+        )
         .await
     {
-        Ok(()) => Ok(SaveProfileResult {
+        Ok((false, _)) => Ok(SaveProfileResult {
+            remote: false,
+            local,
+            warning: Some("conflict".to_string()),
+            conflict: true,
+            revision: None,
+        }),
+        Ok((true, revision)) => Ok(SaveProfileResult {
             remote: true,
             local,
             warning: None,
+            conflict: false,
+            revision,
         }),
         Err(error) => {
             log::warn!("failed to write remote profile: {error}");
@@ -206,6 +252,8 @@ pub async fn save_profile(app: AppHandle, content: String) -> Result<SaveProfile
                 remote: false,
                 local,
                 warning: Some(error.to_string()),
+                conflict: false,
+                revision: None,
             })
         }
     }
