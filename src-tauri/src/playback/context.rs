@@ -1663,7 +1663,9 @@ pub fn start_media_control_poller(app: AppHandle) {
     if let Err(error) = std::thread::Builder::new()
         .name("welkin-media-control".to_string())
         .spawn(move || loop {
-            std::thread::sleep(Duration::from_millis(250));
+            // 100 ms keeps a lock-screen pause or an unplugged-headphone
+            // ACTION_AUDIO_BECOMING_NOISY ahead of the speaker reroute.
+            std::thread::sleep(Duration::from_millis(100));
             drain_media_control(&app);
         })
     {

@@ -527,6 +527,31 @@ fn device_signature() -> String {
         .unwrap_or_default()
 }
 
+/// Output device ids used to tell a disconnected default device from a newly
+/// attached one on desktop.
+///
+/// [`device_signature`] is cheap but collapses the desktop list to the default
+/// name. This helper returns the enumerated names as a set: the previous
+/// default name missing from it means that endpoint was unplugged, which is the
+/// signal to pause instead of continuing on the built-in speaker. Android uses
+/// `ACTION_AUDIO_BECOMING_NOISY` instead, because `AudioManager` exposes the
+/// connected list rather than the active route.
+#[cfg(not(target_os = "android"))]
+fn output_device_ids() -> Vec<String> {
+    rodio::cpal::default_host()
+        .output_devices()
+        .map(|devices| {
+            devices
+                .into_iter()
+                .filter_map(|device| device.name().ok())
+                // Match `enumerate_cpal_devices`: these are ALSA pseudo
+                // devices, not something the user can unplug.
+                .filter(|name| !matches!(name.as_str(), "jack" | "oss"))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// The rate to open the output stream at before a track is loaded. cpal's ALSA
 /// default is hard-coded to prefer 44.1 kHz whenever the range allows it, so
 /// we don't hand the stream to cpal unmodified: prefer 48 kHz — the modern
@@ -2470,12 +2495,42 @@ mod worker {
                 self.bound_device_signature,
                 signature,
             );
+            // A device that disappeared was unplugged (headphones, USB DAC,
+            // Bluetooth sink). Pause instead of letting the OS reroute the
+            // music to the built-in speaker; the user did not ask to continue
+            // on a different output. Newly added devices do not pause, so
+            // plugging headphones in keeps playing through them.
+            //
+            // Android has a precise, immediate signal instead
+            // (ACTION_AUDIO_BECOMING_NOISY in MediaPlaybackService), so this
+            // fallback only runs on desktop, where the default-device name is
+            // the only route information cpal exposes.
+            #[cfg(not(target_os = "android"))]
+            {
+                let previous = self.bound_device_signature.clone();
+                let current_ids = output_device_ids();
+                if !previous.is_empty()
+                    && !current_ids.iter().any(|id| id == &previous)
+                    && !self.shared.is_paused()
+                {
+                    log::info!(
+                        "playback: output device {previous:?} disconnected, pausing playback",
+                    );
+                    self.shared.set_paused(true);
+                }
+            }
             // A user-pinned device that is no longer in the list was
             // unplugged: drop the pin and follow the system default.
             if let Some(pinned) = &self.selected_device {
                 if !enumerate_devices().iter().any(|device| &device.id == pinned) {
                     log::info!("playback: pinned device {pinned:?} disappeared, following default");
                     self.selected_device = None;
+                    // The user explicitly chose that output; losing it should
+                    // pause rather than silently continue on the speaker.
+                    if !self.shared.is_paused() {
+                        log::info!("playback: pinned output device disappeared, pausing playback");
+                        self.shared.set_paused(true);
+                    }
                 }
             }
             // Do not consume the observed signature before the rebuild

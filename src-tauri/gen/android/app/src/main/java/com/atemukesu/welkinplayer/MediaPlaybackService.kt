@@ -10,7 +10,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -23,6 +26,7 @@ import android.media.session.PlaybackState
 import android.os.Build
 import android.os.IBinder
 import android.util.Base64
+import androidx.core.content.ContextCompat
 import org.json.JSONObject
 
 /**
@@ -45,6 +49,22 @@ class MediaPlaybackService : Service() {
     private var lastPlaying = false
     /** True when focus loss paused us and focus gain should resume. */
     private var resumeAfterFocusGain = false
+    private var noisyReceiverRegistered = false
+
+    /**
+     * Android broadcasts this just before audio is rerouted to the built-in
+     * speaker (wired headset unplugged, A2DP sink disconnected). Pause so the
+     * music does not suddenly blast out of the phone speaker.
+     */
+    private val noisyReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != AudioManager.ACTION_AUDIO_BECOMING_NOISY) return
+            // Do not auto-resume after a headphone disconnect: the user chose
+            // to remove the output, not to pause temporarily.
+            resumeAfterFocusGain = false
+            if (lastPlaying) MediaControlBridge.control(actionJson("pause"))
+        }
+    }
 
     private val focusListener = AudioManager.OnAudioFocusChangeListener { change ->
         when (change) {
@@ -98,6 +118,7 @@ class MediaPlaybackService : Service() {
             isActive = true
         }
         requestAudioFocus()
+        registerNoisyReceiver()
         try {
             startForegroundCompat(buildNotification("Welkin", "", false, null))
         } catch (error: Throwable) {
@@ -106,6 +127,8 @@ class MediaPlaybackService : Service() {
             // overlay down. Abandon the service instead.
             session?.release()
             session = null
+            unregisterNoisyReceiver()
+            abandonAudioFocus()
             MediaControlBridge.detach()
             stopSelf()
             return
@@ -129,6 +152,7 @@ class MediaPlaybackService : Service() {
     }
 
     override fun onDestroy() {
+        unregisterNoisyReceiver()
         abandonAudioFocus()
         session?.isActive = false
         session?.release()
@@ -215,6 +239,38 @@ class MediaPlaybackService : Service() {
             // service into the foreground state until playback resumes.
             getSystemService(NotificationManager::class.java)?.notify(NOTIFICATION_ID, notification)
             stopForeground(false)
+        }
+    }
+
+    /**
+     * Listen for the system hint that audio is about to be rerouted to the
+     * built-in speaker. Registered for the service lifetime (not just while
+     * playing) so a disconnect arriving between two snapshots is still caught;
+     * the handler itself only pauses when the last snapshot said "playing".
+     */
+    private fun registerNoisyReceiver() {
+        if (noisyReceiverRegistered) return
+        try {
+            ContextCompat.registerReceiver(
+                this,
+                noisyReceiver,
+                IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY),
+                ContextCompat.RECEIVER_NOT_EXPORTED,
+            )
+            noisyReceiverRegistered = true
+        } catch (error: Throwable) {
+            // Registration must never take the service down.
+            noisyReceiverRegistered = false
+        }
+    }
+
+    private fun unregisterNoisyReceiver() {
+        if (!noisyReceiverRegistered) return
+        noisyReceiverRegistered = false
+        try {
+            unregisterReceiver(noisyReceiver)
+        } catch (error: Throwable) {
+            // Already unregistered (e.g. service teardown race).
         }
     }
 
