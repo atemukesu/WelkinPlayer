@@ -47,6 +47,14 @@ const BUFFER_MILLIS: usize = 400;
 const CROSSFADE_BUFFER_MILLIS: usize = 2_000;
 /// Pre-stretch this much output before starting a new source after load/seek.
 const PREFILL_MILLIS: usize = 150;
+/// Rebuild the output stream when the realtime callback stops draining a full
+/// ring for this long while playback is requested. Covers phone-call audio
+/// focus loss, a suspended AAudio stream, and endpoint takeovers that leave the
+/// device list unchanged.
+const STALL_REBUILD_MILLIS: u64 = 2_000;
+/// Never rebuild the output stream more often than this, so a flapping device
+/// or a stream that keeps erroring cannot reopen in a tight loop.
+const STREAM_REBUILD_BACKOFF_MILLIS: u64 = 5_000;
 /// Forward-decoding fallback is intentionally bounded. A remote stream that
 /// cannot seek must not freeze the transport thread decoding minutes of audio.
 const MAX_FORWARD_SEEK_SECONDS: f64 = 8.0;
@@ -550,6 +558,9 @@ pub struct Shared {
     progress: Mutex<Arc<Progress>>,
     /// Times the output callback ran dry while a track was loading/playing.
     underruns: AtomicU64,
+    /// Set by the output stream's error callback. The worker consumes it,
+    /// reopens the stream and fresh-mounts the current track.
+    stream_error: AtomicBool,
     channels: AtomicU32,
     sample_rate: AtomicU32,
     /// The loaded file's native rate, before the work-rate cap. 0 when idle.
@@ -654,6 +665,7 @@ impl Shared {
             generation: AtomicU64::new(0),
             progress: Mutex::new(Arc::new(Progress::default())),
             underruns: AtomicU64::new(0),
+            stream_error: AtomicBool::new(false),
             channels: AtomicU32::new(2),
             sample_rate: AtomicU32::new(44_100),
             native_rate: AtomicU32::new(0),
@@ -1452,6 +1464,10 @@ pub enum Command {
     },
     /// Abort a prepared/active crossfade and keep the active deck.
     CancelCrossfade,
+    /// Force the output stream to reopen and re-mount the current track. Used
+    /// after an interruption (e.g. a phone call) when the old stream may be
+    /// dead even though the device list never changed.
+    Rebuild,
 }
 
 /// Handle held in Tauri managed state. `Clone` is cheap: the sender is
@@ -2013,7 +2029,11 @@ mod worker {
     /// so it is ignored and the system default is used (the OS routes to the
     /// active output device anyway). If the device is gone or refuses the rate we
     /// fall back to the default device so a bad preference never kills output.
-    fn open_stream(rate: u32, device_id: Option<&str>) -> Result<OutputStream, String> {
+    fn open_stream(
+        rate: u32,
+        device_id: Option<&str>,
+        shared: &Arc<Shared>,
+    ) -> Result<OutputStream, String> {
         #[cfg(target_os = "android")]
         let _ = device_id; // cpal follows the system default on Android.
         #[cfg(not(target_os = "android"))]
@@ -2038,9 +2058,17 @@ mod worker {
         let device = rodio::cpal::default_host()
             .default_output_device()
             .ok_or_else(|| "no output device".to_string())?;
+        let error_shared = shared.clone();
         let stream = OutputStreamBuilder::default()
             .with_device(device.clone())
             .with_sample_rate(rate)
+            .with_error_callback(move |error| {
+                // Never surface a stream failure as a silent stall: the worker
+                // reopens the stream and re-mounts the track. This is what
+                // recovers playback after a phone call disconnects AAudio.
+                log::warn!("playback: output stream error: {error}");
+                error_shared.stream_error.store(true, Ordering::Release);
+            })
             .open_stream();
         match stream {
             Ok(stream) => Ok(stream),
@@ -2048,9 +2076,14 @@ mod worker {
                 log::warn!(
                     "playback engine: {rate} Hz output rejected ({error}), falling back to device default"
                 );
+                let error_shared = shared.clone();
                 Ok::<_, String>(
                     OutputStreamBuilder::default()
                         .with_device(device)
+                        .with_error_callback(move |error| {
+                            log::warn!("playback: output stream error: {error}");
+                            error_shared.stream_error.store(true, Ordering::Release);
+                        })
                         .open_stream()
                         .map_err(|fallback| fallback.to_string())?,
                 )
@@ -2133,6 +2166,14 @@ mod worker {
         bound_device_signature: String,
         /// Throttles the device-change poll to roughly once per second.
         last_device_check: std::time::Instant,
+        /// Playhead (in output frames) at the last time the watchdog observed
+        /// progress, used to detect a dead output callback.
+        watched_played: u64,
+        /// When `watched_played` last changed, or the watchdog last reset while
+        /// paused/ended.
+        last_progress_at: std::time::Instant,
+        /// Throttles stream rebuilds requested by a stall or a stream error.
+        last_stream_rebuild: std::time::Instant,
     }
 
     pub fn run(
@@ -2150,9 +2191,16 @@ mod worker {
         // hardware. The frontend pins the real rate via `audio_set_quality`
         // before the first track loads, which reopens the stream.
         let initial_rate = default_output_rate();
-        let stream = open_stream(initial_rate, None).or_else(|error| {
+        let stream = open_stream(initial_rate, None, &shared).or_else(|error| {
             log::warn!("playback engine: opening {initial_rate} Hz output failed ({error}); using device default");
-            OutputStreamBuilder::open_default_stream().map_err(|fallback| fallback.to_string())
+            let error_shared = shared.clone();
+            OutputStreamBuilder::default()
+                .with_error_callback(move |stream_error| {
+                    log::warn!("playback: output stream error: {stream_error}");
+                    error_shared.stream_error.store(true, Ordering::Release);
+                })
+                .open_stream()
+                .map_err(|fallback| fallback.to_string())
         });
         let Ok(stream) = stream else {
             log::error!("playback engine: no audio output device available");
@@ -2191,6 +2239,9 @@ mod worker {
             last_trace: std::time::Instant::now(),
             bound_device_signature: device_signature(),
             last_device_check: std::time::Instant::now(),
+            watched_played: 0,
+            last_progress_at: std::time::Instant::now(),
+            last_stream_rebuild: std::time::Instant::now(),
         };
         worker.publish_device_rates();
         worker.loop_forever(rx);
@@ -2230,7 +2281,7 @@ mod worker {
                 .clone();
             let position = self.shared.position_secs();
 
-            let stream = match open_stream(target, self.selected_device.as_deref()) {
+            let stream = match open_stream(target, self.selected_device.as_deref(), &self.shared) {
                 Ok(stream) => stream,
                 Err(error) => {
                     log::error!("playback engine: reopening output stream failed: {error}");
@@ -2250,6 +2301,7 @@ mod worker {
             // the device rejected it and we fell back to its default.
             self.stream = stream;
             self.device_rate = actual;
+            self.shared.stream_error.store(false, Ordering::Release);
             self.publish_device_rates();
             log::info!("playback: output stream reopened at {actual} Hz (asked {target})");
 
@@ -2299,7 +2351,7 @@ mod worker {
                 .clone();
             let position = self.shared.position_secs();
 
-            let stream = match open_stream(target, self.selected_device.as_deref()) {
+            let stream = match open_stream(target, self.selected_device.as_deref(), &self.shared) {
                 Ok(stream) => stream,
                 Err(error) => {
                     log::error!("playback engine: rebuilding output stream failed: {error}");
@@ -2317,6 +2369,7 @@ mod worker {
             let actual = stream.config().sample_rate();
             self.stream = stream;
             self.device_rate = actual;
+            self.shared.stream_error.store(false, Ordering::Release);
             self.publish_device_rates();
             log::info!("playback: output stream rebuilt at {actual} Hz (asked {target})");
 
@@ -2409,23 +2462,84 @@ mod worker {
             }
             self.last_device_check = std::time::Instant::now();
             let signature = device_signature();
-            if signature != self.bound_device_signature {
-                log::info!(
-                    "playback: output device list changed: {:?} -> {:?}",
-                    self.bound_device_signature,
-                    signature,
-                );
-                self.bound_device_signature = signature;
-                // A user-pinned device that is no longer in the list was
-                // unplugged: drop the pin and follow the system default.
-                if let Some(pinned) = &self.selected_device {
-                    if !enumerate_devices().iter().any(|device| &device.id == pinned) {
-                        log::info!("playback: pinned device {pinned:?} disappeared, following default");
-                        self.selected_device = None;
-                    }
-                }
-                self.rebuild_stream();
+            if signature == self.bound_device_signature {
+                return;
             }
+            log::info!(
+                "playback: output device list changed: {:?} -> {:?}",
+                self.bound_device_signature,
+                signature,
+            );
+            // A user-pinned device that is no longer in the list was
+            // unplugged: drop the pin and follow the system default.
+            if let Some(pinned) = &self.selected_device {
+                if !enumerate_devices().iter().any(|device| &device.id == pinned) {
+                    log::info!("playback: pinned device {pinned:?} disappeared, following default");
+                    self.selected_device = None;
+                }
+            }
+            // Do not consume the observed signature before the rebuild
+            // succeeds. A failed reopen during a phone call used to clear the
+            // change, so the post-call device state never triggered a retry.
+            if self.last_stream_rebuild.elapsed() < Duration::from_millis(STREAM_REBUILD_BACKOFF_MILLIS) {
+                return;
+            }
+            self.last_stream_rebuild = std::time::Instant::now();
+            if self.rebuild_stream() {
+                self.bound_device_signature = signature;
+            }
+        }
+
+        /// Rebuild the stream as soon as the platform reports an output-stream
+        /// failure, instead of waiting for the stall watchdog to time out.
+        fn check_stream_error(&mut self) {
+            if !self.shared.stream_error.swap(false, Ordering::AcqRel) {
+                return;
+            }
+            if self.last_stream_rebuild.elapsed() < Duration::from_millis(STREAM_REBUILD_BACKOFF_MILLIS) {
+                // Keep the request pending so a later poll retries it.
+                self.shared.stream_error.store(true, Ordering::Release);
+                return;
+            }
+            log::warn!("playback: output stream reported an error; rebuilding it");
+            self.last_stream_rebuild = std::time::Instant::now();
+            self.rebuild_stream();
+        }
+
+        /// Detect an output callback that has stopped draining the ring even
+        /// though playback is requested and the buffer is full. The device list
+        /// does not change when a phone call suspends or disconnects AAudio, so
+        /// this is the independent liveness check the device poll cannot give.
+        fn check_stall(&mut self) {
+            let played = self.shared.played();
+            if self.shared.is_paused() || self.shared.has_ended() || self.current.is_none() {
+                self.watched_played = played;
+                self.last_progress_at = std::time::Instant::now();
+                return;
+            }
+            if played != self.watched_played {
+                self.watched_played = played;
+                self.last_progress_at = std::time::Instant::now();
+                return;
+            }
+            if !self.ring.is_full() {
+                // A ring the callback is draining, or a network-starved
+                // decoder, is not a dead output stream.
+                self.last_progress_at = std::time::Instant::now();
+                return;
+            }
+            if self.last_progress_at.elapsed() < Duration::from_millis(STALL_REBUILD_MILLIS)
+                || self.last_stream_rebuild.elapsed() < Duration::from_millis(STREAM_REBUILD_BACKOFF_MILLIS)
+            {
+                return;
+            }
+            log::warn!(
+                "playback: output callback stalled with a full ring; rebuilding the output stream",
+            );
+            self.last_stream_rebuild = std::time::Instant::now();
+            self.rebuild_stream();
+            self.watched_played = self.shared.played();
+            self.last_progress_at = std::time::Instant::now();
         }
 
         fn loop_forever(&mut self, rx: Receiver<Command>) {
@@ -2447,7 +2561,9 @@ mod worker {
                 // platform-native event: there is none, so we poll the device
                 // list / default roughly once per second. This recovers playback
                 // after the OS invalidates the stream.
+                self.check_stream_error();
                 self.check_device();
+                self.check_stall();
                 self.poll_prepared();
                 self.promote_crossfade();
 
@@ -2554,6 +2670,14 @@ mod worker {
 
                 Command::Play => {
                     log::debug!("playback: cmd Play");
+                    // A paused engine whose stream died while paused (a phone
+                    // call, or the OS suspending AAudio) cannot be revived by
+                    // clearing the pause flag: the callback itself is gone.
+                    if self.shared.stream_error.swap(false, Ordering::AcqRel) {
+                        log::warn!("playback: play requested after a stream error; rebuilding the stream");
+                        self.last_stream_rebuild = std::time::Instant::now();
+                        self.rebuild_stream();
+                    }
                     self.shared.set_paused(false)
                 }
                 Command::Pause => {
@@ -2591,6 +2715,11 @@ mod worker {
                 Command::CancelCrossfade => {
                     log::debug!("playback: cmd CancelCrossfade");
                     self.cancel_crossfade()
+                }
+                Command::Rebuild => {
+                    log::info!("playback: cmd Rebuild");
+                    self.last_stream_rebuild = std::time::Instant::now();
+                    self.rebuild_stream();
                 }
             }
         }
@@ -2887,10 +3016,11 @@ mod worker {
                     "playback: reopening output stream for {rate} Hz file at {output_rate} Hz (quality {})",
                     self.selected_rate,
                 );
-                match open_stream(output_rate, self.selected_device.as_deref()) {
+                match open_stream(output_rate, self.selected_device.as_deref(), &self.shared) {
                     Ok(stream) => {
                         self.stream = stream;
                         self.device_rate = self.stream.config().sample_rate();
+                        self.shared.stream_error.store(false, Ordering::Release);
                         self.publish_device_rates();
                     }
                     Err(error) => {

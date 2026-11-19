@@ -14,6 +14,9 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.media.MediaMetadata
 import android.media.session.MediaSession
 import android.media.session.PlaybackState
@@ -34,6 +37,42 @@ import org.json.JSONObject
  */
 class MediaPlaybackService : Service() {
     private var session: MediaSession? = null
+    private var audioManager: AudioManager? = null
+    private var focusRequest: AudioFocusRequest? = null
+    /** Whether the OS currently grants us audio focus. */
+    private var focusHeld = false
+    /** The last play/pause state pushed from Rust. */
+    private var lastPlaying = false
+    /** True when focus loss paused us and focus gain should resume. */
+    private var resumeAfterFocusGain = false
+
+    private val focusListener = AudioManager.OnAudioFocusChangeListener { change ->
+        when (change) {
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                // A phone call (or another app) took focus. Pause now and ask
+                // Rust to rebuild the output stream when focus returns: the OS
+                // commonly disconnects/suspends AAudio during a call even
+                // though the connected-device list never changes.
+                if (lastPlaying) {
+                    resumeAfterFocusGain = true
+                    MediaControlBridge.control(actionJson("pause"))
+                }
+            }
+            AudioManager.AUDIOFOCUS_GAIN -> {
+                if (resumeAfterFocusGain) {
+                    resumeAfterFocusGain = false
+                    MediaControlBridge.control(actionJson("resume"))
+                }
+                focusHeld = true
+            }
+            AudioManager.AUDIOFOCUS_LOSS -> {
+                resumeAfterFocusGain = false
+                focusHeld = false
+                if (lastPlaying) MediaControlBridge.control(actionJson("pause"))
+            }
+        }
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -58,6 +97,7 @@ class MediaPlaybackService : Service() {
             })
             isActive = true
         }
+        requestAudioFocus()
         try {
             startForegroundCompat(buildNotification("Welkin", "", false, null))
         } catch (error: Throwable) {
@@ -89,6 +129,7 @@ class MediaPlaybackService : Service() {
     }
 
     override fun onDestroy() {
+        abandonAudioFocus()
         session?.isActive = false
         session?.release()
         session = null
@@ -150,6 +191,12 @@ class MediaPlaybackService : Service() {
         val position = payload.optDouble("positionMs", 0.0).toLong()
         val duration = payload.optDouble("durationMs", 0.0).toLong()
         val art = decodeCover(payload.optString("coverBase64", null))
+        val wasPlaying = lastPlaying
+        lastPlaying = playing
+        // A foreground service started while another app held focus may have
+        // been denied; retry on an actual pause -> play transition only, so a
+        // permanent focus loss does not turn into a focus tug-of-war.
+        if (playing && !wasPlaying && !focusHeld) requestAudioFocus()
 
         val metadata = MediaMetadata.Builder()
             .putString(MediaMetadata.METADATA_KEY_TITLE, title)
@@ -169,6 +216,37 @@ class MediaPlaybackService : Service() {
             getSystemService(NotificationManager::class.java)?.notify(NOTIFICATION_ID, notification)
             stopForeground(false)
         }
+    }
+
+    /**
+     * Request media focus so a phone call or another app can tell us to pause
+     * and resume. Without this the OS may silently suspend the AAudio stream
+     * while leaving our transport marked "playing".
+     */
+    private fun requestAudioFocus() {
+        val manager = getSystemService(AudioManager::class.java) ?: return
+        audioManager = manager
+        val attributes = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_MEDIA)
+            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+            .build()
+        val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+            .setAudioAttributes(attributes)
+            .setAcceptsDelayedFocusGain(false)
+            .setOnAudioFocusChangeListener(focusListener)
+            .build()
+        focusRequest = request
+        focusHeld = manager.requestAudioFocus(request) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+    }
+
+    private fun abandonAudioFocus() {
+        focusRequest?.let { request ->
+            audioManager?.abandonAudioFocusRequest(request)
+        }
+        focusRequest = null
+        audioManager = null
+        focusHeld = false
+        resumeAfterFocusGain = false
     }
 
     private fun decodeCover(encoded: String?): Bitmap? {

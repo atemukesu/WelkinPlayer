@@ -465,6 +465,25 @@ impl PlaybackContext {
         self.emit(snapshot);
     }
 
+    /// Resume after a transient audio interruption (phone call, assistant,
+    /// another app taking focus). The OS may have disconnected the output
+    /// stream while we were paused, so force a rebuild before resuming; merely
+    /// clearing the pause flag would leave the silent, dead stream in place.
+    pub fn resume_after_interruption(&self) {
+        self.reset_transition();
+        let mut inner = self.inner.lock().unwrap();
+        inner.playing = true;
+        let snapshot = self.snapshot_locked(&inner);
+        drop(inner);
+        if self.current_loaded() {
+            let _ = self.engine.send(Command::Rebuild);
+            let _ = self.engine.send(Command::Play);
+        } else {
+            self.apply_current(true);
+        }
+        self.emit(snapshot);
+    }
+
     /// Explicit pause.
     pub fn pause(&self) {
         self.reset_transition();
@@ -494,6 +513,7 @@ impl PlaybackContext {
     pub fn apply_control(&self, action: &str, value: Option<f64>) {
         match action {
             "play" => self.play(),
+            "resume" => self.resume_after_interruption(),
             "pause" => self.pause(),
             "toggle" => self.toggle(),
             "next" => self.next(),
