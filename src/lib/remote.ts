@@ -42,6 +42,12 @@ export interface TrackSourceRef {
   kind: SourceKind;
 }
 
+/** Folder holding an entry, relative to its source root (`""` at the root). */
+export function folderOfEntry(entry: RemoteEntry): string {
+  const segments = entry.localPath.split("/").filter(Boolean);
+  return segments.slice(0, -1).join("/");
+}
+
 /** Convert a source entry into the library's track shape. */
 export function trackFromEntry(entry: RemoteEntry, index: number, source?: TrackSourceRef): Track {
   const segments = entry.localPath.split("/").filter(Boolean);
@@ -58,6 +64,7 @@ export function trackFromEntry(entry: RemoteEntry, index: number, source?: Track
     modified: entry.modified,
     sourceId: source?.id,
     sourceName: source?.name,
+    folder: folderOfEntry(entry),
   };
 }
 

@@ -7978,6 +7978,7 @@ dependencies = [
  "tauri-runtime-wry",
  "tauri-winit",
  "thiserror 2.0.20",
+ "tokio",
  "urlencoding",
  "wsola",
  "zeroize",

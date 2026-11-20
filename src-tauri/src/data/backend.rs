@@ -21,7 +21,7 @@ use tauri::AppHandle;
 
 use crate::commands::webdav::{enforce_url_policy, source_password};
 use crate::core::error::AppError;
-use crate::data::dav::{hash_revision, is_audio_file, Depth, RemoteEntry, WebDavClient};
+use crate::data::dav::{hash_revision, is_audio_file, AudioListing, RemoteEntry, WebDavClient};
 use crate::data::sources::{find_source, SourceConfig, LOCAL_KIND, WEBDAV_KIND};
 
 /// A resolved source transport.
@@ -160,10 +160,13 @@ impl Backend {
     }
 
     /// Recursively list audio files under the source root.
-    pub async fn list_audio(&self) -> Result<Vec<RemoteEntry>, AppError> {
+    pub async fn list_audio(&self) -> Result<AudioListing, AppError> {
         match self {
             Backend::Webdav(client) => client.list_audio_files("").await,
-            Backend::Local { root } => list_local_audio(root),
+            Backend::Local { root } => Ok(AudioListing {
+                entries: list_local_audio(root)?,
+                failed_paths: Vec::new(),
+            }),
         }
     }
 
@@ -175,8 +178,12 @@ impl Backend {
     pub async fn list_directory(&self, path: &str) -> Result<Vec<RemoteEntry>, AppError> {
         match self {
             Backend::Webdav(client) => {
-                let xml = client.propfind(path, Depth::One).await?;
-                let mut entries = client.parse_multistatus(&xml)?;
+                let mut entries = client.list_local_directory(path).await?;
+                // A server may report the same child twice (e.g. with and without
+                // a trailing slash). Keep one row for the same decoded path; real
+                // files that merely share a name are left untouched.
+                let mut seen = std::collections::HashSet::new();
+                entries.retain(|entry| seen.insert(entry.local_path.trim_matches('/').to_string()));
                 // PROPFIND Depth=1 includes the directory itself; drop it so the
                 // UI only shows its children.
                 let base = path.trim_matches('/').to_string();
@@ -200,10 +207,13 @@ impl Backend {
     ///
     /// Used when the user plays a folder from the file-manager browser: the queue
     /// is built from all audio under the chosen directory, not just the one row.
-    pub async fn list_audio_under(&self, path: &str) -> Result<Vec<RemoteEntry>, AppError> {
+    pub async fn list_audio_under(&self, path: &str) -> Result<AudioListing, AppError> {
         match self {
             Backend::Webdav(client) => client.list_audio_files(path).await,
-            Backend::Local { root } => list_local_audio_under(root, path),
+            Backend::Local { root } => Ok(AudioListing {
+                entries: list_local_audio_under(root, path)?,
+                failed_paths: Vec::new(),
+            }),
         }
     }
 }
@@ -358,6 +368,7 @@ fn list_local_audio(root: &Path) -> Result<Vec<RemoteEntry>, AppError> {
                 size,
                 modified,
                 content_type: content_type_for(&name),
+                type_unknown: false,
             });
         }
     }
@@ -406,6 +417,7 @@ fn list_local_directory(root: &Path, path: &str) -> Result<Vec<RemoteEntry>, App
                 size: None,
                 modified: None,
                 content_type: None,
+                type_unknown: false,
             });
             continue;
         }
@@ -436,6 +448,7 @@ fn list_local_directory(root: &Path, path: &str) -> Result<Vec<RemoteEntry>, App
             size,
             modified,
             content_type: content_type_for(&name),
+            type_unknown: false,
         });
     }
 
@@ -505,6 +518,7 @@ fn list_local_audio_under(root: &Path, path: &str) -> Result<Vec<RemoteEntry>, A
                 size,
                 modified,
                 content_type: content_type_for(&name),
+                type_unknown: false,
             });
         }
     }

@@ -6,7 +6,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { VList, Virtualizer, type VirtualizerHandle } from "virtua/vue";
-import { ArrowUp, Check, CloudOff, LoaderCircle, LocateFixed, Pause, Play, Trash2 } from "@lucide/vue";
+import { ArrowUp, Check, CloudOff, Copy, LoaderCircle, LocateFixed, Pause, Play, Trash2 } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { usePlayerStore } from "../stores/player";
 import type { Track } from "../stores/player";
@@ -41,13 +41,13 @@ const listGrid = computed(() => {
     ? "grid-cols-[36px_44px_minmax(0,1fr)_44px]"
     : (showRemove.value ? "grid-cols-[44px_minmax(0,1fr)_44px_40px]" : "grid-cols-[44px_minmax(0,1fr)_44px]");
   const wide = showRemove.value
-    ? "md:grid-cols-[36px_44px_minmax(0,1fr)_140px_56px_44px_44px]"
-    : "md:grid-cols-[36px_44px_minmax(0,1fr)_140px_56px_44px]";
+    ? "md:grid-cols-[36px_44px_minmax(0,1fr)_140px_minmax(0,150px)_56px_44px_44px]"
+    : "md:grid-cols-[36px_44px_minmax(0,1fr)_140px_minmax(0,150px)_56px_44px]";
   return `${mobile} ${wide}`;
 });
 const listHeaderGrid = computed(() => showRemove.value
-  ? "grid-cols-[36px_44px_minmax(0,1fr)_140px_56px_44px_44px]"
-  : "grid-cols-[36px_44px_minmax(0,1fr)_140px_56px_44px]");
+  ? "grid-cols-[36px_44px_minmax(0,1fr)_140px_minmax(0,150px)_56px_44px_44px]"
+  : "grid-cols-[36px_44px_minmax(0,1fr)_140px_minmax(0,150px)_56px_44px]");
 
 const GAP = 16;
 const SCROLLBAR = 8;
@@ -118,11 +118,19 @@ const colWidth = computed(() => {
   return Math.max(120, (Math.max(0, width.value - SCROLLBAR) - GAP * (cols - 1)) / cols);
 });
 const gridRowIndexes = computed(() => Array.from({ length: Math.ceil(props.tracks.length / columns.value) }, (_, index) => index));
-const gridRowHeight = computed(() => Math.round(colWidth.value + 88));
+const gridRowHeight = computed(() => Math.round(colWidth.value + 104));
 function gridTrack(row: number, col: number): Track { return props.tracks[row * columns.value + col]; }
 function gridInRange(row: number, col: number): boolean { return row * columns.value + col < props.tracks.length; }
 
 const selection = computed(() => props.selected ?? new Set<string>());
+/** Human-readable location of a row: source name plus folder inside it. */
+function origin(track: Track): string {
+  return track.folder ? `${track.sourceName ?? ""} / ${track.folder}` : (track.sourceName ?? "");
+}
+/** Tooltip listing the other identical copies of this file, if any. */
+function duplicateHint(track: Track): string | undefined {
+  return track.duplicates?.length ? t("library.duplicateAt", { origins: track.duplicates.join(" · ") }) : undefined;
+}
 /** Profile keys of unavailable rows survive selection; only real tracks have a trackKey. */
 function keyOf(track: Track): string | undefined {
   return trackKey(track) ?? track.profileKey;
@@ -277,7 +285,7 @@ function jumpToLetter(entry: LetterIndexEntry) {
 
     <template v-else>
       <div :class="external ? undefined : 'flex h-full flex-col'">
-        <div class="hidden shrink-0 items-center gap-4 px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-dim md:grid" :class="listHeaderGrid"><span>#</span><span></span><span>{{ t("library.colTrack") }}</span><span>{{ t("library.colAlbum") }}</span><span class="text-right">{{ t("library.colTime") }}</span><span></span><span v-if="showRemove"></span></div>
+        <div class="hidden shrink-0 items-center gap-4 px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-dim md:grid" :class="listHeaderGrid"><span>#</span><span></span><span>{{ t("library.colTrack") }}</span><span>{{ t("library.colAlbum") }}</span><span>{{ t("library.colSource") }}</span><span class="text-right">{{ t("library.colTime") }}</span><span></span><span v-if="showRemove"></span></div>
         <div v-if="tracks.length" ref="virtualHostEl" :class="external ? 'w-full' : 'min-h-0 flex-1'">
         <component :is="listComponent" ref="listRef" :data="tracks" :item-size="LIST_ROW_HEIGHT" v-bind="listProps">
           <template #default="{ item: track, index }">
@@ -297,10 +305,11 @@ function jumpToLetter(entry: LetterIndexEntry) {
               <span v-if="selectable" class="grid h-5 w-5 place-items-center border-2" :class="isSelected(track) ? 'border-accent bg-accent text-accent-fg' : 'border-line-strong text-transparent'"><Check :size="12" :stroke-width="3" /></span>
               <span v-else class="hidden font-mono text-[13px] tabular-nums text-dim md:block">{{ pad(index + 1) }}</span>
               <span class="grid h-11 w-11 place-items-center overflow-hidden text-lg font-black text-white/90" :style="{ backgroundColor: track.color }"><CloudOff v-if="track.unavailable" :size="18" :stroke-width="2" /><img v-else-if="track.cover" :src="track.cover" alt="" loading="lazy" decoding="async" class="h-full w-full object-cover" /><LoaderCircle v-else-if="coverPending(track)" :size="18" :stroke-width="2" class="animate-spin" /><template v-else>{{ initial(track) }}</template></span>
-              <span class="grid min-w-0 gap-0.5"><span class="flex min-w-0 items-center gap-1.5"><strong class="truncate text-sm font-semibold tracking-wide" :class="track.id === currentId ? 'text-accent' : 'text-fg'">{{ track.title }}</strong><CloudOff v-if="track.unavailable" :size="14" class="shrink-0 text-dim" :aria-label="t('library.unavailable')" /><CacheBadge v-else :cache-key="trackKey(track)" /></span><span class="flex min-w-0 items-center gap-1 md:hidden"><button v-if="track.artist && !track.unavailable" type="button" class="min-w-0 truncate text-left text-xs text-muted transition-colors hover:text-accent" :title="t('library.openArtist')" @click.stop="emit('openArtist', track.artist)">{{ track.artist }}</button><small v-else-if="track.artist" class="min-w-0 truncate text-xs text-muted">{{ track.artist }}</small><span v-if="track.artist && track.album && !track.unavailable" class="shrink-0 text-xs text-dim">·</span><button v-if="track.album && !track.unavailable" type="button" class="min-w-0 truncate text-left text-xs text-muted transition-colors hover:text-accent" :title="t('library.openAlbum')" @click.stop="emit('openAlbum', track.album)">{{ track.album }}</button><small v-else-if="track.album" class="min-w-0 truncate text-xs text-dim">{{ track.album }}</small></span><button v-if="track.artist && !track.unavailable" type="button" class="hidden min-w-0 truncate text-left text-xs text-muted transition-colors hover:text-accent md:block md:w-fit md:max-w-full" :title="t('library.openArtist')" @click.stop="emit('openArtist', track.artist)">{{ track.artist }}</button><small v-else-if="track.artist" class="hidden truncate text-xs text-muted md:block">{{ track.artist }}</small></span>
+              <span class="grid min-w-0 gap-0.5"><span class="flex min-w-0 items-center gap-1.5"><strong class="truncate text-sm font-semibold tracking-wide" :class="track.id === currentId ? 'text-accent' : 'text-fg'">{{ track.title }}</strong><CloudOff v-if="track.unavailable" :size="14" class="shrink-0 text-dim" :aria-label="t('library.unavailable')" /><CacheBadge v-else :cache-key="trackKey(track)" /><span v-if="track.duplicates?.length" class="shrink-0 text-amber-400" :title="duplicateHint(track)"><Copy :size="13" :stroke-width="2" /></span></span><span class="flex min-w-0 items-center gap-1 md:hidden"><button v-if="track.artist && !track.unavailable" type="button" class="min-w-0 truncate text-left text-xs text-muted transition-colors hover:text-accent" :title="t('library.openArtist')" @click.stop="emit('openArtist', track.artist)">{{ track.artist }}</button><small v-else-if="track.artist" class="min-w-0 truncate text-xs text-muted">{{ track.artist }}</small><span v-if="track.artist && track.album && !track.unavailable" class="shrink-0 text-xs text-dim">·</span><button v-if="track.album && !track.unavailable" type="button" class="min-w-0 truncate text-left text-xs text-muted transition-colors hover:text-accent" :title="t('library.openAlbum')" @click.stop="emit('openAlbum', track.album)">{{ track.album }}</button><small v-else-if="track.album" class="min-w-0 truncate text-xs text-dim">{{ track.album }}</small><span v-if="track.sourceName" class="shrink-0 text-xs text-dim">·</span><span class="min-w-0 truncate text-xs text-dim">{{ origin(track) }}</span></span><button v-if="track.artist && !track.unavailable" type="button" class="hidden min-w-0 truncate text-left text-xs text-muted transition-colors hover:text-accent md:block md:w-fit md:max-w-full" :title="t('library.openArtist')" @click.stop="emit('openArtist', track.artist)">{{ track.artist }}</button><small v-else-if="track.artist" class="hidden truncate text-xs text-muted md:block">{{ track.artist }}</small></span>
               <button v-if="track.album && !track.unavailable" type="button" class="hidden min-w-0 truncate text-left text-xs text-muted transition-colors hover:text-accent md:block md:w-fit md:max-w-full" :title="t('library.openAlbum')" @click.stop="emit('openAlbum', track.album)">{{ track.album }}</button>
               <span v-else-if="track.album" class="hidden truncate text-xs text-dim md:block">{{ track.album }}</span>
               <span v-else class="hidden truncate text-xs text-muted md:block"></span>
+              <span class="hidden min-w-0 truncate text-xs text-dim md:block" :title="origin(track) || undefined">{{ origin(track) }}</span>
               <span class="hidden text-right font-mono text-[13px] tabular-nums text-muted md:block">{{ track.duration }}</span>
               <span class="grid place-items-center gap-0.5 text-dim"><span><CloudOff v-if="track.unavailable" :size="16" /><span v-else-if="track.id === currentId && playing" class="text-accent"><span class="ak-eq"><i></i><i></i><i></i></span></span><Pause v-else-if="track.id === currentId" :size="16" class="text-accent" /><Play v-else :size="16" /></span><span class="font-mono text-[11px] tabular-nums text-muted md:hidden">{{ track.duration }}</span></span>
               <button v-if="showRemove" type="button" class="grid h-8 w-8 place-items-center text-dim transition-colors hover:text-red-500" :title="t('library.playlists.removeTrack')" @click.stop="emit('remove', track)"><Trash2 :size="15" /></button>

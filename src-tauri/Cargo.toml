@@ -36,6 +36,8 @@ quick-xml = "0.37"
 percent-encoding = "2"
 # Bounded concurrency for the recursive PROPFIND library walk.
 futures-util = "0.3"
+# Backoff sleep for transient WebDAV retries (the runtime itself comes from Tauri).
+tokio = { version = "1", features = ["time"] }
 # Zeroes the stored WebDAV password when the client is dropped.
 zeroize = "1"
 # Audio metadata parsing reads only the file head (HTTP Range), never the whole file.

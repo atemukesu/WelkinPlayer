@@ -7,7 +7,7 @@ import { ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { invoke, toAppError } from "../api";
 import { pushToast } from "../lib/toast";
-import { formatDuration, coverUrl, trackFromEntry } from "../lib/remote";
+import { formatDuration, coverUrl, trackFromEntry, folderOfEntry } from "../lib/remote";
 import type { RemoteEntry, TrackMetadata, CachedTrack, TrackSourceRef } from "../lib/remote";
 import { trackKey } from "../lib/sources";
 import type { SongSource } from "../lib/sources";
@@ -28,6 +28,11 @@ interface RefreshResult {
   entries: RemoteEntry[];
   changed: boolean;
   changedPaths: string[];
+  /** The scan was incomplete/unsafe, so the on-disk cache was left untouched. */
+  protected: boolean;
+  failedPaths: string[];
+  /** `"incomplete"` or `"shrink"` when `protected`. */
+  warning: string | null;
 }
 
 /** One source's freshly listed (or cached) entries. */
@@ -53,6 +58,23 @@ export function useLibrary() {
     return { id: source.id, name: source.name, kind: source.kind };
   }
 
+  /** A label that tells identical-looking songs apart: source + folder. */
+  function originLabel(source: SongSource, entry: RemoteEntry): string {
+    const folder = folderOfEntry(entry);
+    return folder ? `${source.name} · ${folder}` : source.name;
+  }
+
+  /**
+   * Identity of a physical file. The same name and byte size means the same
+   * copy, so this is what marks two rows as duplicates (they are still shown,
+   * never collapsed: the user may want both a local and a cloud copy).
+   */
+  function duplicateKey(entry: RemoteEntry): string | null {
+    const name = (entry.name || entry.localPath.split("/").pop() || "").trim().toLocaleLowerCase();
+    const size = entry.size;
+    return name && size && size > 0 ? `${name}\u0000${size}` : null;
+  }
+
   /** Merge per-source entries into one library, reusing cached track objects. */
   function mergeTracks(groups: SourceEntries[], invalidate: Set<string>): Track[] {
     const cachedByKey = new Map(
@@ -60,12 +82,46 @@ export function useLibrary() {
         .filter((track) => track.path)
         .map((track) => [trackKey(track) as string, track]),
     );
-    const merged: Track[] = [];
+    // Locate real copies before building rows: every file whose name and byte
+    // size match another file gets a "duplicate" hint with the other location.
+    const copies = new Map<string, Array<{ id: string; label: string }>>();
     for (const { source, entries } of groups) {
       for (const entry of entries) {
-        const key = `${source.id}::${entry.path}`;
-        const previous = invalidate.has(key) ? undefined : cachedByKey.get(key);
-        merged.push(previous ? { ...previous } : trackFromEntry(entry, merged.length, sourceRef(source)));
+        const key = duplicateKey(entry);
+        if (!key) continue;
+        const list = copies.get(key) ?? [];
+        list.push({
+          id: `${source.id}::${entry.localPath || entry.path}`,
+          label: originLabel(source, entry),
+        });
+        copies.set(key, list);
+      }
+    }
+
+    const merged: Track[] = [];
+    // Exact duplicates of the *same object* (same source and same decoded path,
+    // whatever href spelling the server used) are the only rows collapsed.
+    const seen = new Set<string>();
+    for (const { source, entries } of groups) {
+      for (const entry of entries) {
+        const objectKey = `${source.id}::${entry.localPath || entry.path}`;
+        if (seen.has(objectKey)) continue;
+        seen.add(objectKey);
+        const pathKey = `${source.id}::${entry.path}`;
+        const previous = invalidate.has(pathKey) ? undefined : cachedByKey.get(pathKey);
+        const track = previous ? { ...previous } : trackFromEntry(entry, merged.length, sourceRef(source));
+        track.sourceId = source.id;
+        track.sourceName = source.name;
+        track.folder = folderOfEntry(entry);
+        const duplicateOf = duplicateKey(entry);
+        const others = duplicateOf
+          ? [...new Set((copies.get(duplicateOf) ?? [])
+              .filter((copy) => copy.id !== objectKey)
+              .map((copy) => copy.label))]
+          : [];
+        if (others.length > 0) track.duplicates = others;
+        else delete track.duplicates;
+        merged.push(track);
       }
     }
     merged.forEach((track, index) => (track.id = index + 1));
@@ -161,16 +217,20 @@ export function useLibrary() {
   }
 
   /** Refresh every source, falling back to its cache when unreachable. */
-  async function refreshAll(options?: { silent?: boolean }): Promise<{ changed: boolean; any: boolean }> {
+  async function refreshAll(options?: { silent?: boolean }): Promise<{ changed: boolean; any: boolean; protected: boolean }> {
     const groups: SourceEntries[] = [];
     const invalidate = new Set<string>();
     let changed = false;
     let anyError: unknown = null;
+    let protectedResult = false;
+    let warning: string | null = null;
 
     for (const source of sources.sources) {
       try {
         const result = await invoke<RefreshResult>("refresh_source_library", { sourceId: source.id });
         changed = changed || result.changed;
+        protectedResult = protectedResult || result.protected;
+        if (result.protected) warning = result.warning;
         groups.push({ source, entries: result.entries });
         for (const path of result.changedPaths) invalidate.add(`${source.id}::${path}`);
       } catch (error) {
@@ -182,11 +242,14 @@ export function useLibrary() {
 
     if (groups.length === 0) {
       if (anyError && !options?.silent) pushToast("error", friendlyError(anyError));
-      return { changed: false, any: false };
+      return { changed: false, any: false, protected: false };
     }
     showTracks(groups, invalidate);
     if (anyError && !options?.silent) pushToast("info", t("library.usingCache"));
-    return { changed, any: true };
+    else if (warning && !options?.silent) {
+      pushToast("info", t(warning === "incomplete" ? "library.partialListing" : "library.cacheProtected"));
+    }
+    return { changed, any: true, protected: protectedResult };
   }
 
   async function loadRemoteLibrary(options?: { silent?: boolean }) {
@@ -203,8 +266,9 @@ export function useLibrary() {
     if (!sources.hasSources) return;
     refreshing.value = true;
     try {
-      const { changed } = await refreshAll();
-      pushToast(changed ? "success" : "info", changed ? t("library.refreshed") : t("library.unchanged"));
+      const { changed, protected: wasProtected } = await refreshAll();
+      // A protected refresh already showed why the cache was kept.
+      if (!wasProtected) pushToast(changed ? "success" : "info", changed ? t("library.refreshed") : t("library.unchanged"));
     } finally {
       refreshing.value = false;
     }

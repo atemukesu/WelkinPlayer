@@ -120,9 +120,18 @@ pub async fn list_source_audio(
     source_id: String,
 ) -> Result<Vec<RemoteEntry>, AppError> {
     let backend = backend_for(&app, &source_id)?;
-    let files = backend.list_audio().await?;
-    log::info!("listed {} audio files from source {source_id}", files.len());
-    Ok(files)
+    let listing = backend.list_audio().await?;
+    if !listing.is_complete() {
+        log::warn!(
+            "source {source_id}: {} directories could not be listed",
+            listing.failed_paths.len()
+        );
+    }
+    log::info!(
+        "listed {} audio files from source {source_id}",
+        listing.entries.len()
+    );
+    Ok(listing.entries)
 }
 
 /// List the immediate children of one directory inside a source.
@@ -156,12 +165,18 @@ pub async fn list_source_audio_under(
     path: String,
 ) -> Result<Vec<RemoteEntry>, AppError> {
     let backend = backend_for(&app, &source_id)?;
-    let files = backend.list_audio_under(&path).await?;
+    let listing = backend.list_audio_under(&path).await?;
+    if !listing.is_complete() {
+        log::warn!(
+            "source {source_id}: {} directories under '{path}' could not be listed",
+            listing.failed_paths.len()
+        );
+    }
     log::info!(
         "listed {} audio files under '{path}' in source {source_id}",
-        files.len()
+        listing.entries.len()
     );
-    Ok(files)
+    Ok(listing.entries)
 }
 
 /// Verify a source is reachable and readable. Returns a display string.
@@ -171,8 +186,11 @@ pub async fn test_source_connection(app: AppHandle, source_id: String) -> Result
     if source.is_local() {
         // `build_backend` already validates the directory exists.
         let backend = build_backend(&app, &source)?;
-        let files = backend.list_audio().await?;
-        return Ok(format!("本地来源可用（{} 个音频文件）", files.len()));
+        let listing = backend.list_audio().await?;
+        return Ok(format!(
+            "本地来源可用（{} 个音频文件）",
+            listing.entries.len()
+        ));
     }
 
     let backend = build_backend(&app, &source)?;

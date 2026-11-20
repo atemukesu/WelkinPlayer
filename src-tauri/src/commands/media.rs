@@ -13,6 +13,7 @@
 //! with identical paths never share a cache entry.
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use base64::Engine;
 use futures_util::stream::{self, StreamExt};
@@ -30,6 +31,20 @@ const CACHE_DIR_KEY: &str = "cache.dir";
 /// Per-source library cache file prefix (suffixed with the source hash).
 const LIBRARY_CACHE_PREFIX: &str = "library-";
 const LIBRARY_HASH_PREFIX: &str = "library-hash-";
+/// Candidate listing kept while a suspicious shrink is confirmed by a second
+/// independent scan.
+const LIBRARY_PENDING_PREFIX: &str = "library-pending-";
+
+/// A fresh listing may only replace the cache when it keeps at least this
+/// percentage of the previous tracks. A sudden drop is far more likely to be a
+/// partial/throttled PROPFIND response than a real mass deletion.
+const SHRINK_GUARD_PERCENT: usize = 80;
+/// Tiny libraries change all the time; only guard listings at least this large.
+const SHRINK_GUARD_MIN_ENTRIES: usize = 20;
+/// Ignore drops smaller than this even when the percentage threshold trips.
+const SHRINK_GUARD_MIN_LOSS: usize = 5;
+/// Share of paths two scans must agree on before a shrink is accepted.
+const SHRINK_CONFIRM_PERCENT: usize = 98;
 
 /// Progressive read sizes (bytes). A truncated head is retried with a larger
 /// `Range` before falling back to downloading the complete file.
@@ -184,11 +199,87 @@ fn library_hash_file(dir: &Path, source_id: &str) -> PathBuf {
     ))
 }
 
+fn library_pending_file(dir: &Path, source_id: &str) -> PathBuf {
+    dir.join(format!(
+        "{LIBRARY_PENDING_PREFIX}{}.json",
+        source_cache_hash(source_id)
+    ))
+}
+
 fn read_library_cache(dir: &Path, source_id: &str) -> Vec<RemoteEntry> {
-    match std::fs::read(library_cache_file(dir, source_id)) {
-        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
+    let file = library_cache_file(dir, source_id);
+    match std::fs::read(&file) {
+        Ok(bytes) => match serde_json::from_slice::<Vec<RemoteEntry>>(&bytes) {
+            Ok(entries) => dedupe_entries(entries),
+            Err(error) => {
+                // A truncated file must never be mistaken for an empty library.
+                log::warn!(
+                    "ignoring unreadable library cache {}: {error}",
+                    file.display()
+                );
+                Vec::new()
+            }
+        },
         Err(_) => Vec::new(),
     }
+}
+
+/// Identity of a physical file inside a source, independent of the `href`
+/// spelling a server happened to use (trailing slash, percent-encoding, ...).
+fn object_key(entry: &RemoteEntry) -> String {
+    let local = entry.local_path.trim_matches('/');
+    if local.is_empty() {
+        entry.path.trim_matches('/').to_string()
+    } else {
+        local.to_string()
+    }
+}
+
+/// Drop repeated copies of the *same object*, keeping the first occurrence.
+///
+/// This never merges two distinct files that merely share a name; it only
+/// removes rows that a server (or an older cache) reported twice.
+fn dedupe_entries(entries: Vec<RemoteEntry>) -> Vec<RemoteEntry> {
+    let mut seen = std::collections::HashSet::new();
+    entries
+        .into_iter()
+        .filter(|entry| seen.insert(object_key(entry)))
+        .collect()
+}
+
+/// Write a cache file atomically so a concurrent reader can never observe a
+/// truncated JSON document.
+fn write_atomic(file: &Path, bytes: &[u8]) -> Result<(), AppError> {
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temp = file.with_extension("tmp");
+    std::fs::write(&temp, bytes)?;
+    std::fs::rename(&temp, file)?;
+    Ok(())
+}
+
+/// Whether a fresh listing is suspiciously smaller than the cached one.
+fn is_suspicious_shrink(old_len: usize, new_len: usize) -> bool {
+    old_len >= SHRINK_GUARD_MIN_ENTRIES
+        && old_len.saturating_sub(new_len) >= SHRINK_GUARD_MIN_LOSS
+        && new_len.saturating_mul(100) < old_len.saturating_mul(SHRINK_GUARD_PERCENT)
+}
+
+/// Whether a previously saved candidate and a new scan describe essentially
+/// the same (smaller) library. Requiring two scans to agree stops a single
+/// throttled/partial response from ever replacing the cache.
+fn listings_match(pending: &[RemoteEntry], entries: &[RemoteEntry]) -> bool {
+    if pending.len().abs_diff(entries.len()) > 2 {
+        return false;
+    }
+    let pending_paths: std::collections::HashSet<String> = pending.iter().map(object_key).collect();
+    let new_paths: std::collections::HashSet<String> = entries.iter().map(object_key).collect();
+    if pending_paths.is_empty() && new_paths.is_empty() {
+        return true;
+    }
+    let common = pending_paths.intersection(&new_paths).count();
+    common.saturating_mul(100) >= pending_paths.len().max(new_paths.len()) * SHRINK_CONFIRM_PERCENT
 }
 
 fn read_cover_file(file: &Path) -> Result<Option<String>, AppError> {
@@ -237,12 +328,15 @@ pub fn save_library_cache(
     entries: Vec<RemoteEntry>,
 ) -> Result<(), AppError> {
     let dir = resolve_cache_dir(&app);
-    std::fs::create_dir_all(&dir)?;
-    std::fs::write(
-        library_cache_file(&dir, &source_id),
-        serde_json::to_vec(&entries)?,
+    let entries = dedupe_entries(entries);
+    write_atomic(
+        &library_cache_file(&dir, &source_id),
+        &serde_json::to_vec(&entries)?,
     )?;
-    std::fs::write(library_hash_file(&dir, &source_id), listing_hash(&entries))?;
+    write_atomic(
+        &library_hash_file(&dir, &source_id),
+        listing_hash(&entries).as_bytes(),
+    )?;
     Ok(())
 }
 
@@ -253,18 +347,75 @@ pub struct RefreshResult {
     pub entries: Vec<RemoteEntry>,
     pub changed: bool,
     pub changed_paths: Vec<String>,
+    /// The fresh scan was not trusted as a complete snapshot, so the on-disk
+    /// cache (and all cached metadata/covers/lyrics) was deliberately left
+    /// untouched. A subsequent refresh that agrees with the smaller result will
+    /// accept it.
+    pub protected: bool,
+    /// Directories that could not be enumerated during this scan.
+    pub failed_paths: Vec<String>,
+    /// Stable reason for `protected`: `"incomplete"` or `"shrink"`.
+    pub warning: Option<String>,
 }
 
-/// Re-list a source immediately, comparing it with the cache by hash. When the
-/// listing changed, changed/removed tracks have their cached assets invalidated
-/// and the library cache is rewritten.
+/// One refresh at a time: concurrent refreshes of the same source would race on
+/// the cache files and could invalidate assets a sibling scan is still using.
+static REFRESH_LOCK: OnceLock<tauri::async_runtime::Mutex<()>> = OnceLock::new();
+
+/// Append cached entries the fresh scan could not verify, so a transient
+/// failure does not make existing songs vanish from the UI.
+fn extend_with_cached(
+    entries: &mut Vec<RemoteEntry>,
+    cached: &[RemoteEntry],
+    only_under: Option<&[String]>,
+) {
+    let mut known: std::collections::HashSet<String> = entries.iter().map(object_key).collect();
+    for previous in cached {
+        if let Some(directories) = only_under {
+            let under_failed = directories.iter().any(|directory| {
+                let directory = directory.trim_matches('/');
+                previous.local_path == directory
+                    || (previous.local_path.starts_with(directory)
+                        && previous.local_path.as_bytes().get(directory.len()) == Some(&b'/'))
+            });
+            if !under_failed {
+                continue;
+            }
+        }
+        if known.insert(object_key(previous)) {
+            entries.push(previous.clone());
+        }
+    }
+    entries.sort_by(|left, right| {
+        left.local_path
+            .cmp(&right.local_path)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+}
+
+/// Re-list a source immediately, comparing it with the cache by hash.
+///
+/// The cache is only replaced by a *complete* scan that does not look like a
+/// partial response. When a scan is incomplete or shrinks suspiciously, the
+/// fresh entries are still returned for display (plus anything the cache says
+/// lives under a directory that failed), but no cache file or cached asset is
+/// touched. A suspicious shrink is remembered and accepted once a second scan
+/// agrees, so a real deletion still propagates.
 #[tauri::command]
 pub async fn refresh_source_library(
     app: AppHandle,
     source_id: String,
 ) -> Result<RefreshResult, AppError> {
+    let _guard = REFRESH_LOCK
+        .get_or_init(|| tauri::async_runtime::Mutex::new(()))
+        .lock()
+        .await;
+
     let backend = backend_for(&app, &source_id)?;
-    let entries = backend.list_audio().await?;
+    let listing = backend.list_audio().await?;
+    let incomplete = !listing.is_complete();
+    let failed_paths = listing.failed_paths;
+    let mut entries = dedupe_entries(listing.entries);
 
     let dir = resolve_cache_dir(&app);
     let new_hash = listing_hash(&entries);
@@ -288,8 +439,68 @@ pub async fn refresh_source_library(
             changed_paths.push(entry.path.clone());
         }
     }
-
     let changed = old_hash.as_deref() != Some(new_hash.as_str());
+
+    let pending_file = library_pending_file(&dir, &source_id);
+    let mut protected = false;
+    let mut warning: Option<String> = None;
+
+    if incomplete {
+        protected = true;
+        warning = Some("incomplete".to_string());
+    } else if is_suspicious_shrink(old_entries.len(), entries.len()) {
+        // A single short scan is not enough evidence to delete most of a
+        // library. Only accept the smaller snapshot when an independent scan
+        // reproduces it almost exactly.
+        let pending_entries = std::fs::read(&pending_file)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Vec<RemoteEntry>>(&bytes).ok());
+        let confirmed = pending_entries
+            .as_deref()
+            .map(|pending| listings_match(pending, &entries))
+            .unwrap_or(false);
+
+        if confirmed {
+            log::warn!(
+                "accepting confirmed smaller library for source {source_id}: \
+                 {} -> {} files",
+                old_entries.len(),
+                entries.len()
+            );
+        } else {
+            protected = true;
+            warning = Some("shrink".to_string());
+            write_atomic(&pending_file, &serde_json::to_vec(&entries)?)?;
+        }
+    }
+
+    if protected {
+        // Keep the songs the cache knows about under directories this scan
+        // could not read (or the whole old list when the shrink is unconfirmed)
+        // so the UI does not temporarily lose them.
+        let only_under = (warning.as_deref() == Some("incomplete")).then_some(&failed_paths[..]);
+        extend_with_cached(&mut entries, &old_entries, only_under);
+        log::warn!(
+            "keeping library cache for source {source_id}: {} files shown \
+             (cache {}), failed={} warning={:?}",
+            entries.len(),
+            old_entries.len(),
+            failed_paths.len(),
+            warning
+        );
+        return Ok(RefreshResult {
+            entries,
+            changed,
+            // Never invalidate cached assets from an untrusted scan.
+            changed_paths: Vec::new(),
+            protected,
+            failed_paths,
+            warning,
+        });
+    }
+
+    let _ = std::fs::remove_file(&pending_file);
+
     if changed {
         for path in &changed_paths {
             invalidate_track_assets(&app, &source_id, path);
@@ -301,12 +512,11 @@ pub async fn refresh_source_library(
                 invalidate_track_assets(&app, &source_id, &entry.path);
             }
         }
-        std::fs::create_dir_all(&dir)?;
-        std::fs::write(
-            library_cache_file(&dir, &source_id),
-            serde_json::to_vec(&entries)?,
+        write_atomic(
+            &library_cache_file(&dir, &source_id),
+            &serde_json::to_vec(&entries)?,
         )?;
-        std::fs::write(library_hash_file(&dir, &source_id), &new_hash)?;
+        write_atomic(&library_hash_file(&dir, &source_id), new_hash.as_bytes())?;
     }
 
     log::info!(
@@ -317,6 +527,9 @@ pub async fn refresh_source_library(
         entries,
         changed,
         changed_paths,
+        protected: false,
+        failed_paths: Vec::new(),
+        warning: None,
     })
 }
 
@@ -650,4 +863,47 @@ pub fn cover_path(app: AppHandle, hash: String) -> Result<Option<String>, AppErr
         ));
     }
     Ok(cover_path_for(&resolve_cache_dir(&app), &hash))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(local: &str, path: &str, size: u64) -> RemoteEntry {
+        RemoteEntry {
+            name: local.rsplit('/').next().unwrap_or(local).to_string(),
+            path: path.to_string(),
+            local_path: local.to_string(),
+            is_dir: false,
+            size: Some(size),
+            modified: None,
+            content_type: None,
+            type_unknown: false,
+        }
+    }
+
+    #[test]
+    fn dedupes_the_same_object_but_keeps_equal_looking_copies() {
+        let entries = vec![
+            entry("Album/Song.flac", "/webdav/Album/Song.flac", 10),
+            // Same decoded path, alternate href spelling: one row.
+            entry("Album/Song.flac", "/webdav/Album/Song%2Eflac", 10),
+            // Same name and size in another folder: a real copy, kept.
+            entry("Other/Song.flac", "/webdav/Other/Song.flac", 10),
+        ];
+        let deduped = dedupe_entries(entries);
+        assert_eq!(deduped.len(), 2);
+        assert_eq!(deduped[0].local_path, "Album/Song.flac");
+        assert_eq!(deduped[1].local_path, "Other/Song.flac");
+    }
+
+    #[test]
+    fn shrink_guard_only_trips_for_meaningful_drops() {
+        assert!(!is_suspicious_shrink(249, 249));
+        assert!(!is_suspicious_shrink(249, 245));
+        assert!(!is_suspicious_shrink(249, 210));
+        assert!(is_suspicious_shrink(249, 120));
+        // Tiny libraries are allowed to change freely.
+        assert!(!is_suspicious_shrink(4, 1));
+    }
 }

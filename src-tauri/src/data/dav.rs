@@ -15,12 +15,13 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use futures_util::stream::{self, StreamExt};
-use percent_encoding::percent_decode_str;
+use percent_encoding::{percent_decode_str, utf8_percent_encode, AsciiSet, CONTROLS};
 use quick_xml::events::{BytesEnd, BytesStart, Event};
 use quick_xml::Reader;
 use reqwest::{header, Client, Method, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tokio::time::sleep;
 use zeroize::Zeroizing;
 
 use crate::core::error::AppError;
@@ -45,7 +46,35 @@ pub fn etag_from_revision(revision: &str) -> Option<&str> {
 }
 
 /// Maximum number of PROPFIND requests kept in flight while walking a library.
-const LIST_CONCURRENCY: usize = 8;
+///
+/// Kept deliberately small: a large library must still list reliably, and many
+/// cheap NAS / reverse-proxy WebDAV servers start returning per-entry errors or
+/// 429s when a walker opens eight requests at once.
+const LIST_CONCURRENCY: usize = 3;
+
+/// Extra attempts after the first failure for a transient PROPFIND error.
+const LIST_RETRIES: usize = 3;
+
+/// Base delay for the exponential backoff between PROPFIND retries.
+const RETRY_BASE_DELAY: Duration = Duration::from_millis(250);
+
+/// Characters that must be percent-encoded inside a decoded local path
+/// segment. `/` is handled by splitting the path first; `%` is included so a
+/// literal percent sign in a folder name is not treated as an escape.
+const PATH_SEGMENT_ENCODE_SET: &AsciiSet = &CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'#')
+    .add(b'%')
+    .add(b'?')
+    .add(b'[')
+    .add(b']')
+    .add(b'\\')
+    .add(b'^')
+    .add(b'`')
+    .add(b'{')
+    .add(b'|')
+    .add(b'}');
 
 /// How long a connection attempt may take before giving up.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -96,6 +125,11 @@ pub struct RemoteEntry {
     pub modified: Option<String>,
     /// `getcontenttype`, when provided.
     pub content_type: Option<String>,
+    /// Internal hint: the server did not report a usable `resourcetype`, so a
+    /// non-audio entry might actually be a collection that failed its property
+    /// query. Never serialized to the frontend.
+    #[serde(skip)]
+    pub type_unknown: bool,
 }
 
 impl RemoteEntry {
@@ -108,7 +142,26 @@ impl RemoteEntry {
             size: raw.size,
             modified: raw.modified,
             content_type: raw.content_type,
+            type_unknown: raw.type_unknown,
         }
+    }
+}
+
+/// Result of a recursive audio listing.
+#[derive(Debug, Clone, Default)]
+pub struct AudioListing {
+    /// Playable audio files, deduplicated and sorted by remote path.
+    pub entries: Vec<RemoteEntry>,
+    /// Directories that could not be enumerated after retries. When this is
+    /// non-empty, `entries` is *not* a complete snapshot: a missing song may
+    /// simply live under a directory that a flaky server refused to list.
+    pub failed_paths: Vec<String>,
+}
+
+impl AudioListing {
+    /// Whether the server enumerated every directory in the walk.
+    pub fn is_complete(&self) -> bool {
+        self.failed_paths.is_empty()
     }
 }
 
@@ -120,6 +173,24 @@ struct RawEntry {
     size: Option<u64>,
     modified: Option<String>,
     content_type: Option<String>,
+    /// A successful `propstat` reported a `resourcetype` element. An empty
+    /// element means "ordinary file"; `<collection/>` means directory.
+    resourcetype_known: bool,
+    /// No successful `propstat` told us what this resource is.
+    type_unknown: bool,
+    /// HTTP status sent directly under `<response>` (outside any propstat),
+    /// e.g. a whole-entry 403/429. Kept for diagnostics.
+    response_status: Option<u16>,
+}
+
+/// A directory queued for the next level of the walk.
+#[derive(Debug)]
+struct PendingDirectory {
+    /// Decoded path used for deduplication and diagnostics.
+    key: String,
+    /// Encoded path used for the actual PROPFIND request. Reusing the href
+    /// verbatim avoids re-encoding bugs for names containing `%`, `#`, `?`, ...
+    path: String,
 }
 
 /// The properties read from a single `<D:prop>` block.
@@ -134,6 +205,8 @@ struct PropValues {
     modified: Option<String>,
     content_type: Option<String>,
     is_dir: bool,
+    /// The propstat contained a `resourcetype` element, even if empty.
+    resourcetype_seen: bool,
 }
 
 /// A lightweight WebDAV client bound to a single collection + credentials.
@@ -213,6 +286,58 @@ impl WebDavClient {
             .await?;
 
         Ok(self.finish(response).await?.text().await?)
+    }
+
+    /// PROPFIND with bounded retries for transient failures.
+    ///
+    /// A single timeout, 429 or 5xx from a reverse proxy must not turn into a
+    /// silently shorter library, so transient transport/server errors are
+    /// retried with exponential backoff before they are allowed to abort.
+    pub async fn propfind_with_retry(&self, path: &str, depth: Depth) -> Result<String, AppError> {
+        let mut attempt = 0;
+        loop {
+            match self.propfind(path, depth).await {
+                Ok(xml) => return Ok(xml),
+                Err(error) if attempt < LIST_RETRIES && is_retryable(&error) => {
+                    attempt += 1;
+                    let delay = RETRY_BASE_DELAY * (1u32 << (attempt - 1));
+                    log::warn!(
+                        "retrying WebDAV PROPFIND '{path}' after {error} \
+                         (attempt {attempt}/{LIST_RETRIES}, delay {}ms)",
+                        delay.as_millis()
+                    );
+                    sleep(delay).await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    /// List one collection (`Depth: 1`) addressed by an already-encoded URL
+    /// path, with retries.
+    ///
+    /// `href`s are resolved against the collection being listed, not against
+    /// the library root: servers are allowed to return relative references, and
+    /// resolving those against the root would collapse same-named folders from
+    /// different parents into one path.
+    pub async fn list_directory(&self, path: &str) -> Result<Vec<RemoteEntry>, AppError> {
+        let url = self.directory_url(path)?;
+        self.list_directory_url(url).await
+    }
+
+    /// List one collection addressed by a decoded local path from the UI.
+    pub async fn list_local_directory(
+        &self,
+        local_path: &str,
+    ) -> Result<Vec<RemoteEntry>, AppError> {
+        let url = self.local_directory_url(local_path)?;
+        self.list_directory_url(url).await
+    }
+
+    async fn list_directory_url(&self, url: Url) -> Result<Vec<RemoteEntry>, AppError> {
+        let path = path_with_query(&url);
+        let xml = self.propfind_with_retry(&path, Depth::One).await?;
+        self.parse_multistatus_from(&xml, &url)
     }
 
     /// `GET` a resource; the caller decides how to consume the body.
@@ -355,15 +480,29 @@ impl WebDavClient {
     }
 
     /// Parse a PROPFIND multistatus body into normalized entries.
+    ///
+    /// Kept as the root-relative entry point for tests and callers that already
+    /// know the response belongs to the library root. The recursive walk uses
+    /// [`Self::parse_multistatus_from`] so each response is resolved against the
+    /// directory that produced it.
     pub fn parse_multistatus(&self, xml: &str) -> Result<Vec<RemoteEntry>, AppError> {
+        self.parse_multistatus_from(xml, &self.base)
+    }
+
+    /// Parse a multistatus produced by a PROPFIND for `request_url`.
+    fn parse_multistatus_from(
+        &self,
+        xml: &str,
+        request_url: &Url,
+    ) -> Result<Vec<RemoteEntry>, AppError> {
         let raw = parse_raw(xml)?;
         let mut entries = Vec::with_capacity(raw.len());
 
         for entry in raw {
             // Never trust the server's `href`: resolve it once and keep only a
-            // same-origin path, so a hostile listing cannot make us send
-            // credentials to another host.
-            let resolved = match resolve_under_base(&self.base, &entry.href) {
+            // same-origin path inside the configured root, so a hostile listing
+            // cannot make us send credentials to another host.
+            let resolved = match self.resolve_listing_href(request_url, &entry.href) {
                 Ok(url) => url,
                 Err(_) => {
                     log::warn!(
@@ -393,20 +532,30 @@ impl WebDavClient {
 
     /// Recursively list audio files under `root` (one PROPFIND per directory).
     ///
-    /// Directories are walked level by level with a bounded number of PROPFIND
-    /// requests in flight, so a wide or deep library lists far faster than the
-    /// old one-request-at-a-time walk without flooding a small server.
+    /// The walk is level-by-level with a small bounded concurrency. Each
+    /// directory is attempted with retries; if it still cannot be listed, its
+    /// path is reported in [`AudioListing::failed_paths`] instead of being
+    /// treated as an empty folder. Callers must not interpret missing entries
+    /// from an incomplete listing as deletions.
     ///
-    /// Every directory is listed exactly once: `seen` records what has already
-    /// been queued so a server that reports a cycle (or the same collection
-    /// twice) cannot spin forever. There is deliberately no cap on how many
-    /// directories may be visited — a large library must list in full, and a
-    /// truncated listing would look like mass deletion to the caller.
-    pub async fn list_audio_files(&self, root: &str) -> Result<Vec<RemoteEntry>, AppError> {
-        let mut files = Vec::new();
+    /// Duplicate files are collapsed by decoded path: the same resource can be
+    /// returned twice when a server reports both the trailing-slash and plain
+    /// spellings of a collection, or repeats an entry within one multistatus.
+    pub async fn list_audio_files(&self, root: &str) -> Result<AudioListing, AppError> {
+        // `root` is a decoded local path from the UI ("" for the whole source).
+        // Encode it once here so every PROPFIND below uses URL-safe paths.
+        let root_url = self.local_directory_url(root)?;
+        let root_key = self.local_path_for(&root_url);
+        let root_path = path_with_query(&root_url);
+
+        let mut files: Vec<RemoteEntry> = Vec::new();
+        let mut failed_paths: Vec<String> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
-        let mut frontier = vec![root.trim().trim_matches('/').to_string()];
-        seen.insert(frontier[0].clone());
+        seen.insert(root_key.clone());
+        let mut frontier = vec![PendingDirectory {
+            key: root_key.clone(),
+            path: root_path,
+        }];
 
         while !frontier.is_empty() {
             // Consume this level's directories so each future owns its path.
@@ -415,18 +564,32 @@ impl WebDavClient {
             let directory_batch = std::mem::take(&mut frontier);
             let listings = stream::iter(directory_batch)
                 .map(|directory| async move {
-                    let xml = self.propfind(&directory, Depth::One).await?;
-                    let entries = self.parse_multistatus(&xml)?;
-                    Ok::<_, AppError>((directory, entries))
+                    let result = self.list_directory(&directory.path).await;
+                    (directory, result)
                 })
                 .buffer_unordered(LIST_CONCURRENCY)
                 .collect::<Vec<_>>()
                 .await;
 
             let mut next = Vec::new();
-            for listing in listings {
-                let (directory, entries) = listing?;
-                let directory_key = directory.trim_matches('/');
+            let mut unresolved = Vec::new();
+
+            for (directory, result) in listings {
+                let entries = match result {
+                    Ok(entries) => entries,
+                    Err(error) => {
+                        if directory.key == root_key {
+                            // The root itself is unusable; there is nothing
+                            // meaningful to return.
+                            return Err(error);
+                        }
+                        log::warn!("WebDAV could not list '{}': {error}", directory.key);
+                        failed_paths.push(directory.key);
+                        continue;
+                    }
+                };
+
+                let directory_key = directory.key.trim_matches('/');
                 for entry in entries {
                     let key = entry.local_path.trim_matches('/').to_string();
                     if key == directory_key {
@@ -435,10 +598,56 @@ impl WebDavClient {
 
                     if entry.is_dir {
                         if seen.insert(key.clone()) {
-                            next.push(key);
+                            next.push(PendingDirectory {
+                                key,
+                                path: entry.path,
+                            });
                         }
                     } else if is_audio_file(&entry.name) {
                         files.push(entry);
+                    } else if entry.type_unknown {
+                        // Its `resourcetype` query failed, so it might be a
+                        // folder we would otherwise skip along with its whole
+                        // subtree. Probe it instead of dropping it silently.
+                        unresolved.push(entry);
+                    }
+                }
+            }
+
+            if !unresolved.is_empty() {
+                let probes = stream::iter(unresolved)
+                    .map(|entry| async move {
+                        let result = self.classify_unknown(&entry).await;
+                        (entry, result)
+                    })
+                    .buffer_unordered(LIST_CONCURRENCY)
+                    .collect::<Vec<_>>()
+                    .await;
+
+                for (entry, result) in probes {
+                    let key = entry.local_path.trim_matches('/').to_string();
+                    match result {
+                        Ok(Some(true)) => {
+                            if seen.insert(key.clone()) {
+                                next.push(PendingDirectory {
+                                    key,
+                                    path: entry.path,
+                                });
+                            }
+                        }
+                        Ok(Some(false)) => {
+                            if is_audio_file(&entry.name) {
+                                files.push(entry);
+                            }
+                        }
+                        Ok(None) => {
+                            log::warn!("WebDAV entry '{key}' still has no usable properties");
+                            failed_paths.push(key);
+                        }
+                        Err(error) => {
+                            log::warn!("WebDAV could not inspect '{key}': {error}");
+                            failed_paths.push(key);
+                        }
                     }
                 }
             }
@@ -446,8 +655,102 @@ impl WebDavClient {
             frontier = next;
         }
 
-        files.sort_by(|a, b| a.local_path.cmp(&b.local_path));
-        Ok(files)
+        // Sort by the decoded path (stable across percent-encoding spellings)
+        // and collapse exact duplicates. This is the last line of defence
+        // against a server reporting the same object twice.
+        files.sort_by(|left, right| {
+            left.local_path
+                .cmp(&right.local_path)
+                .then_with(|| left.path.cmp(&right.path))
+        });
+        files.dedup_by(|left, right| left.local_path == right.local_path);
+        failed_paths.sort();
+        failed_paths.dedup();
+
+        Ok(AudioListing {
+            entries: files,
+            failed_paths,
+        })
+    }
+
+    /// Decide whether an entry with no usable `resourcetype` is a collection.
+    ///
+    /// `None` means the server still did not tell us, so the caller must treat
+    /// the entry as unresolved instead of guessing.
+    async fn classify_unknown(&self, entry: &RemoteEntry) -> Result<Option<bool>, AppError> {
+        let xml = self.propfind_with_retry(&entry.path, Depth::Zero).await?;
+        let raw = parse_raw(&xml)?;
+        Ok(raw.into_iter().next().and_then(|raw| {
+            if raw.is_dir || href_is_directory(&raw.href) {
+                Some(true)
+            } else if raw.resourcetype_known {
+                Some(false)
+            } else {
+                None
+            }
+        }))
+    }
+
+    /// URL of a collection, guaranteed to end in `/` so relative `href`s
+    /// resolve inside it instead of against its parent.
+    fn directory_url(&self, path: &str) -> Result<Url, AppError> {
+        let mut url = self.resolve(path)?;
+        if !url.path().ends_with('/') {
+            let path = format!("{}/", url.path());
+            url.set_path(&path);
+        }
+        Ok(url)
+    }
+
+    /// URL of a collection addressed by a decoded local path (`A/B`, `""` for
+    /// the root). Every segment is encoded before joining, so folder names
+    /// containing `#`, `?`, `%` or spaces cannot be misread as URL syntax.
+    fn local_directory_url(&self, local_path: &str) -> Result<Url, AppError> {
+        let mut url = self.resolve_local_path(local_path)?;
+        if !url.path().ends_with('/') {
+            let path = format!("{}/", url.path());
+            url.set_path(&path);
+        }
+        Ok(url)
+    }
+
+    /// Resolve a decoded local path under the collection root.
+    fn resolve_local_path(&self, local_path: &str) -> Result<Url, AppError> {
+        let trimmed = local_path.trim().trim_matches('/');
+        if trimmed.is_empty() {
+            return Ok(self.base.clone());
+        }
+
+        let mut relative = String::new();
+        for segment in trimmed.split('/') {
+            if segment.is_empty() {
+                continue;
+            }
+            if segment == "." || segment == ".." {
+                return Err(AppError::invalid_argument("path", "路径超出了来源目录"));
+            }
+            if !relative.is_empty() {
+                relative.push('/');
+            }
+            relative.push_str(&utf8_percent_encode(segment, PATH_SEGMENT_ENCODE_SET).to_string());
+        }
+
+        let resolved = self
+            .base
+            .join(&relative)
+            .map_err(|error| AppError::invalid_argument("path", format!("无效的路径：{error}")))?;
+        validate_under_base(&self.base, &resolved)?;
+        Ok(resolved)
+    }
+
+    /// Resolve a server `href` against the collection that produced it, then
+    /// apply the same origin/root/credential checks as every other path.
+    fn resolve_listing_href(&self, directory_url: &Url, href: &str) -> Result<Url, AppError> {
+        let resolved = directory_url
+            .join(href.trim())
+            .map_err(|error| AppError::invalid_argument("path", format!("无效的路径：{error}")))?;
+        validate_under_base(&self.base, &resolved)?;
+        Ok(resolved)
     }
 
     /// Strip the collection prefix from an already-resolved URL and
@@ -504,7 +807,12 @@ pub(crate) fn resolve_under_base(base: &Url, path: &str) -> Result<Url, AppError
     let resolved = base
         .join(path.trim())
         .map_err(|error| AppError::invalid_argument("path", format!("无效的路径：{error}")))?;
+    validate_under_base(base, &resolved)?;
+    Ok(resolved)
+}
 
+/// Validate an already-resolved URL against the configured collection.
+fn validate_under_base(base: &Url, resolved: &Url) -> Result<(), AppError> {
     let same_origin = resolved.scheme() == base.scheme()
         && resolved.host_str() == base.host_str()
         && resolved.port_or_known_default() == base.port_or_known_default();
@@ -518,7 +826,28 @@ pub(crate) fn resolve_under_base(base: &Url, path: &str) -> Result<Url, AppError
         ));
     }
 
-    Ok(resolved)
+    Ok(())
+}
+
+/// Whether a transient failure is worth retrying.
+fn is_retryable(error: &AppError) -> bool {
+    match error {
+        AppError::Timeout | AppError::Connection(_) | AppError::Dns(_) => true,
+        AppError::Http { status, .. } => {
+            matches!(*status, 408 | 425 | 429) || (500..=599).contains(status)
+        }
+        _ => false,
+    }
+}
+
+/// Whether a `DAV:href` names a collection (servers conventionally append `/`).
+fn href_is_directory(href: &str) -> bool {
+    let path = href
+        .trim()
+        .split(|character| character == '?' || character == '#')
+        .next()
+        .unwrap_or_default();
+    path.ends_with('/')
 }
 
 /// Whether `path` is the collection root itself or a descendant of it.
@@ -578,14 +907,19 @@ fn path_with_query(url: &Url) -> String {
     path
 }
 
+/// Parse the numeric code from a `DAV:status` value like `HTTP/1.1 200 OK`.
+fn status_code(status: &str) -> Option<u16> {
+    status
+        .split_whitespace()
+        .find_map(|token| token.parse::<u16>().ok())
+}
+
 /// Whether a `DAV:status` value like `HTTP/1.1 200 OK` denotes success.
 ///
 /// A missing or unparseable status is treated as success: dropping properties
 /// because of a malformed status line would silently lose media entries.
 fn propstat_is_success(status: &str) -> bool {
-    status
-        .split_whitespace()
-        .find_map(|token| token.parse::<u16>().ok())
+    status_code(status)
         .map(|code| (200..300).contains(&code))
         .unwrap_or(true)
 }
@@ -626,13 +960,18 @@ fn parse_raw(xml: &str) -> Result<Vec<RawEntry>, AppError> {
                     }
                     "prop" if in_propstat => in_prop = true,
                     "collection" if in_prop => pending.is_dir = true,
+                    "resourcetype" if in_prop => pending.resourcetype_seen = true,
                     _ => {}
                 }
                 tag = name;
             }
             Event::Empty(element) => {
-                if local_name(&element) == "collection" && in_prop {
-                    pending.is_dir = true;
+                if in_prop {
+                    match local_name(&element).as_str() {
+                        "collection" => pending.is_dir = true,
+                        "resourcetype" => pending.resourcetype_seen = true,
+                        _ => {}
+                    }
                 }
             }
             Event::Text(text) => {
@@ -668,7 +1007,30 @@ fn parse_raw(xml: &str) -> Result<Vec<RawEntry>, AppError> {
             Event::End(element) => {
                 match end_local_name(&element).as_str() {
                     "response" => {
-                        if let Some(entry) = current.take() {
+                        if let Some(mut entry) = current.take() {
+                            // A collection is usually reported with a trailing
+                            // slash even when its property query failed. Trust
+                            // that hint so the walk still descends into it.
+                            if href_is_directory(&entry.href) {
+                                entry.is_dir = true;
+                            }
+                            entry.type_unknown = !entry.resourcetype_known && !entry.is_dir;
+                            if entry.type_unknown {
+                                match entry.response_status {
+                                    Some(status) if !(200..300).contains(&status) => {
+                                        log::debug!(
+                                            "WebDAV response for '{}' had no usable \
+                                             properties (status {status})",
+                                            entry.href
+                                        );
+                                    }
+                                    _ => log::debug!(
+                                        "WebDAV response for '{}' had no usable \
+                                         properties",
+                                        entry.href
+                                    ),
+                                }
+                            }
                             entries.push(entry);
                         }
                     }
@@ -677,7 +1039,9 @@ fn parse_raw(xml: &str) -> Result<Vec<RawEntry>, AppError> {
                         in_propstat = false;
                         if propstat_ok {
                             if let Some(entry) = current.as_mut() {
-                                apply_props(entry, std::mem::take(&mut pending));
+                                let props = std::mem::take(&mut pending);
+                                entry.resourcetype_known |= props.resourcetype_seen;
+                                apply_props(entry, props);
                             }
                         }
                     }
@@ -709,6 +1073,14 @@ fn record_value(
 
     if tag == "status" && in_propstat && !in_prop {
         *propstat_ok = propstat_is_success(&value);
+        return;
+    }
+
+    // A whole-entry status (`<response><status>HTTP/1.1 403</status>...`)
+    // means the server refused this resource instead of returning per-property
+    // values. Record it so the walker knows the entry is unresolved.
+    if tag == "status" && !in_propstat && !in_prop {
+        entry.response_status = status_code(&value);
         return;
     }
 
@@ -926,5 +1298,69 @@ mod tests {
         let entries = client.parse_multistatus(xml).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].path, "/webdav/ok.mp3");
+    }
+
+    #[test]
+    fn resolves_relative_hrefs_against_the_listed_directory() {
+        let client = WebDavClient::new("https://host/webdav", "user", "pass").unwrap();
+        let directory = client.directory_url("Artist/Album").unwrap();
+        let xml = r#"<?xml version="1.0"?><D:multistatus xmlns:D="DAV:">
+          <D:response><D:href>Track.flac</D:href><D:propstat><D:prop>
+            <D:displayname>Track.flac</D:displayname>
+            <D:resourcetype/></D:prop>
+            <D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>
+        </D:multistatus>"#;
+        let entries = client.parse_multistatus_from(xml, &directory).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].local_path, "Artist/Album/Track.flac");
+    }
+
+    #[test]
+    fn trusts_a_trailing_slash_when_properties_fail() {
+        let client = WebDavClient::new("https://host/webdav", "user", "pass").unwrap();
+        let xml = r#"<?xml version="1.0"?><D:multistatus xmlns:D="DAV:">
+          <D:response><D:href>/webdav/Album/</D:href>
+            <D:propstat><D:prop><D:resourcetype/></D:prop>
+              <D:status>HTTP/1.1 424 Failed Dependency</D:status></D:propstat>
+          </D:response>
+        </D:multistatus>"#;
+        let entries = client.parse_multistatus(xml).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].is_dir);
+        assert!(!entries[0].type_unknown);
+    }
+
+    #[test]
+    fn encodes_decoded_local_paths_without_double_encoding() {
+        let client = WebDavClient::new("https://host/webdav", "user", "pass").unwrap();
+        let url = client
+            .local_directory_url("Artist #1/100% Hits/歌曲")
+            .unwrap();
+        assert_eq!(
+            url.as_str(),
+            "https://host/webdav/Artist%20%231/100%25%20Hits/%E6%AD%8C%E6%9B%B2/"
+        );
+    }
+
+    #[test]
+    fn keeps_an_encoded_directory_url_encoded() {
+        let client = WebDavClient::new("https://host/webdav", "user", "pass").unwrap();
+        let url = client.directory_url("/webdav/Artist%20Name").unwrap();
+        assert_eq!(url.as_str(), "https://host/webdav/Artist%20Name/");
+    }
+
+    #[test]
+    fn marks_entries_without_resourcetype_as_unknown() {
+        let client = WebDavClient::new("https://host/webdav", "user", "pass").unwrap();
+        let xml = r#"<?xml version="1.0"?><D:multistatus xmlns:D="DAV:">
+          <D:response><D:href>/webdav/Album</D:href>
+            <D:propstat><D:prop><D:displayname>Album</D:displayname></D:prop>
+              <D:status>HTTP/1.1 424 Failed Dependency</D:status></D:propstat>
+          </D:response>
+        </D:multistatus>"#;
+        let entries = client.parse_multistatus(xml).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(!entries[0].is_dir);
+        assert!(entries[0].type_unknown);
     }
 }

@@ -122,6 +122,18 @@ export interface Track {
   unavailable?: boolean;
   /** Original profile key (`sourceProfileId::path`) of a placeholder track. */
   profileKey?: string;
+  /**
+   * Folder that contains the file, relative to its source root (`""` for a
+   * root-level file). Shown next to the source name so identical songs coming
+   * from two folders/sources can be told apart instead of looking duplicated.
+   */
+  folder?: string;
+  /**
+   * Human-readable locations of other files with the same name and byte size.
+   * These are real copies (e.g. the same album uploaded twice, or a downloaded
+   * copy next to its cloud original); they are shown, never hidden.
+   */
+  duplicates?: string[];
 }
 
 function formatClock(seconds: number): string {
