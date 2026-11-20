@@ -48,7 +48,7 @@ pub const WINDOW_SECS: f32 = 60.0;
 /// Bump when the planning model changes. Stored per-track features are kept
 /// across this version and only the transitions are recomputed; bump
 /// [`SCHEMA_VERSION`] instead when the extracted features change.
-pub const ALGORITHM_VERSION: u32 = 9;
+pub const ALGORITHM_VERSION: u32 = 11;
 /// On-disk document schema (also invalidates cached per-track features when the
 /// feature set or DSP pipeline changes).
 pub const SCHEMA_VERSION: u32 = 2;
@@ -348,8 +348,34 @@ pub struct TransitionPlan {
     /// tracks meet at a similar loudness (`1.0` when unknown).
     #[serde(default = "unity")]
     pub in_gain: f32,
+    /// Normalised point inside the overlap where the outgoing deck is handed
+    /// over (`0..=1`). Before it the outgoing track is held at full level and
+    /// the incoming one sits under it; after it the fade runs to zero. Old
+    /// documents (and tempo-less fallbacks) use an even split.
+    #[serde(default = "half")]
+    pub handoff: f32,
+    /// `crossfade`, `beatMix` or `filterCut`.
+    ///
+    /// `beatMix` stretches the incoming deck by a musical amount and ramps it
+    /// back after the handover. `filterCut` is used when the tempo difference
+    /// is too large to stretch: the outgoing deck is swept out with a high-pass
+    /// instead of being beat-matched.
+    #[serde(default = "default_technique")]
+    pub technique: String,
+    /// Seconds after handover over which a beat-matched deck returns to its
+    /// natural tempo (`0` when no stretch was applied).
+    #[serde(default)]
+    pub tempo_ramp_secs: f32,
     /// Lower is better: energy/timbre continuity plus a grid-confidence penalty.
     pub score: f32,
+}
+
+fn half() -> f32 {
+    0.5
+}
+
+fn default_technique() -> String {
+    "crossfade".to_string()
 }
 
 /// A lightweight transition view for previews and playback scheduling.
@@ -504,6 +530,16 @@ fn round(value: f32) -> f32 {
         (value * 1000.0).round() / 1000.0
     } else {
         0.0
+    }
+}
+
+/// Tempo ratios keep more precision than cue times: 0.001 of ratio error is
+/// 30 ms of beat drift across a 30 s overlap, which is audible.
+fn round_ratio(value: f32) -> f32 {
+    if value.is_finite() {
+        (value * 100_000.0).round() / 100_000.0
+    } else {
+        1.0
     }
 }
 
@@ -896,11 +932,11 @@ fn analyse_track(
 
     let head = EdgeFeatures::from_features(
         &head_features,
-        downbeat_offset(&head_low, &head_features.beats),
+        downbeat_offset(&head_low, &head_features.beats, head_features.bpm),
     );
     let tail = EdgeFeatures::from_features(
         &tail_features,
-        downbeat_offset(&tail_low, &tail_features.beats),
+        downbeat_offset(&tail_low, &tail_features.beats, tail_features.bpm),
     );
     let confidence_ok = head.bpm > 1.0 && !head.key.is_empty() && duration_known;
     Ok(TrackAnalysis {
@@ -1174,24 +1210,71 @@ fn low_band_onset(samples: &[f32], sample_rate: i32, channels: i32) -> Vec<f32> 
     onset
 }
 
+/// Beat period used to snap onset peaks onto a lattice.
+///
+/// The analysed BPM is the same estimate the peak picker used, so it is the
+/// best starting point. The median-gap fallback keeps the vote working on
+/// documents whose BPM was rejected at analysis time.
+fn beat_period(beats: &[f32], bpm: f32) -> Option<f32> {
+    if bpm.is_finite() && bpm > 1.0 {
+        let period = 60.0 / bpm;
+        if period.is_finite() && (0.2..=2.0).contains(&period) {
+            return Some(period);
+        }
+    }
+    let mut gaps: Vec<f32> = beats
+        .windows(2)
+        .map(|pair| pair[1] - pair[0])
+        .filter(|gap| gap.is_finite() && *gap > 0.05)
+        .collect();
+    if gaps.is_empty() {
+        return None;
+    }
+    gaps.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let period = gaps[gaps.len() / 2];
+    (period.is_finite() && (0.2..=2.0).contains(&period)).then_some(period)
+}
+
 /// Beat index of the first downbeat, given the low-band onset envelope.
 ///
 /// `automix` returns onset peaks, not downbeats, so `beats[0]` may be any beat
 /// of the bar. This sums the low-band onset at each beat for the four possible
 /// bar phases and returns the strongest one. `0` is returned when there is not
 /// enough evidence (fewer than two bars), preserving the old anchor.
-fn downbeat_offset(onset: &[f32], beats: &[f32]) -> u32 {
+///
+/// The peaks are snapped to the reported tempo's lattice first. The peak picker
+/// can return a strong off-beat (a hat, a clap), and `index % 4` over the raw
+/// peak list then assigns the wrong bar phase to every later beat. Peaks that
+/// do not sit within a third of a beat of the lattice are ignored.
+fn downbeat_offset(onset: &[f32], beats: &[f32], bpm: f32) -> u32 {
     let frames = onset.len();
     if frames == 0 || beats.len() < 8 {
         return 0;
     }
+    let Some(period) = beat_period(beats, bpm) else {
+        return 0;
+    };
+    let Some(reference) = beats
+        .iter()
+        .copied()
+        .find(|value| value.is_finite() && *value >= 0.0)
+    else {
+        return 0;
+    };
     let mut sums = [0.0f64; 4];
     let mut counts = [0usize; 4];
-    for (index, beat) in beats.iter().enumerate() {
-        if !beat.is_finite() || *beat < 0.0 {
+    for beat in beats.iter().copied() {
+        if !beat.is_finite() || beat < 0.0 {
             continue;
         }
-        let center = (*beat * DOWNBEAT_FPS).round() as isize;
+        let index = ((beat - reference) / period).round();
+        if !index.is_finite() || index.abs() > 1_000_000.0 {
+            continue;
+        }
+        if (beat - (reference + index * period)).abs() > period * 0.30 {
+            continue;
+        }
+        let center = (beat * DOWNBEAT_FPS).round() as isize;
         if center < 0 || center as usize >= frames {
             continue;
         }
@@ -1203,7 +1286,7 @@ fn downbeat_offset(onset: &[f32], beats: &[f32]) -> u32 {
                 peak = peak.max(onset[frame as usize]);
             }
         }
-        let phase = index % 4;
+        let phase = (index as i64).rem_euclid(4) as usize;
         sums[phase] += peak as f64;
         counts[phase] += 1;
     }
@@ -1230,25 +1313,32 @@ fn downbeat_time(beats: &[f32], offset: u32) -> Option<f32> {
         .or_else(|| beats.first().copied())
 }
 
-/// A beat grid anchored on the first downbeat.
+/// A beat grid fitted to the window's real onset peaks.
 ///
-/// Only the head/tail windows are decoded, so the anchor is that window's first
-/// downbeat (mapped to absolute time via [`TrackAnalysis::tail_offset`] for the
-/// tail). Phrase lines land every `PHRASE_BEATS` beats from the anchor, so both
-/// sides of a transition share the same bar phase instead of drifting by 1–3
-/// beats because their first onset peak happened to fall elsewhere.
-/// This mirrors ClubCraft's `analysis/beatgrid.rs` + `analysis/cues.rs` rules
-/// (MIT/Apache-2.0), reimplemented here without pulling in a new dependency.
+/// Only the head/tail windows are decoded, so the anchor is a downbeat inside
+/// that window (mapped to absolute time via [`TrackAnalysis::tail_offset`] for
+/// the tail). Phrase lines land every `PHRASE_BEATS` beats from the anchor, so
+/// both sides of a transition share the same bar phase instead of drifting by
+/// 1–3 beats because their first onset peak happened to fall elsewhere.
+///
+/// The old version extrapolated a whole 20–90 s window from one anchor and the
+/// coarse BPM estimate. A 0.2 BPM error over 90 s is ~140 ms — a 16th note at
+/// 128 BPM — so cues drifted off the audible beat even when the downbeat vote
+/// was right. [`Self::fit`] instead fits `base + period * k` to the beat times
+/// reported by `automix`, which removes both the BPM error and the anchor error.
 #[derive(Debug, Clone, Copy)]
 struct BeatGrid {
     anchor: f32,
     period: f32,
+    /// Fraction of the window's onset peaks that fit the lattice. `0.0` for a
+    /// BPM-only fallback grid, the measured inlier ratio for a fitted one.
+    confidence: f32,
 }
 
 impl BeatGrid {
-    /// Build a grid from a tempo. When no beat was detected the grid still
-    /// exists (anchored at zero) so phrase math degenerates to a regular
-    /// BPM-only grid — this is our `relaxed` mode.
+    /// Build a grid from a tempo alone. Used when fewer than four onset peaks
+    /// are available; the phase is whatever `automix` picked, so the result is
+    /// only as good as the BPM estimate.
     fn new(bpm: f32, anchor_beat: Option<f32>) -> Option<Self> {
         if !(bpm.is_finite() && bpm > 1.0) {
             return None;
@@ -1261,7 +1351,30 @@ impl BeatGrid {
             .filter(|value| value.is_finite())
             .unwrap_or(0.0)
             .max(0.0);
-        Some(Self { anchor, period })
+        Some(Self {
+            anchor,
+            period,
+            confidence: 0.0,
+        })
+    }
+
+    /// Fit a grid to the onset peaks and snap its anchor onto a downbeat.
+    ///
+    /// Returns `None` when there is not enough evidence (fewer than four
+    /// peaks, or a lattice that cannot be fitted); callers then fall back to
+    /// [`Self::new`].
+    fn fit(beats: &[f32], bpm: f32, downbeat_offset: u32) -> Option<Self> {
+        let fit = fit_beat_fit(beats, bpm, downbeat_offset)?;
+        if !(fit.base.is_finite() && fit.period.is_finite()) {
+            return None;
+        }
+        Some(Self {
+            // `fit_beat_fit` seeds the lattice on a real downbeat, so its
+            // index-0 time is the anchor.
+            anchor: fit.base,
+            period: fit.period,
+            confidence: fit.inliers,
+        })
     }
 
     fn beats_at(&self, secs: f32) -> f32 {
@@ -1286,6 +1399,105 @@ impl BeatGrid {
     }
 }
 
+/// A constant-tempo lattice fitted to detected onsets.
+#[derive(Debug, Clone, Copy)]
+struct BeatFit {
+    /// Fitted time of lattice index `0` (may lie before the window).
+    base: f32,
+    /// Seconds per beat.
+    period: f32,
+    /// Fraction of detected onsets that sit on the lattice.
+    inliers: f32,
+}
+
+/// Fit `base + period * k` to the onset peaks.
+///
+/// Peak detection is not a beat tracker: it can miss a beat and it can pick a
+/// strong off-beat. Seeding the lattice on the first peak can therefore lock
+/// the whole mix onto whichever subdivision that peak happened to be on, which
+/// is exactly how a transition ends up half a beat out. The low-band vote
+/// already told us which bar phase is the real downbeat, so pick the earliest
+/// peak on that phase as the seed and reject peaks that are more than a third
+/// of a beat away from the resulting lattice.
+///
+/// `downbeat_offset` is a bar phase (0–3) relative to the first detected peak,
+/// not an index into `beats`: peaks may be missing or doubled.
+fn fit_beat_fit(beats: &[f32], bpm: f32, downbeat_offset: u32) -> Option<BeatFit> {
+    let mut times: Vec<f32> = beats
+        .iter()
+        .copied()
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .collect();
+    if times.len() < 4 {
+        return None;
+    }
+    times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let base_period = beat_period(&times, bpm).unwrap_or(0.5);
+    let reference = times[0];
+    let phase = (downbeat_offset % 4) as i64;
+    let seed = times
+        .iter()
+        .copied()
+        .find(|time| {
+            let index = ((time - reference) / base_period).round();
+            index.is_finite() && (index as i64).rem_euclid(4) == phase
+        })
+        .unwrap_or(reference);
+    let mut period = base_period;
+    let mut base = seed;
+    let mut inliers = 0.0;
+    // Re-assign and re-fit a few times: the first pass rejects off-beats, the
+    // following passes refine the period from the inliers only.
+    for _ in 0..4 {
+        let mut n = 0.0f64;
+        let mut sum_i = 0.0f64;
+        let mut sum_t = 0.0f64;
+        let mut sum_ii = 0.0f64;
+        let mut sum_it = 0.0f64;
+        let mut kept = 0usize;
+        for time in &times {
+            let index = ((time - base) / period).round();
+            if !index.is_finite() || index.abs() > 1_000_000.0 {
+                continue;
+            }
+            if (time - (base + index * period)).abs() > period * 0.30 {
+                continue;
+            }
+            let index = index as f64;
+            let time = *time as f64;
+            n += 1.0;
+            sum_i += index;
+            sum_t += time;
+            sum_ii += index * index;
+            sum_it += index * time;
+            kept += 1;
+        }
+        if kept < 3 {
+            return None;
+        }
+        let denominator = n * sum_ii - sum_i * sum_i;
+        if denominator.abs() < 1e-9 {
+            return None;
+        }
+        let next_period = (n * sum_it - sum_i * sum_t) / denominator;
+        let next_base = (sum_t - next_period * sum_i) / n;
+        if !(next_period.is_finite() && next_period > 0.05) {
+            return None;
+        }
+        period = next_period as f32;
+        base = next_base as f32;
+        inliers = kept as f32 / times.len() as f32;
+    }
+    if !(period.is_finite() && (0.2..=2.0).contains(&period)) {
+        return None;
+    }
+    Some(BeatFit {
+        base,
+        period,
+        inliers,
+    })
+}
+
 /// Tempo to build the grid from, preferring the window's own estimate.
 fn grid_bpm(edge_bpm: f32, track_bpm: f32) -> f32 {
     if edge_bpm > 1.0 {
@@ -1297,21 +1509,31 @@ fn grid_bpm(edge_bpm: f32, track_bpm: f32) -> f32 {
 
 /// Absolute time of the outgoing grid's anchor.
 fn tail_grid(track: &TrackAnalysis) -> Option<BeatGrid> {
+    let bpm = grid_bpm(track.tail.bpm, track.bpm);
+    // Tail beat times are relative to the tail window; lift the fitted anchor
+    // onto the absolute timeline. The anchor is the first *downbeat*, not the
+    // first onset peak.
+    if let Some(grid) = BeatGrid::fit(&track.tail.beats, bpm, track.tail.downbeat_offset) {
+        return Some(BeatGrid {
+            anchor: grid.anchor + track.tail_offset,
+            ..grid
+        });
+    }
     BeatGrid::new(
-        grid_bpm(track.tail.bpm, track.bpm),
-        // Tail beat times are relative to the tail window; lift them onto the
-        // absolute timeline before using them as the anchor. The anchor is the
-        // first *downbeat*, not the first onset peak.
+        bpm,
         downbeat_time(&track.tail.beats, track.tail.downbeat_offset)
             .map(|beat| beat + track.tail_offset),
     )
 }
 
 fn head_grid(track: &TrackAnalysis) -> Option<BeatGrid> {
-    BeatGrid::new(
-        grid_bpm(track.head.bpm, track.bpm),
-        downbeat_time(&track.head.beats, track.head.downbeat_offset),
-    )
+    let bpm = grid_bpm(track.head.bpm, track.bpm);
+    BeatGrid::fit(&track.head.beats, bpm, track.head.downbeat_offset).or_else(|| {
+        BeatGrid::new(
+            bpm,
+            downbeat_time(&track.head.beats, track.head.downbeat_offset),
+        )
+    })
 }
 
 /// Earliest musical entry point for the incoming track.
@@ -1367,9 +1589,16 @@ const BLEND_BARS_CAP_DEFAULT: f32 = 8.0;
 /// Two bars is the default for the common case: two complete mixes playing at
 /// once is what made the old long fades sound bad. Four and eight bars are
 /// reserved for pairs where both sections are sparse and the tempo/key match.
-const BLEND_BARS_SHORT: f32 = 2.0;
-const BLEND_BARS_MEDIUM: f32 = 4.0;
-const BLEND_BARS_LONG: f32 = 8.0;
+const BLEND_BARS_SHORT: f32 = 4.0;
+const BLEND_BARS_MEDIUM: f32 = 8.0;
+const BLEND_BARS_LONG: f32 = 16.0;
+/// Share of the overlap the outgoing deck is still allowed to occupy when the
+/// envelope has to start fading before the plan's own `handoff` point.
+const MIN_HANDOFF_FADE_SHARE: f32 = 0.3;
+/// Seconds the outgoing deck must keep fading after the handoff. A longer
+/// overlap gets a proportionally longer tail, a short one is never turned into
+/// a cut just because the outgoing track stayed busy to the end.
+const MIN_HANDOFF_FADE_SECS: f32 = 2.0;
 /// Maximum tempo correction for a long blend. Above this the WSOLA stretch
 /// becomes audible for the whole overlap, so the pair gets a short mix instead.
 const LONG_BLEND_TEMPO_TOLERANCE: f32 = 0.025;
@@ -1443,6 +1672,73 @@ fn blend_secs(grid: Option<&BeatGrid>, out_at: f32, musical_end: f32, bars: f32)
     }
 }
 
+/// Point inside the overlap where the outgoing deck should be handed over.
+///
+/// Without stem separation the planner has no vocal detector, so it uses the
+/// outgoing section's own energy: hold the track at full level while it is
+/// still carrying material, and only start the audible fade once it has
+/// dropped. Starting the EQ carve a quarter into a two-bar overlap is what made
+/// a beat-aligned transition still sound abrupt.
+fn handoff_position(out: &TrackAnalysis, out_at: f32, blend: f32) -> f32 {
+    if !(blend.is_finite() && blend > 0.5) {
+        return 0.55;
+    }
+    let offset = (out_at - out.tail_offset).max(0.0);
+    let reference = out
+        .tail
+        .energy_between(offset, 1.0)
+        .unwrap_or_else(|| out.tail.mean_energy())
+        .max(0.02);
+    let mut last = 0.0f32;
+    let mut at = 0.0f32;
+    while at + 0.25 <= blend {
+        if let Some(energy) = out.tail.energy_between(offset + at, 0.25) {
+            if energy >= reference * 0.7 {
+                last = at + 0.25;
+            }
+        }
+        at += 0.25;
+    }
+    let mut handoff = (last / blend).clamp(0.5, 0.85);
+    // Always leave a real fade: a handoff at 85 % of a four-bar overlap would
+    // turn the last 15 % into a cut.
+    let tail = (MIN_HANDOFF_FADE_SECS / blend).min(MIN_HANDOFF_FADE_SHARE);
+    handoff = handoff.min(1.0 - tail).max(0.45);
+    handoff
+}
+
+/// Largest tempo correction that is still a musical beat-match. Past this the
+/// WSOLA stretch colours the whole overlap, so the planner uses a filter cut
+/// instead of beat-matching.
+const FILTER_CUT_TEMPO_DEVIATION: f32 = 0.06;
+
+/// Pick the mixing technique for a folded tempo ratio.
+///
+/// Returns the technique name and the ratio the engine should actually apply.
+/// A `filterCut` never stretches: its whole point is to avoid the artefact of
+/// forcing two unrelated tempos together.
+fn transition_technique(ratio: f32) -> (&'static str, f32) {
+    let deviation = (ratio - 1.0).abs();
+    if deviation <= 1e-3 {
+        ("crossfade", 1.0)
+    } else if deviation <= FILTER_CUT_TEMPO_DEVIATION {
+        ("beatMix", ratio)
+    } else {
+        ("filterCut", 1.0)
+    }
+}
+
+/// Seconds a beat-matched deck takes to return to its natural tempo after the
+/// handover. Sixteen bars of the incoming track, capped so a slow track does
+/// not keep a correction running for half a minute.
+fn tempo_ramp_secs(in_bpm: f32) -> f32 {
+    if !(in_bpm.is_finite() && in_bpm > 1.0) {
+        return 8.0;
+    }
+    let bar = 4.0 * 60.0 / in_bpm;
+    (16.0 * bar).clamp(4.0, 20.0)
+}
+
 /// Mean energy of a region relative to the track's overall energy, clamped to
 /// `0..=1`.
 ///
@@ -1462,10 +1758,8 @@ fn edge_activity(edge: &EdgeFeatures, reference: f32, offset: f32, span: f32) ->
 /// Long overlaps need the two grids to agree closely and the keys to be
 /// harmonically adjacent; otherwise the extra bars only expose stretching
 /// artefacts and clashing harmony.
-fn blend_pair_is_compatible(out: &TrackAnalysis, input: &TrackAnalysis) -> bool {
-    let out_bpm = grid_bpm(out.tail.bpm, out.bpm);
-    let in_bpm = grid_bpm(input.head.bpm, input.bpm);
-    tempo_is_close(out_bpm, in_bpm) && keys_are_compatible(&out.key_camelot, &input.key_camelot)
+fn blend_pair_is_compatible(out_bpm: f32, in_bpm: f32, out_key: &str, in_key: &str) -> bool {
+    tempo_is_close(out_bpm, in_bpm) && keys_are_compatible(out_key, in_key)
 }
 
 /// Adaptive blend length in bars for a concrete cue pair.
@@ -1700,11 +1994,12 @@ fn keys_are_compatible(a: &str, b: &str) -> bool {
 }
 
 /// Fold a tempo ratio into one octave and only keep it when the correction is
-/// small enough to be musical. Large differences are left to drift instead of
-/// sounding like a chipmunk.
+/// small enough to be musical. WSOLA is pitch-preserving, so a ±15–18 % nudge
+/// is a normal DJ tempo match rather than a chipmunk; keeping more pairs
+/// beat-matched removes the drift a fixed `1.0` ratio would leave on a blend.
 fn fold_tempo_ratio(out_bpm: f32, in_bpm: f32) -> f32 {
     match folded_tempo_ratio(out_bpm, in_bpm) {
-        Some(ratio) if (0.90..=1.10).contains(&ratio) => ratio,
+        Some(ratio) if (0.85..=1.18).contains(&ratio) => ratio,
         _ => 1.0,
     }
 }
@@ -1812,12 +2107,21 @@ fn plan_transition(out: &TrackAnalysis, input: &TrackAnalysis) -> TransitionPlan
     let musical_end = musical_end(out);
     let outro_start = detect_outro_start(out, musical_end);
 
-    // `strict` means both windows carried real beat detections; `relaxed` means
-    // at least one grid had to fall back to the BPM alone; `fallback` is a
-    // tempo-less pair with no musical grid at all.
+    // `strict` means both windows carried real beat detections that fit the
+    // lattice (or were too short to judge); `relaxed` means at least one grid
+    // had to fall back to the BPM alone; `fallback` is a tempo-less pair with no
+    // musical grid at all.
     let out_has_beats = !out.tail.beats.is_empty();
     let in_has_beats = !input.head.beats.is_empty();
-    let mode = if out_has_beats && in_has_beats {
+    // Fewer than four peaks is not enough to fit or to disprove a grid, so keep
+    // the historical `strict` label instead of downgrading short windows.
+    let out_fit_ok = out_has_beats
+        && (out.tail.beats.len() < 4
+            || out_grid.map(|grid| grid.confidence >= 0.5).unwrap_or(false));
+    let in_fit_ok = in_has_beats
+        && (input.head.beats.len() < 4
+            || in_grid.map(|grid| grid.confidence >= 0.5).unwrap_or(false));
+    let mode = if out_fit_ok && in_fit_ok {
         "strict"
     } else if out_grid.is_some() || in_grid.is_some() {
         "relaxed"
@@ -1825,10 +2129,24 @@ fn plan_transition(out: &TrackAnalysis, input: &TrackAnalysis) -> TransitionPlan
         "fallback"
     };
 
+    // Use the period measured from the window's real beat times rather than the
+    // coarse BPM estimate: the cues were placed on this lattice, so the incoming
+    // deck must be stretched to the same period or the two grids drift apart
+    // over the overlap.
+    let out_tempo = out_grid
+        .map(|grid| 60.0 / grid.period)
+        .filter(|bpm| bpm.is_finite() && *bpm > 1.0)
+        .unwrap_or_else(|| grid_bpm(out.tail.bpm, out.bpm));
+    let in_tempo = in_grid
+        .map(|grid| 60.0 / grid.period)
+        .filter(|bpm| bpm.is_finite() && *bpm > 1.0)
+        .unwrap_or_else(|| grid_bpm(input.head.bpm, input.bpm));
+
     // Very short tracks have no room for a planned mix; fade quickly instead of
     // skipping most of either track.
     let short_track = out.duration < MIN_TRACK_SECS || input.duration < MIN_TRACK_SECS;
-    let compatible = blend_pair_is_compatible(out, input);
+    let compatible =
+        blend_pair_is_compatible(out_tempo, in_tempo, &out.key_camelot, &input.key_camelot);
     let (mut out_at, mut in_at, mut blend) = if short_track {
         let blend = (out.duration.min(input.duration) * 0.1).clamp(0.5, 1.5);
         ((musical_end - blend).max(0.0), 0.0, blend)
@@ -1926,10 +2244,14 @@ fn plan_transition(out: &TrackAnalysis, input: &TrackAnalysis) -> TransitionPlan
         }
     }
 
-    let tempo_ratio = fold_tempo_ratio(
-        grid_bpm(out.tail.bpm, out.bpm),
-        grid_bpm(input.head.bpm, input.bpm),
-    );
+    let tempo_ratio = fold_tempo_ratio(out_tempo, in_tempo);
+    let (technique, tempo_ratio) = transition_technique(tempo_ratio);
+    let tempo_ramp_secs = if technique == "beatMix" {
+        tempo_ramp_secs(in_tempo)
+    } else {
+        0.0
+    };
+    let handoff = handoff_position(out, out_at, blend);
     let in_gain = loudness_gain(out_db, in_db);
 
     let (cue, _, _) = cue_score(out, input, out_at, in_at, blend, musical_end, outro_start);
@@ -1954,8 +2276,11 @@ fn plan_transition(out: &TrackAnalysis, input: &TrackAnalysis) -> TransitionPlan
         fade_out_curve: curve.to_string(),
         fade_in_curve: curve.to_string(),
         mode: mode.to_string(),
-        tempo_ratio: round(tempo_ratio),
+        tempo_ratio: round_ratio(tempo_ratio),
         in_gain: round(in_gain),
+        handoff: round(handoff),
+        technique: technique.to_string(),
+        tempo_ramp_secs: round(tempo_ramp_secs),
         score: round(score),
     }
 }
@@ -2401,9 +2726,12 @@ mod tests {
     fn mix_out_starts_the_fade_a_phrase_before_the_end() {
         let g = grid(120.0, 0.0);
         // Eight bars at 120 BPM = 16 s, so the fade starts on the 184 s bar line.
-        assert!((mix_out(Some(&g), 200.0, 120.0, BLEND_BARS_LONG) - 184.0).abs() < 1e-3);
-        // The default short mix starts much later: two bars = 4 s.
-        assert!((mix_out(Some(&g), 200.0, 120.0, BLEND_BARS_SHORT) - 196.0).abs() < 1e-3);
+        assert!((mix_out(Some(&g), 200.0, 120.0, BLEND_BARS_MEDIUM) - 184.0).abs() < 1e-3);
+        // The default short mix starts much later: four bars = 8 s.
+        assert!((mix_out(Some(&g), 200.0, 120.0, BLEND_BARS_SHORT) - 192.0).abs() < 1e-3);
+        // Sixteen bars would exceed the 30 s envelope cap, so the fade starts
+        // at 170 s instead of 168 s.
+        assert!((mix_out(Some(&g), 200.0, 120.0, BLEND_BARS_LONG) - 170.0).abs() < 1e-3);
     }
 
     #[test]
@@ -2436,10 +2764,13 @@ mod tests {
         sparse_out.tail.energy_curve = vec![0.1; 120];
         let mut sparse_in = track(120.0, "8A");
         sparse_in.head.energy_curve = vec![0.1; 120];
+        // Sparse pairs reach the longest *default* overlap: the eight-bar cap
+        // still applies, so `BLEND_BARS_LONG` needs an explicit override.
         assert_eq!(
             adaptive_blend_bars(&sparse_out, &sparse_in, 180.0, 16.0, Some(&g), 200.0, true),
-            BLEND_BARS_LONG
+            BLEND_BARS_CAP_DEFAULT
         );
+        assert_eq!(BLEND_BARS_CAP_DEFAULT, BLEND_BARS_MEDIUM);
 
         // Same sparse material, but the pair is not compatible: still short.
         assert_eq!(
@@ -2462,8 +2793,39 @@ mod tests {
     fn tempo_ratio_folds_octaves_and_ignores_far_tempos() {
         assert!((fold_tempo_ratio(90.0, 180.0) - 1.0).abs() < 1e-3);
         assert!((fold_tempo_ratio(124.0, 128.0) - 0.96875).abs() < 1e-3);
+        // WSOLA preserves pitch, so a 15–18 % tempo match is musical.
+        assert!((fold_tempo_ratio(120.0, 140.0) - (120.0 / 140.0)).abs() < 1e-4);
+        assert_eq!(fold_tempo_ratio(120.0, 150.0), 1.0);
         assert_eq!(fold_tempo_ratio(100.0, 128.0), 1.0);
         assert_eq!(fold_tempo_ratio(0.0, 128.0), 1.0);
+    }
+
+    #[test]
+    fn far_tempos_switch_to_a_filter_cut_instead_of_stretching() {
+        assert_eq!(transition_technique(1.0), ("crossfade", 1.0));
+        let (technique, ratio) = transition_technique(1.04);
+        assert_eq!(technique, "beatMix");
+        assert!((ratio - 1.04).abs() < 1e-4);
+        // Beyond the musical stretch window the deck keeps its native tempo.
+        assert_eq!(transition_technique(1.12), ("filterCut", 1.0));
+    }
+
+    #[test]
+    fn handoff_waits_while_the_outgoing_section_is_still_loud() {
+        let mut out = track(120.0, "8A");
+        out.tail_offset = 140.0;
+        // Energy curve resolution is 0.5 s, so 40 samples cover the 20 s tail.
+        out.tail.energy_curve = vec![0.5; 40];
+
+        // Constant energy: hold the outgoing deck almost to the end, but keep
+        // at least a real fade (30 % of a short overlap).
+        assert!((handoff_position(&out, 140.0, 20.0) - 0.85).abs() < 1e-3);
+        assert!((handoff_position(&out, 140.0, 4.0) - 0.70).abs() < 1e-3);
+
+        // The section drops at 10 s of a 20 s overlap: hand over there instead
+        // of waiting for the (already quiet) end.
+        out.tail.energy_curve[20..].fill(0.05);
+        assert!((handoff_position(&out, 140.0, 20.0) - 0.5).abs() < 1e-3);
     }
 
     #[test]
@@ -2497,10 +2859,13 @@ mod tests {
         assert!(plan.out_at + plan.blend_secs <= 200.0 + 1e-3);
         assert!(plan.out_at + plan.blend_secs >= 198.0);
         assert!(plan.blend_secs <= MAX_BLEND_SECS);
-        // Eight bars at 120 BPM is 16 s.
+        // A sparse tail earns the longest default overlap: eight bars at
+        // 120 BPM is 16 s.
         assert!((plan.blend_secs - 16.0).abs() < 1e-3);
         assert!((plan.in_gain - 1.0).abs() < 1e-3);
         assert!((plan.tempo_ratio - 1.0).abs() < 1e-3);
+        // The outgoing section stays at full level, so the handoff sits late.
+        assert!(plan.handoff > 0.5);
     }
 
     #[test]
@@ -2686,9 +3051,9 @@ mod tests {
             let frame = (beat as f32 * 0.5 * DOWNBEAT_FPS) as usize;
             onset[frame] = 1.0;
         }
-        assert_eq!(downbeat_offset(&onset, &beats), 2);
+        assert_eq!(downbeat_offset(&onset, &beats, 120.0), 2);
         // Fewer than two bars is not enough evidence: keep the old anchor.
-        assert_eq!(downbeat_offset(&onset, &beats[..4]), 0);
+        assert_eq!(downbeat_offset(&onset, &beats[..4], 120.0), 0);
     }
 
     #[test]
@@ -2707,7 +3072,7 @@ mod tests {
             }
         }
         let onset = low_band_onset(&samples, rate, 1);
-        assert_eq!(downbeat_offset(&onset, &beats), 2);
+        assert_eq!(downbeat_offset(&onset, &beats, 120.0), 2);
     }
 
     #[test]
@@ -2724,5 +3089,81 @@ mod tests {
         input.head.downbeat_offset = 3;
         let in_grid = head_grid(&input).unwrap();
         assert!((in_grid.anchor - 3.5).abs() < 1e-3);
+    }
+
+    #[test]
+    fn beat_fit_ignores_offbeat_peaks() {
+        // A detected kick every 0.5 s, plus a strong off-beat (hat) halfway
+        // between every pair. The old index-based grid would count both and
+        // drift; the fit must keep only the 0.5 s lattice.
+        let mut beats = Vec::new();
+        for index in 0..16 {
+            let beat = index as f32 * 0.5;
+            beats.push(beat);
+            beats.push(beat + 0.25);
+        }
+        let fit = fit_beat_fit(&beats, 120.0, 0).unwrap();
+        assert!((fit.period - 0.5).abs() < 1e-3, "period {}", fit.period);
+        assert!(
+            fit.inliers > 0.45 && fit.inliers < 0.65,
+            "inliers {}",
+            fit.inliers
+        );
+        // The lattice is phase-aligned with the detected kick beats.
+        assert!((fit.base / 0.5).fract().abs() < 1e-3);
+    }
+
+    #[test]
+    fn beat_fit_corrects_a_coarse_bpm_estimate() {
+        // The peak times say 125 BPM even though the analyse said 128: the
+        // cue points and the tempo ratio must follow the measured lattice.
+        let beats: Vec<f32> = (0..24).map(|index| index as f32 * 0.48).collect();
+        let fit = fit_beat_fit(&beats, 128.0, 0).unwrap();
+        assert!((fit.period - 0.48).abs() < 1e-3, "period {}", fit.period);
+        assert!(fit.inliers > 0.99);
+    }
+
+    #[test]
+    fn tempo_ratio_uses_the_fitted_period_not_the_reported_bpm() {
+        let mut out = track(120.0, "8A");
+        out.tail.beats = (0..32).map(|index| index as f32 * 0.50).collect();
+        let mut input = track(120.0, "8A");
+        input.head.beats = (0..32).map(|index| index as f32 * 0.505).collect();
+        let plan = plan_transition(&out, &input);
+        // The outgoing lattice is 120 BPM and the incoming one 118.81 BPM, so
+        // the incoming deck needs a 1.01× nudge. The reported BPM estimates are
+        // identical, so a BPM-based ratio would have been 1.0 and drifted.
+        assert!(
+            (plan.tempo_ratio - 1.01).abs() < 1e-4,
+            "ratio {}",
+            plan.tempo_ratio
+        );
+    }
+
+    #[test]
+    fn cues_sit_on_the_measured_lattice_even_when_bpm_is_off() {
+        // 125 BPM of real beats, analysed as 128 BPM.
+        let period = 0.48;
+        let mut out = track(128.0, "8A");
+        out.tail.beats = (0..120).map(|index| index as f32 * period).collect();
+        out.tail.energy_curve = vec![0.2; 120];
+        out.tail.loudness_curve_db = vec![-12.0; 600];
+        out.tail.loudness_curve_resolution_seconds = 0.1;
+        out.tail_secs = 60.0;
+        let mut input = track(128.0, "8A");
+        input.head.beats = (0..80).map(|index| index as f32 * period).collect();
+        input.head.energy_curve = vec![0.2; 120];
+        input.head.loudness_curve_db = vec![-12.0; 600];
+        input.head.loudness_curve_resolution_seconds = 0.1;
+
+        let plan = plan_transition(&out, &input);
+        let grid = tail_grid(&out).unwrap();
+        let phase = (plan.out_at - grid.anchor) / grid.period;
+        assert!(
+            (phase - phase.round()).abs() < 1e-3,
+            "out_at {} is {:.3} beats off the measured grid",
+            plan.out_at,
+            phase - phase.round()
+        );
     }
 }

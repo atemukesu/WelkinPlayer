@@ -50,6 +50,7 @@ enum BandKind {
     LowShelf,
     Peaking,
     HighShelf,
+    HighPass,
 }
 
 #[derive(Clone, Copy)]
@@ -133,11 +134,33 @@ impl BiquadCoeffs {
         }
     }
 
+    /// RBJ second-order high-pass, normalised by `a0`.
+    ///
+    /// Used by the `filterCut` technique: sweeping it up removes the outgoing
+    /// track's whole body instead of beat-matching a tempo that is too far away.
+    fn high_pass(sample_rate: f32, freq: f32, q: f32) -> Self {
+        let rate = sample_rate.max(1.0);
+        let freq = freq.clamp(1.0, rate * 0.45);
+        let w0 = 2.0 * PI * freq / rate;
+        let cos_w0 = w0.cos();
+        let sin_w0 = w0.sin();
+        let alpha = sin_w0 / (2.0 * q.max(0.1));
+        let a0 = 1.0 + alpha;
+        Self {
+            b0: (1.0 + cos_w0) * 0.5 / a0,
+            b1: -(1.0 + cos_w0) / a0,
+            b2: (1.0 + cos_w0) * 0.5 / a0,
+            a1: (-2.0 * cos_w0) / a0,
+            a2: (1.0 - alpha) / a0,
+        }
+    }
+
     fn for_kind(kind: BandKind, sample_rate: f32, freq: f32, q: f32, gain_db: f32) -> Self {
         match kind {
             BandKind::LowShelf => Self::low_shelf(sample_rate, freq, gain_db),
             BandKind::Peaking => Self::peaking(sample_rate, freq, q, gain_db),
             BandKind::HighShelf => Self::high_shelf(sample_rate, freq, gain_db),
+            BandKind::HighPass => Self::high_pass(sample_rate, freq, q),
         }
     }
 }
@@ -168,6 +191,9 @@ struct Band {
     coeffs: BiquadCoeffs,
     state: [BiquadState; 2],
     gain_db: f32,
+    /// Whether the filter actually does anything. A band at 0 dB (or a
+    /// high-pass below the audible range) is skipped sample-for-sample.
+    active: bool,
 }
 
 impl Band {
@@ -180,6 +206,7 @@ impl Band {
             coeffs: BiquadCoeffs::unity(),
             state: [BiquadState::default(); 2],
             gain_db: 0.0,
+            active: false,
         }
     }
 
@@ -190,28 +217,52 @@ impl Band {
             return;
         }
         self.gain_db = gain_db;
-        self.coeffs = if gain_db.abs() < 0.001 {
-            BiquadCoeffs::unity()
-        } else {
+        self.active = gain_db.abs() >= 0.001;
+        self.coeffs = if self.active {
             BiquadCoeffs::for_kind(self.kind, self.sample_rate, self.freq, self.q, gain_db)
+        } else {
+            BiquadCoeffs::unity()
+        };
+    }
+
+    /// Move a high-pass cutoff. Values at or below 20 Hz bypass the band.
+    ///
+    /// Coefficients are only recomputed once the cutoff moved by ~1 % (with a
+    /// 5 Hz floor). The sweep is logarithmic, so a fixed dead-band would either
+    /// skip audible steps at the bottom or recompute every few samples at the
+    /// top; scaling with the frequency keeps the trig rate roughly constant.
+    fn set_cutoff_hz(&mut self, freq: f32) {
+        let rate = self.sample_rate.max(1.0);
+        let freq = freq.clamp(1.0, rate * 0.45);
+        if (freq - self.freq).abs() < (self.freq * 0.01).max(5.0) {
+            return;
+        }
+        self.freq = freq;
+        self.active = freq > 20.0;
+        self.coeffs = if self.active {
+            BiquadCoeffs::for_kind(self.kind, self.sample_rate, self.freq, self.q, self.gain_db)
+        } else {
+            BiquadCoeffs::unity()
         };
     }
 
     #[inline]
     fn process(&mut self, sample: f32, channel: usize) -> f32 {
-        if self.gain_db.abs() < 0.001 {
+        if !self.active {
             return sample;
         }
         self.state[channel.min(1)].process(sample, &self.coeffs)
     }
 }
 
-/// One deck's three-band EQ. State is kept per output channel so a stereo
-/// signal is filtered independently and the two channels stay identical.
+/// One deck's EQ: three tone bands plus the optional filter-cut high-pass.
+/// State is kept per output channel so a stereo signal is filtered
+/// independently and the two channels stay identical.
 pub struct FadeEq {
     low: Band,
     mid: Band,
     high: Band,
+    highpass: Band,
 }
 
 impl FadeEq {
@@ -221,6 +272,12 @@ impl FadeEq {
             low: Band::new(BandKind::LowShelf, rate, BASS_SHELF_HZ, 1.0),
             mid: Band::new(BandKind::Peaking, rate, MID_HZ, MID_Q),
             high: Band::new(BandKind::HighShelf, rate, HIGH_SHELF_HZ, 1.0),
+            highpass: Band::new(
+                BandKind::HighPass,
+                rate,
+                20.0,
+                std::f32::consts::FRAC_1_SQRT_2,
+            ),
         }
     }
 
@@ -232,6 +289,11 @@ impl FadeEq {
         self.high.set_gain_db(high_db);
     }
 
+    /// Set the filter-cut high-pass cutoff. `<= 20 Hz` restores a clean path.
+    pub fn set_highpass_hz(&mut self, hz: f32) {
+        self.highpass.set_cutoff_hz(hz);
+    }
+
     /// Convenience for the bass-only case (tests and any caller that does not
     /// need the presence bands).
     #[cfg(test)]
@@ -239,13 +301,14 @@ impl FadeEq {
         self.set_gains_db(gain_db, 0.0, 0.0);
     }
 
-    /// Apply the three bands to one sample of `channel`.
+    /// Apply the bands to one sample of `channel`.
     ///
     /// Output channels beyond stereo share the right-channel state, which is
     /// fine because the engine only ever mixes mono or stereo.
     #[inline]
     pub fn process(&mut self, sample: f32, channel: usize) -> f32 {
         let channel = channel.min(1);
+        let sample = self.highpass.process(sample, channel);
         let sample = self.low.process(sample, channel);
         let sample = self.mid.process(sample, channel);
         self.high.process(sample, channel)
@@ -329,5 +392,16 @@ mod tests {
         for (index, sample) in input.iter().enumerate() {
             assert_eq!(eq.process(*sample, index % 2), *sample);
         }
+    }
+
+    #[test]
+    fn filter_cut_high_pass_removes_the_body_but_keeps_the_top() {
+        let mut eq = FadeEq::new(48_000);
+        eq.set_highpass_hz(300.0);
+        assert!(response(&mut eq, 60.0) < -10.0);
+        assert!(response(&mut eq, 4_000.0).abs() < 1.5);
+        // Back to the bypass range: a low tone passes untouched again.
+        eq.set_highpass_hz(20.0);
+        assert!(response(&mut eq, 60.0).abs() < 0.5);
     }
 }

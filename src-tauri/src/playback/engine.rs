@@ -90,25 +90,29 @@ fn bus_headroom(power_a: f32, power_b: f32) -> f32 {
     }
 }
 
-/// Normalised crossfade position where the outgoing bass starts leaving.
-const BASS_OUT_START: f32 = 0.25;
-/// Position where the outgoing bass is fully gone.
-const BASS_OUT_END: f32 = 0.50;
-/// Position where the incoming bass starts arriving. It is the same point the
-/// outgoing bass disappears, so the two low ends never play together.
-const BASS_IN_START: f32 = 0.50;
-/// Position where the incoming bass is fully in.
-const BASS_IN_END: f32 = 0.78;
-/// The incoming deck starts with its presence/highs dipped, but it is silent at
-/// that point anyway. Opening them quickly means the dip is never heard: by the
-/// time the deck is audible it is already neutral.
-const PRESENCE_IN_START: f32 = 0.0;
-const PRESENCE_IN_END: f32 = 0.35;
-/// The outgoing deck keeps its midrange through the first quarter, then hands
-/// the presence band to the incoming one. It never dips both decks at once, so
-/// the long overlap does not lose 3–6 dB in the middle.
-const PRESENCE_OUT_START: f32 = 0.25;
-const PRESENCE_OUT_END: f32 = 0.62;
+/// Width of the bass swap around the handoff, as a share of the overlap. The
+/// two low ends never play together: the outgoing shelf falls as the incoming
+/// one rises over this short window.
+const BASS_SWAP_WIDTH: f32 = 0.06;
+/// Width of the presence/high carve that starts at the handoff.
+const PRESENCE_CARVE_WIDTH: f32 = 0.38;
+/// The incoming deck's presence/highs open over this share of the overlap,
+/// while it is still silent, so the dip is never heard.
+const PRESENCE_IN_WIDTH: f32 = 0.20;
+/// Incoming deck level before the handoff. The outgoing track stays at full
+/// level, so the new one sits under it instead of starting a second complete
+/// mix at t = 0.
+const INCOMING_HOLD_GAIN: f32 = 0.6;
+/// Handoff used when a plan predates the field (or is not finite).
+const DEFAULT_HANDOFF: f32 = 0.5;
+/// High-pass sweep for the `filterCut` technique: from the body to (almost)
+/// everything.
+const FILTER_CUT_START_HZ: f32 = 300.0;
+const FILTER_CUT_END_HZ: f32 = 18_000.0;
+/// After this share of a filter cut the outgoing deck starts fading too.
+const FILTER_CUT_FADE_START: f32 = 0.7;
+/// And the incoming deck only starts rising here.
+const FILTER_CUT_ENTER: f32 = 0.5;
 
 /// Progress of a bass-swap window, clamped to `0..=1`.
 fn swap_progress(t: f32, start: f32, end: f32) -> f32 {
@@ -118,9 +122,54 @@ fn swap_progress(t: f32, start: f32, end: f32) -> f32 {
     ((t - start) / (end - start)).clamp(0.0, 1.0)
 }
 
+/// Smoothstep from `from` (at `t <= 0`) to `to` (at `t >= 1`).
+///
+/// Used by the post-handover tempo ramp so the rate change has zero slope at
+/// both ends: the deck never lurches when the correction starts or stops.
+fn ramp_value(from: f32, to: f32, t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    let smooth = t * t * (3.0 - 2.0 * t);
+    from + (to - from) * smooth
+}
+
 fn output_samples(rate: u32, channels: u16, millis: usize) -> usize {
     (rate as usize * millis / 1000).max(1) * channels.max(1) as usize
 }
+
+/// Interleaved output samples to drop from the incoming deck so it starts on
+/// the beat the outgoing deck is currently on.
+///
+/// The second deck is positioned at `in_at` and held there while the outgoing
+/// track runs. The scheduler tick is 50 ms, so `StartCrossfade` normally lands a
+/// few tens of milliseconds after the planned Mix Out point. Without this trim
+/// the incoming kick arrives late by exactly that much and stays offset for the
+/// whole overlap. Returns a whole number of interleaved samples and never eats
+/// more than half the prefilled ring, so the fade always has audio to start
+/// from even if the scheduler stalled.
+fn latency_trim_samples(elapsed: f64, rate: u32, channels: u16, ring_len: usize) -> usize {
+    if !elapsed.is_finite() || elapsed <= 0.0 {
+        return 0;
+    }
+    let channels = channels.max(1) as usize;
+    let rate = rate.max(1) as f64;
+    let frames = (elapsed * rate).round().max(0.0) as usize;
+    let samples = frames.saturating_mul(channels);
+    let cap = ring_len / 2 / channels * channels;
+    samples.min(cap)
+}
+
+/// Output seconds already played past the planned Mix Out point.
+///
+/// `position` and `out_at` are source-time playheads, while the prepared ring
+/// holds output frames. At a 1.25x rate, 50 ms of source time is 40 ms of
+/// output audio, so divide by the rate before trimming frames.
+fn crossfade_lag_secs(position: f64, out_at: f64, tempo: f64) -> f64 {
+    if !(out_at.is_finite() && tempo.is_finite() && tempo > 0.0) {
+        return 0.0;
+    }
+    ((position - out_at).max(0.0) / tempo).min(5.0)
+}
+
 /// Interleaved output samples produced per stretcher refill on the worker.
 const STRETCH_REFILL: usize = 8192;
 /// Number of output frames represented by one realtime waveform sample.
@@ -637,6 +686,14 @@ pub struct Shared {
     /// `f32` bits. It is eased back to 1.0 as the fade completes so the new
     /// track keeps its own master level after handover.
     fade_gain_in: AtomicU32,
+    /// Normalised handoff point of the running fade, as `f32` bits. Before it
+    /// the outgoing deck is held at full level.
+    fade_handoff: AtomicU32,
+    /// `0` for the beat-matched equal-power envelope, `1` for a filter cut.
+    fade_technique: AtomicU8,
+    /// Extra tempo multiplier for the audible deck, as `f32` bits. It carries
+    /// the beat-match correction after handover and is ramped back to 1.0.
+    deck_tempo: AtomicU32,
     /// Set by the outgoing deck once the envelope reaches the end (or it hits
     /// EOF); the worker then promotes the incoming deck.
     fade_done: AtomicBool,
@@ -689,6 +746,21 @@ struct Segment {
     tempo: f32,
 }
 
+/// Smoothstep return from a beat-match multiplier to natural tempo.
+///
+/// `start` and `frames` are interleaved output samples, matching
+/// [`Progress::frames`], so the ramp freezes while the transport is paused.
+#[derive(Clone, Copy)]
+struct TempoRamp {
+    from: f32,
+    to: f32,
+    start: u64,
+    frames: u64,
+    /// Last value written to [`Shared::deck_tempo`], so the ramp does not touch
+    /// the stretcher on every worker iteration.
+    last: f32,
+}
+
 /// Each source owns its counters. An in-flight old callback cannot update the
 /// playhead or ended flag belonging to a newly installed source.
 #[derive(Default)]
@@ -729,6 +801,9 @@ impl Shared {
             fade_frames: AtomicU64::new(1),
             fade_active: AtomicBool::new(false),
             fade_gain_in: AtomicU32::new(1.0f32.to_bits()),
+            fade_handoff: AtomicU32::new(DEFAULT_HANDOFF.to_bits()),
+            fade_technique: AtomicU8::new(0),
+            deck_tempo: AtomicU32::new(1.0f32.to_bits()),
             fade_done: AtomicBool::new(false),
             fade_starved: AtomicBool::new(false),
             deck_power: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
@@ -912,7 +987,59 @@ impl Shared {
             .is_ok()
     }
 
-    /// Gain for one deck during an overlapping crossfade (equal-power).
+    /// Normalised handoff of the running fade, clamped so the post-handoff
+    /// fade and the bass swap always have room to complete.
+    fn fade_handoff(&self) -> f32 {
+        let value = f32::from_bits(self.fade_handoff.load(Ordering::Relaxed));
+        if value.is_finite() {
+            value.clamp(0.2, 0.9)
+        } else {
+            DEFAULT_HANDOFF
+        }
+    }
+
+    fn filter_cut(&self) -> bool {
+        self.fade_technique.load(Ordering::Relaxed) != 0
+    }
+
+    fn set_fade_shape(&self, handoff: f32, filter_cut: bool) {
+        let handoff = if handoff.is_finite() {
+            handoff.clamp(0.2, 0.9)
+        } else {
+            DEFAULT_HANDOFF
+        };
+        self.fade_handoff
+            .store(handoff.to_bits(), Ordering::Release);
+        self.fade_technique
+            .store(filter_cut as u8, Ordering::Release);
+    }
+
+    /// Extra tempo multiplier for the audible deck (the post-handover ramp).
+    fn deck_tempo(&self) -> f32 {
+        let value = f32::from_bits(self.deck_tempo.load(Ordering::Relaxed));
+        if value.is_finite() && value > 0.0 {
+            value
+        } else {
+            1.0
+        }
+    }
+
+    fn set_deck_tempo(&self, rate: f32) {
+        let value = if rate.is_finite() && rate > 0.0 {
+            rate.clamp(wsola::MIN_TEMPO, wsola::MAX_TEMPO)
+        } else {
+            1.0
+        };
+        self.deck_tempo.store(value.to_bits(), Ordering::Release);
+    }
+
+    /// Gain for one deck during an overlapping crossfade.
+    ///
+    /// The outgoing deck is held at full level until the plan's `handoff`
+    /// point: a beat-aligned mix still sounds abrupt when the EQ starts
+    /// dismantling the old track a quarter into the overlap. The incoming deck
+    /// sits at [`INCOMING_HOLD_GAIN`] under it, then the two cross over on an
+    /// equal-power curve that ends exactly at the handover.
     ///
     /// The clock is advanced by the currently active deck only, so pausing the
     /// transport freezes the envelope instead of skipping it.
@@ -928,36 +1055,66 @@ impl Shared {
         let clock = self.fade_clock.load(Ordering::Relaxed);
         let start = self.fade_start_frame.load(Ordering::Relaxed);
         let frames = self.fade_frames.load(Ordering::Relaxed).max(1);
-        let t = clock.saturating_sub(start) as f32 / frames as f32;
-        let t = t.clamp(0.0, 1.0);
-        let angle = t * std::f32::consts::FRAC_PI_2;
-        if deck == from {
-            angle.cos()
+        let t = (clock.saturating_sub(start) as f32 / frames as f32).clamp(0.0, 1.0);
+        // Ease the loudness compensation out as the fade completes: the
+        // incoming deck is matched to the outgoing one during the overlap and
+        // settles back to its own level at handover.
+        let target = f32::from_bits(self.fade_gain_in.load(Ordering::Relaxed));
+        let comp = 1.0 + (target - 1.0) * (1.0 - t);
+
+        if self.filter_cut() {
+            // The high-pass sweep already removes the outgoing body, so the
+            // gains only need to keep the handover click-free.
+            if deck == from {
+                if t <= FILTER_CUT_FADE_START {
+                    1.0
+                } else {
+                    ((t - FILTER_CUT_FADE_START) / (1.0 - FILTER_CUT_FADE_START)
+                        * std::f32::consts::FRAC_PI_2)
+                        .cos()
+                }
+            } else if t <= FILTER_CUT_ENTER {
+                0.0
+            } else {
+                (((t - FILTER_CUT_ENTER) / (1.0 - FILTER_CUT_ENTER) * std::f32::consts::FRAC_PI_2)
+                    .sin()
+                    * comp)
+                    .clamp(0.0, 2.0)
+            }
         } else {
-            // Ease the loudness compensation out as the fade completes: the
-            // incoming deck is matched to the outgoing one during the overlap
-            // and settles back to its own level at handover, so there is no
-            // step when the old deck leaves.
-            let target = f32::from_bits(self.fade_gain_in.load(Ordering::Relaxed));
-            let comp = 1.0 + (target - 1.0) * (1.0 - t);
-            (angle.sin() * comp).clamp(0.0, 2.0)
+            let handoff = self.fade_handoff();
+            if deck == from {
+                if t <= handoff {
+                    1.0
+                } else {
+                    ((t - handoff) / (1.0 - handoff) * std::f32::consts::FRAC_PI_2).cos()
+                }
+            } else {
+                let level = if t <= handoff {
+                    INCOMING_HOLD_GAIN * (t / handoff * std::f32::consts::FRAC_PI_2).sin()
+                } else {
+                    INCOMING_HOLD_GAIN
+                        + (1.0 - INCOMING_HOLD_GAIN)
+                            * ((t - handoff) / (1.0 - handoff) * std::f32::consts::FRAC_PI_2).sin()
+                };
+                (level * comp).clamp(0.0, 2.0)
+            }
         }
     }
 
     /// Band gains (low, mid, high) in dB for one deck during a crossfade.
     ///
-    /// Both decks keep the equal-power envelope above, but the bands are handed
-    /// over as the fade progresses. The bass is swapped first (the outgoing low
-    /// end is gone before the incoming one arrives). The presence and high
-    /// bands are then carved from the outgoing deck only, so a long overlap
-    /// stops sounding like two complete mixes fighting: by the middle of the
-    /// fade the outgoing track has lost its vocals/snares and cymbals while the
-    /// incoming one is already full-range.
+    /// Both decks keep the envelope above, but the bands are handed over at the
+    /// plan's handoff point. Up to the handoff the outgoing deck is untouched
+    /// and the incoming one has its low end cut, so the overlap never carries
+    /// two kicks or two basslines. At the handoff the bass swaps in a short
+    /// window and the outgoing presence is carved away as it fades.
     ///
     /// Outside a fade every band is at 0 dB (exactly unity, so `RingSource`
-    /// skips the filters entirely).
+    /// skips the filters entirely). The `filterCut` technique is handled by
+    /// the high-pass sweep instead and leaves these bands neutral.
     fn deck_eq_db(&self, deck: u8) -> (f32, f32, f32) {
-        if !self.fade_active.load(Ordering::Relaxed) {
+        if !self.fade_active.load(Ordering::Relaxed) || self.filter_cut() {
             return (0.0, 0.0, 0.0);
         }
         let from = self.fade_from_deck.load(Ordering::Relaxed);
@@ -965,21 +1122,37 @@ impl Shared {
         let start = self.fade_start_frame.load(Ordering::Relaxed);
         let frames = self.fade_frames.load(Ordering::Relaxed).max(1);
         let t = (clock.saturating_sub(start) as f32 / frames as f32).clamp(0.0, 1.0);
+        let handoff = self.fade_handoff();
         let low = if deck == from {
-            BASS_CUT_DB * swap_progress(t, BASS_OUT_START, BASS_OUT_END)
+            BASS_CUT_DB * swap_progress(t, handoff, handoff + BASS_SWAP_WIDTH)
         } else {
-            BASS_CUT_DB * (1.0 - swap_progress(t, BASS_IN_START, BASS_IN_END))
+            BASS_CUT_DB * (1.0 - swap_progress(t, handoff, handoff + BASS_SWAP_WIDTH))
         };
         let (mid, high) = if deck == from {
-            let carved = swap_progress(t, PRESENCE_OUT_START, PRESENCE_OUT_END);
+            let carved = swap_progress(t, handoff, (handoff + PRESENCE_CARVE_WIDTH).min(1.0));
             (MID_CUT_DB * carved, HIGH_CUT_DB * carved)
         } else {
             // Starts fully dipped while the deck is still silent, then opens
             // before it becomes audible.
-            let dipped = 1.0 - swap_progress(t, PRESENCE_IN_START, PRESENCE_IN_END);
+            let dipped = 1.0 - swap_progress(t, 0.0, PRESENCE_IN_WIDTH);
             (MID_CUT_DB * dipped, HIGH_CUT_DB * dipped)
         };
         (low, mid, high)
+    }
+
+    /// High-pass cutoff (Hz) for the `filterCut` technique. `20` bypasses it.
+    fn deck_highpass_hz(&self, deck: u8) -> f32 {
+        if !self.fade_active.load(Ordering::Relaxed) || !self.filter_cut() {
+            return 20.0;
+        }
+        if deck != self.fade_from_deck.load(Ordering::Relaxed) {
+            return 20.0;
+        }
+        let clock = self.fade_clock.load(Ordering::Relaxed);
+        let start = self.fade_start_frame.load(Ordering::Relaxed);
+        let frames = self.fade_frames.load(Ordering::Relaxed).max(1);
+        let t = (clock.saturating_sub(start) as f32 / frames as f32).clamp(0.0, 1.0);
+        FILTER_CUT_START_HZ * (FILTER_CUT_END_HZ / FILTER_CUT_START_HZ).powf(t)
     }
 
     /// Bass-shelf gain (dB) for one deck during a crossfade. Kept as a named
@@ -1276,6 +1449,8 @@ struct RingSource {
     bands: FadeEq,
     /// Low/mid/high band gains in dB for the current state block.
     eq_db: (f32, f32, f32),
+    /// High-pass cutoff for the filter-cut technique (`20 Hz` bypasses it).
+    hp_hz: f32,
     /// Sum of squared post-gain samples in the current state block.
     bus_power: f32,
     /// Samples counted in the current state block, for the mean square.
@@ -1369,6 +1544,11 @@ impl Iterator for RingSource {
             } else {
                 (0.0, 0.0, 0.0)
             };
+            self.hp_hz = if fading {
+                self.shared.deck_highpass_hz(self.deck)
+            } else {
+                20.0
+            };
             self.state_left =
                 SOURCE_STATE_BLOCK.div_ceil(self.channels as usize) * self.channels as usize;
         }
@@ -1434,6 +1614,7 @@ impl Iterator for RingSource {
                 let sample = if fading {
                     let (low, mid, high) = self.eq_db;
                     self.bands.set_gains_db(low, mid, high);
+                    self.bands.set_highpass_hz(self.hp_hz);
                     self.bands.process(value, self.channel_cursor as usize)
                 } else {
                     value
@@ -1533,6 +1714,9 @@ pub enum Command {
         in_at: f64,
         /// Beat-match multiplier for the incoming deck.
         tempo_ratio: f32,
+        /// Seconds after handover over which that multiplier is ramped back to
+        /// 1.0 (`0` leaves the deck at its natural tempo).
+        tempo_ramp_secs: f32,
     },
     /// Start the prepared crossfade envelope. Ignored (and reported as failed)
     /// when the prepared deck is not ready.
@@ -1541,6 +1725,14 @@ pub enum Command {
         blend_secs: f64,
         /// Loudness compensation for the incoming deck (linear gain).
         in_gain: f32,
+        /// Absolute Mix Out point the plan asked for. The engine compares it
+        /// with the current playhead and trims the prepared deck by the
+        /// difference so the two beat grids stay phase-aligned.
+        out_at: f64,
+        /// Normalised point where the outgoing deck is handed over.
+        handoff: f32,
+        /// Use the high-pass sweep instead of the beat-matched envelope.
+        filter_cut: bool,
     },
     /// Abort a prepared/active crossfade and keep the active deck.
     CancelCrossfade,
@@ -1914,19 +2106,23 @@ mod worker {
         shared: &Arc<Shared>,
         prepared: PreparedIncoming,
         tempo_ratio: f32,
+        tempo_ramp_secs: f32,
     ) -> Result<IncomingDeck, String> {
         // Match the active deck's work rate so both rings are consumed at the
         // same frame rate and the shared fade clock stays aligned.
         let work_rate = shared.sample_rate.load(Ordering::Relaxed).max(1);
         let channels = prepared.channels.max(1);
         // Beat-match the incoming deck to the outgoing one, on top of the
-        // user's playback rate. The ratio is clamped to the stretcher's range.
+        // user's playback rate (including any post-handover tempo ramp still
+        // running from the previous transition). The ratio is clamped to the
+        // stretcher's range.
         let tempo_ratio = if tempo_ratio.is_finite() && tempo_ratio > 0.0 {
             tempo_ratio.clamp(0.25, 4.0)
         } else {
             1.0
         };
-        let tempo = (shared.tempo() * tempo_ratio).clamp(wsola::MIN_TEMPO, wsola::MAX_TEMPO);
+        let tempo = (shared.tempo() * shared.deck_tempo() * tempo_ratio)
+            .clamp(wsola::MIN_TEMPO, wsola::MAX_TEMPO);
         let stretch = build_stretch(work_rate, channels, tempo).map_err(|e| e.to_string())?;
         let capacity = output_samples(work_rate, channels, CROSSFADE_BUFFER_MILLIS);
         let (mut ring, consumer) = Ring::new(capacity);
@@ -1986,6 +2182,11 @@ mod worker {
             progress: Arc::new(Progress::default()),
             in_at: prepared.in_at,
             tempo_ratio,
+            tempo_ramp_secs: if tempo_ramp_secs.is_finite() {
+                tempo_ramp_secs.clamp(0.0, 60.0)
+            } else {
+                0.0
+            },
         })
     }
 
@@ -2193,6 +2394,9 @@ mod worker {
         in_at: f64,
         /// Beat-match multiplier applied on top of the user's playback rate.
         tempo_ratio: f32,
+        /// Seconds after handover over which `tempo_ratio` is ramped back to
+        /// natural tempo (`0` keeps the deck at its measured tempo).
+        tempo_ramp_secs: f32,
     }
 
     /// Decoder produced by the preparation thread.
@@ -2257,6 +2461,9 @@ mod worker {
         last_progress_at: std::time::Instant,
         /// Throttles stream rebuilds requested by a stall or a stream error.
         last_stream_rebuild: std::time::Instant,
+        /// Post-handover ramp that returns a beat-matched deck to natural
+        /// tempo. `None` outside the ramp.
+        tempo_ramp: Option<TempoRamp>,
     }
 
     pub fn run(
@@ -2325,6 +2532,7 @@ mod worker {
             watched_played: 0,
             last_progress_at: std::time::Instant::now(),
             last_stream_rebuild: std::time::Instant::now(),
+            tempo_ramp: None,
         };
         worker.publish_device_rates();
         worker.loop_forever(rx);
@@ -2687,6 +2895,7 @@ mod worker {
                 self.check_stall();
                 self.poll_prepared();
                 self.promote_crossfade();
+                self.tick_tempo_ramp();
 
                 let paused = self.shared.is_paused();
                 let mut idle = true;
@@ -2702,7 +2911,7 @@ mod worker {
                                 &mut self.ring,
                                 current,
                                 self.shared.channels.load(Ordering::Relaxed) as usize,
-                                self.shared.tempo(),
+                                self.shared.tempo() * self.shared.deck_tempo(),
                                 true,
                             );
                             if !self.ring.is_full() {
@@ -2718,7 +2927,9 @@ mod worker {
                             .incoming
                             .as_ref()
                             .map(|incoming| {
-                                (self.shared.tempo() * incoming.tempo_ratio)
+                                (self.shared.tempo()
+                                    * self.shared.deck_tempo()
+                                    * incoming.tempo_ratio)
                                     .clamp(wsola::MIN_TEMPO, wsola::MAX_TEMPO)
                             })
                             .unwrap_or(1.0);
@@ -2821,19 +3032,30 @@ mod worker {
                     path,
                     in_at,
                     tempo_ratio,
+                    tempo_ramp_secs,
                 } => {
-                    log::debug!("playback: cmd PrepareCrossfade {source_id}::{path} in_at={in_at:.3} tempo={tempo_ratio:.3}");
-                    self.prepare_crossfade(token, source_id, path, in_at, tempo_ratio)
+                    log::debug!("playback: cmd PrepareCrossfade {source_id}::{path} in_at={in_at:.3} tempo={tempo_ratio:.3} ramp={tempo_ramp_secs:.2}s");
+                    self.prepare_crossfade(
+                        token,
+                        source_id,
+                        path,
+                        in_at,
+                        tempo_ratio,
+                        tempo_ramp_secs,
+                    )
                 }
                 Command::StartCrossfade {
                     token,
                     blend_secs,
                     in_gain,
+                    out_at,
+                    handoff,
+                    filter_cut,
                 } => {
                     log::debug!(
-                        "playback: cmd StartCrossfade blend={blend_secs:.3} gain={in_gain:.3}"
+                        "playback: cmd StartCrossfade blend={blend_secs:.3} gain={in_gain:.3} out_at={out_at:.3} handoff={handoff:.2} filter_cut={filter_cut}"
                     );
-                    self.start_crossfade(token, blend_secs, in_gain)
+                    self.start_crossfade(token, blend_secs, in_gain, out_at, handoff, filter_cut)
                 }
                 Command::CancelCrossfade => {
                     log::debug!("playback: cmd CancelCrossfade");
@@ -2851,6 +3073,57 @@ mod worker {
         /// rebuilding it here would skip audio and introduce an underrun.
         fn set_tempo(&mut self, rate: f32) {
             self.shared.set_tempo(rate);
+        }
+
+        /// Drop any post-handover tempo correction. Used when a new track is
+        /// loaded or the transport jumps, where no previous beat match applies.
+        fn clear_tempo_ramp(&mut self) {
+            self.tempo_ramp = None;
+            self.shared.set_deck_tempo(1.0);
+        }
+
+        /// Start returning the audible deck from a beat-match multiplier to its
+        /// natural tempo. The ramp is measured in played output frames, so it
+        /// freezes with the transport instead of racing a wall clock.
+        fn begin_tempo_ramp(&mut self, from: f32, secs: f32) {
+            let frames = (secs.max(0.0) as f64 * self.shared.frames_per_sec()).round() as u64;
+            if secs <= 0.05 || frames == 0 || !from.is_finite() || (from - 1.0).abs() < 1e-3 {
+                self.shared.set_deck_tempo(1.0);
+                self.tempo_ramp = None;
+                return;
+            }
+            self.shared.set_deck_tempo(from);
+            self.tempo_ramp = Some(TempoRamp {
+                from,
+                to: 1.0,
+                start: self.shared.played(),
+                frames,
+                last: from,
+            });
+        }
+
+        /// Advance the post-handover ramp on the worker loop.
+        ///
+        /// The value only reaches the stretcher once it moved by 0.15 %, which
+        /// keeps the tempo-segment bookkeeping at a few entries per second while
+        /// the audible rate still changes smoothly.
+        fn tick_tempo_ramp(&mut self) {
+            let Some(ramp) = self.tempo_ramp else {
+                return;
+            };
+            let elapsed = self.shared.played().saturating_sub(ramp.start) as f64;
+            let t = (elapsed / ramp.frames.max(1) as f64).clamp(0.0, 1.0) as f32;
+            let value = ramp_value(ramp.from, ramp.to, t);
+            if t >= 1.0 {
+                self.shared.set_deck_tempo(ramp.to);
+                self.tempo_ramp = None;
+            } else if (value - ramp.last).abs() >= 0.0015 {
+                self.shared.set_deck_tempo(value);
+                self.tempo_ramp = Some(TempoRamp {
+                    last: value,
+                    ..ramp
+                });
+            }
         }
 
         /// Abort any prepared/active crossfade. The audible deck is left alone
@@ -2879,6 +3152,7 @@ mod worker {
             path: String,
             in_at: f64,
             tempo_ratio: f32,
+            tempo_ramp_secs: f32,
         ) {
             self.cancel_crossfade();
             self.prepare_token = token;
@@ -2895,7 +3169,9 @@ mod worker {
                     // first reads may block on the network, and that must never
                     // stall the worker still feeding the audible deck.
                     let result = prepare_decoder(&app, &cache, &manual, &source_id, &path, in_at)
-                        .and_then(|prepared| build_incoming(&shared, prepared, tempo_ratio));
+                        .and_then(|prepared| {
+                            build_incoming(&shared, prepared, tempo_ratio, tempo_ramp_secs)
+                        });
                     let _ = tx.send((token, result));
                 });
             if let Err(error) = spawned {
@@ -2938,7 +3214,20 @@ mod worker {
 
         /// Begin mixing the prepared deck. The envelope clock starts now; the
         /// outgoing deck fades out and the incoming one fades in.
-        fn start_crossfade(&mut self, token: u64, blend_secs: f64, in_gain: f32) {
+        ///
+        /// `out_at` is the Mix Out point from the plan. The prepared deck sits
+        /// at `in_at`, but the scheduler tick means we usually start a little
+        /// after `out_at`; the incoming deck is trimmed by that difference so
+        /// both beat grids stay phase-aligned for the whole overlap.
+        fn start_crossfade(
+            &mut self,
+            token: u64,
+            blend_secs: f64,
+            in_gain: f32,
+            out_at: f64,
+            handoff: f32,
+            filter_cut: bool,
+        ) {
             let state = self.shared.crossfade_state();
             // A duplicate StartCrossfade must not tear down a fade that is
             // already running.
@@ -2949,7 +3238,22 @@ mod worker {
                 self.shared.set_crossfade_state(CrossfadeState::Failed);
                 return;
             }
-            let (deck, consumer, done, progress, channels, rate) = {
+            let position = self.shared.position_ms() / 1000.0;
+            let out_tempo = (self.shared.tempo() * self.shared.deck_tempo()) as f64;
+            // `position` is a source-time playhead, so convert the lag to
+            // output seconds before trimming the prepared ring.
+            let elapsed = crossfade_lag_secs(position, out_at, out_tempo);
+            let (
+                deck,
+                mut consumer,
+                done,
+                progress,
+                channels,
+                rate,
+                applied_tempo,
+                mut in_at,
+                ring_len,
+            ) = {
                 let active = self.shared.active_deck.load(Ordering::Relaxed).min(1);
                 let deck = 1 - active;
                 let Some(incoming) = self.incoming.as_mut() else {
@@ -2973,10 +3277,44 @@ mod worker {
                     incoming.progress.clone(),
                     incoming.channels,
                     incoming.work_rate,
+                    // The rate the prefilled ring was actually produced at; a
+                    // tempo change while preparing must not skew `in_at`.
+                    incoming.current.applied_tempo,
+                    incoming.in_at,
+                    incoming.ring.len(),
                 )
             };
+            // Drop the audio the outgoing deck already played past the planned
+            // beat, so the incoming downbeat lands on the beat the listener is
+            // hearing rather than a few tens of milliseconds later.
+            let requested = latency_trim_samples(elapsed, rate, channels, ring_len);
+            let mut dropped = 0usize;
+            for _ in 0..requested {
+                if consumer.pop().is_ok() {
+                    dropped += 1;
+                } else {
+                    break;
+                }
+            }
+            let skipped = dropped as f64 / (rate.max(1) as f64 * channels.max(1) as f64);
+            if dropped > 0 {
+                in_at += skipped * applied_tempo as f64;
+                if let Some(incoming) = self.incoming.as_mut() {
+                    incoming.in_at = in_at;
+                }
+            }
+            // Start late but finish on the planned bar line: shorten the
+            // envelope by the amount we actually skipped (the ring cap may be
+            // smaller than the lag). `blend_secs` is source time, so a 1.25x
+            // rate maps it to fewer output seconds.
+            let blend_secs_out = if out_tempo > 0.0 {
+                blend_secs / out_tempo
+            } else {
+                blend_secs
+            };
+            let blend = (blend_secs_out - skipped).max(0.2);
             let generation = self.shared.generation.load(Ordering::Relaxed);
-            let frames = (blend_secs.clamp(0.2, 30.0) * rate as f64).round() as u64;
+            let frames = (blend.clamp(0.2, 30.0) * rate as f64).round() as u64;
             let shared = &self.shared;
             // Arm the envelope *before* handing the source to the mixer: the
             // audio callback may pick it up immediately, and an incoming deck
@@ -2990,6 +3328,7 @@ mod worker {
             shared
                 .fade_gain_in
                 .store(loudness_gain.to_bits(), Ordering::Release);
+            shared.set_fade_shape(handoff, filter_cut);
             shared
                 .fade_start_frame
                 .store(shared.fade_clock.load(Ordering::Relaxed), Ordering::Release);
@@ -3001,7 +3340,9 @@ mod worker {
             shared.fade_active.store(true, Ordering::Release);
             shared.set_crossfade_state(CrossfadeState::Fading);
             self.append_source(generation, channels, rate, consumer, done, progress, deck);
-            log::debug!("playback: crossfade started deck={deck} frames={frames}");
+            log::debug!(
+                "playback: crossfade started deck={deck} frames={frames} trim={dropped} elapsed={elapsed:.3}s"
+            );
         }
 
         /// Promote the incoming deck once the envelope reaches the end.
@@ -3028,9 +3369,14 @@ mod worker {
                 path,
                 progress,
                 in_at,
-                tempo_ratio,
+                tempo_ratio: _,
+                tempo_ramp_secs,
                 ..
             } = incoming;
+            // The rate the ring was actually produced at. The plan's ratio is
+            // relative to the outgoing deck's *effective* rate, so this is the
+            // only value that keeps the playhead mapping exact.
+            let applied_tempo = current.applied_tempo;
             let shared = &self.shared;
             shared.active_deck.store(deck, Ordering::Release);
             shared.fade_active.store(false, Ordering::Release);
@@ -3050,7 +3396,7 @@ mod worker {
                     pos_secs: in_at,
                     // The deck played through the fade at the beat-matched rate;
                     // keep that mapping so the reported playhead is correct.
-                    tempo: (shared.tempo() * tempo_ratio).clamp(wsola::MIN_TEMPO, wsola::MAX_TEMPO),
+                    tempo: applied_tempo.clamp(wsola::MIN_TEMPO, wsola::MAX_TEMPO),
                 });
             }
             shared.channels.store(channels as u32, Ordering::Relaxed);
@@ -3066,6 +3412,19 @@ mod worker {
             shared.set_crossfade_state(CrossfadeState::Done);
             self.current = Some(current);
             self.ring = ring;
+            // Return the beat-matched deck to its natural tempo. A plan that
+            // asked for no stretch still has to finish a correction inherited
+            // from a previous transition, so fall back to a short ramp when the
+            // deck is not already at 1.0x.
+            let from = applied_tempo / shared.tempo().max(1e-6);
+            let seconds = if tempo_ramp_secs > 0.05 {
+                tempo_ramp_secs
+            } else if (from - 1.0).abs() > 1e-3 {
+                8.0
+            } else {
+                0.0
+            };
+            self.begin_tempo_ramp(from, seconds);
             log::debug!("playback: crossfade handed over to deck {deck}");
         }
 
@@ -3076,6 +3435,7 @@ mod worker {
             // opening or decoding fails, Play must not resurrect the previous
             // track through `current`.
             self.cancel_crossfade();
+            self.clear_tempo_ramp();
             self.bump_generation();
             self.shared.set_paused(true);
             self.shared
@@ -3247,6 +3607,7 @@ mod worker {
             // A seek targets the audible track; drop any overlapping deck so
             // the transport never leaves two positions live.
             self.cancel_crossfade();
+            self.clear_tempo_ramp();
             let tempo = self.shared.tempo();
             let Some(current) = self.current.as_mut() else {
                 log::warn!("playback: seek to {position_secs:.3}s ignored, no track loaded");
@@ -3425,7 +3786,7 @@ mod worker {
                     &mut self.ring,
                     current,
                     self.shared.channels.load(Ordering::Relaxed) as usize,
-                    self.shared.tempo(),
+                    self.shared.tempo() * self.shared.deck_tempo(),
                     true,
                 );
                 if self.ring.len() == before {
@@ -3444,6 +3805,7 @@ mod worker {
 
         fn stop(&mut self) {
             self.cancel_crossfade();
+            self.clear_tempo_ramp();
             self.bump_generation();
             self.ring = Ring::new(1).0;
             self.ring.done.store(true, Ordering::Release);
@@ -3806,6 +4168,7 @@ mod worker {
                 ramp_frames: 0,
                 bands: FadeEq::new(rate),
                 eq_db: (0.0, 0.0, 0.0),
+                hp_hz: 20.0,
                 bus_power: 0.0,
                 bus_samples: 0,
                 bus_gain: 1.0,
@@ -3870,6 +4233,7 @@ mod tests {
             ramp_frames: 0,
             bands: FadeEq::new(1000),
             eq_db: (0.0, 0.0, 0.0),
+            hp_hz: 20.0,
             bus_power: 0.0,
             bus_samples: 0,
             bus_gain: 1.0,
@@ -3878,6 +4242,28 @@ mod tests {
             waveform_frames: 0,
             spectrum_sum: 0.0,
         }
+    }
+
+    #[test]
+    fn crossfade_lag_converts_source_time_to_output_time() {
+        // 50 ms of source time at 1.25x playback is 40 ms of output audio.
+        assert!((crossfade_lag_secs(10.05, 10.0, 1.25) - 0.04).abs() < 1e-9);
+        // Starting early, or without a valid rate, never trims.
+        assert_eq!(crossfade_lag_secs(9.9, 10.0, 1.25), 0.0);
+        assert_eq!(crossfade_lag_secs(10.1, 10.0, 0.0), 0.0);
+        assert_eq!(crossfade_lag_secs(10.1, f64::NAN, 1.0), 0.0);
+    }
+
+    #[test]
+    fn latency_trim_matches_the_elapsed_output_audio() {
+        // 50 ms at 48 kHz stereo is 2400 frames / 4800 interleaved samples.
+        assert_eq!(latency_trim_samples(0.05, 48_000, 2, 192_000), 4_800);
+        // Negative or unknown elapsed time never trims.
+        assert_eq!(latency_trim_samples(-0.1, 48_000, 2, 192_000), 0);
+        assert_eq!(latency_trim_samples(f64::NAN, 48_000, 2, 192_000), 0);
+        // Whole frames only, and never more than half the prefilled ring.
+        assert_eq!(latency_trim_samples(10.0, 48_000, 2, 1_000), 500);
+        assert_eq!(latency_trim_samples(0.000_01, 48_000, 2, 192_000), 0);
     }
 
     #[test]
@@ -4025,77 +4411,86 @@ mod tests {
     }
 
     #[test]
-    fn equal_power_crossfade_keeps_constant_power() {
+    fn handoff_envelope_holds_the_outgoing_deck_until_the_handoff() {
         let shared = Shared::new();
         shared.active_deck.store(0, Ordering::Relaxed);
         shared.fade_from_deck.store(0, Ordering::Relaxed);
         shared.fade_start_frame.store(0, Ordering::Relaxed);
         shared.fade_frames.store(1000, Ordering::Relaxed);
         shared.fade_active.store(true, Ordering::Relaxed);
-        for clock in [0u64, 100, 250, 500, 750, 900, 1000] {
+        shared.set_fade_shape(0.7, false);
+
+        // The outgoing deck is untouched until the planned handoff: a
+        // beat-matched mix should not start dismantling it a quarter in.
+        for clock in [0u64, 100, 350, 700] {
             shared.fade_clock.store(clock, Ordering::Relaxed);
-            let out = shared.deck_gain(0);
-            let inc = shared.deck_gain(1);
-            assert!((out * out + inc * inc - 1.0).abs() < 0.001, "clock={clock}");
+            assert!(
+                (shared.deck_gain(0) - 1.0).abs() < 1e-3,
+                "clock={clock} out={}",
+                shared.deck_gain(0)
+            );
         }
-        assert!((shared.deck_gain(0) - 0.0).abs() < 0.001);
-        assert!((shared.deck_gain(1) - 1.0).abs() < 0.001);
-    }
-
-    #[test]
-    fn crossfade_swaps_bass_before_mids_and_highs() {
-        let shared = Shared::new();
-        shared.active_deck.store(0, Ordering::Relaxed);
-        shared.fade_from_deck.store(0, Ordering::Relaxed);
-        shared.fade_start_frame.store(0, Ordering::Relaxed);
-        shared.fade_frames.store(1000, Ordering::Relaxed);
-        shared.fade_active.store(true, Ordering::Relaxed);
-
-        // At the start the outgoing deck has its original bass and the
-        // incoming deck is fully cut (and silent anyway).
+        // The incoming deck rises from silence to its hold level under the
+        // outgoing one, never above it.
         shared.fade_clock.store(0, Ordering::Relaxed);
-        assert_eq!(shared.deck_bass_db(0), 0.0);
-        assert_eq!(shared.deck_bass_db(1), BASS_CUT_DB);
+        assert!(shared.deck_gain(1) < 1e-3, "incoming must start silent");
+        shared.fade_clock.store(350, Ordering::Relaxed);
+        assert!(shared.deck_gain(1) > 0.0);
+        assert!(shared.deck_gain(1) <= INCOMING_HOLD_GAIN + 1e-3);
+        shared.fade_clock.store(700, Ordering::Relaxed);
+        assert!((shared.deck_gain(1) - INCOMING_HOLD_GAIN).abs() < 1e-3);
 
-        // Early on the outgoing bass is still untouched.
-        shared.fade_clock.store(250, Ordering::Relaxed);
-        assert_eq!(shared.deck_bass_db(0), 0.0);
-        assert_eq!(shared.deck_bass_db(1), BASS_CUT_DB);
-
-        // Around the middle the outgoing bass is fully gone before the incoming
-        // one starts to arrive: the swap is sequential, never double bass.
-        shared.fade_clock.store(500, Ordering::Relaxed);
-        let out_db = shared.deck_bass_db(0);
-        let in_db = shared.deck_bass_db(1);
-        assert!((out_db - BASS_CUT_DB).abs() < 1e-3, "out {out_db}");
-        assert!((in_db - BASS_CUT_DB).abs() < 1e-3, "in {in_db}");
-
-        // The incoming bass then opens over the second half of the fade.
-        shared.fade_clock.store(640, Ordering::Relaxed);
-        let in_db = shared.deck_bass_db(1);
-        assert!((in_db - BASS_CUT_DB * 0.5).abs() < 1e-3, "in {in_db}");
-
-        // By the handover the outgoing bass is gone and the incoming one is
-        // fully open again.
+        // The fade then runs from the handoff to unity without a step.
+        shared.fade_clock.store(850, Ordering::Relaxed);
+        assert!(shared.deck_gain(0) < 0.999);
+        assert!(shared.deck_gain(1) > INCOMING_HOLD_GAIN);
         shared.fade_clock.store(1000, Ordering::Relaxed);
-        assert!((shared.deck_bass_db(0) - BASS_CUT_DB).abs() < 1e-3);
-        assert_eq!(shared.deck_bass_db(1), 0.0);
-        // Mids and highs follow the equal-power envelope.
         assert!(shared.deck_gain(0) < 1e-3);
         assert!((shared.deck_gain(1) - 1.0).abs() < 1e-3);
     }
 
     #[test]
-    fn crossfade_carves_presence_from_the_outgoing_deck_only() {
+    fn crossfade_swaps_bass_at_the_handoff() {
         let shared = Shared::new();
         shared.active_deck.store(0, Ordering::Relaxed);
         shared.fade_from_deck.store(0, Ordering::Relaxed);
         shared.fade_start_frame.store(0, Ordering::Relaxed);
         shared.fade_frames.store(1000, Ordering::Relaxed);
         shared.fade_active.store(true, Ordering::Relaxed);
+        shared.set_fade_shape(0.7, false);
 
-        // At the start the incoming deck carries its (masked) dip, while the
-        // outgoing deck is untouched.
+        // Before the handoff the outgoing deck keeps its bass and the incoming
+        // one stays cut, even while it is already audible.
+        for clock in [0u64, 500, 700] {
+            shared.fade_clock.store(clock, Ordering::Relaxed);
+            assert_eq!(shared.deck_bass_db(0), 0.0);
+            assert_eq!(shared.deck_bass_db(1), BASS_CUT_DB);
+        }
+        // The swap itself is a short crossfade around the handoff: neither low
+        // end is ever at full level together.
+        shared.fade_clock.store(730, Ordering::Relaxed);
+        let out_db = shared.deck_bass_db(0);
+        let in_db = shared.deck_bass_db(1);
+        assert!((out_db - BASS_CUT_DB * 0.5).abs() < 1e-3, "out {out_db}");
+        assert!((in_db - BASS_CUT_DB * 0.5).abs() < 1e-3, "in {in_db}");
+
+        shared.fade_clock.store(800, Ordering::Relaxed);
+        assert!((shared.deck_bass_db(0) - BASS_CUT_DB).abs() < 1e-3);
+        assert_eq!(shared.deck_bass_db(1), 0.0);
+    }
+
+    #[test]
+    fn crossfade_carves_presence_only_after_the_handoff() {
+        let shared = Shared::new();
+        shared.active_deck.store(0, Ordering::Relaxed);
+        shared.fade_from_deck.store(0, Ordering::Relaxed);
+        shared.fade_start_frame.store(0, Ordering::Relaxed);
+        shared.fade_frames.store(1000, Ordering::Relaxed);
+        shared.fade_active.store(true, Ordering::Relaxed);
+        shared.set_fade_shape(0.7, false);
+
+        // The incoming deck opens its top end early (it is still quiet), while
+        // the outgoing presence stays intact until the handoff.
         shared.fade_clock.store(0, Ordering::Relaxed);
         let (_, out_mid, out_high) = shared.deck_eq_db(0);
         assert_eq!(out_mid, 0.0);
@@ -4104,17 +4499,17 @@ mod tests {
         assert!((in_mid - MID_CUT_DB).abs() < 1e-3);
         assert!((in_high - HIGH_CUT_DB).abs() < 1e-3);
 
-        // The incoming deck opens before it becomes audible, so by the middle
-        // of the fade only the outgoing presence is cut: never both at once.
         shared.fade_clock.store(500, Ordering::Relaxed);
         let (_, out_mid, _) = shared.deck_eq_db(0);
         let (_, in_mid, in_high) = shared.deck_eq_db(1);
-        assert!(out_mid < MID_CUT_DB * 0.5, "out mid {out_mid}");
+        assert_eq!(out_mid, 0.0, "the outgoing deck is held, not carved");
         assert_eq!(in_mid, 0.0);
         assert_eq!(in_high, 0.0);
 
-        // By the handover the outgoing midrange is fully carved and the
-        // incoming deck is neutral again for a seamless promotion.
+        // The carve starts at the handoff and is complete at the handover.
+        shared.fade_clock.store(900, Ordering::Relaxed);
+        let (_, out_mid, _) = shared.deck_eq_db(0);
+        assert!(out_mid < 0.0 && out_mid > MID_CUT_DB, "out mid {out_mid}");
         shared.fade_clock.store(1000, Ordering::Relaxed);
         let (_, out_mid, out_high) = shared.deck_eq_db(0);
         assert!((out_mid - MID_CUT_DB).abs() < 1e-3);
@@ -4122,6 +4517,53 @@ mod tests {
         let (_, in_mid, in_high) = shared.deck_eq_db(1);
         assert_eq!(in_mid, 0.0);
         assert_eq!(in_high, 0.0);
+    }
+
+    #[test]
+    fn filter_cut_sweeps_the_outgoing_deck_instead_of_beat_matching() {
+        let shared = Shared::new();
+        shared.active_deck.store(0, Ordering::Relaxed);
+        shared.fade_from_deck.store(0, Ordering::Relaxed);
+        shared.fade_start_frame.store(0, Ordering::Relaxed);
+        shared.fade_frames.store(1000, Ordering::Relaxed);
+        shared.fade_active.store(true, Ordering::Relaxed);
+        shared.set_fade_shape(0.5, true);
+
+        // The high-pass only touches the outgoing deck, and only in this mode.
+        shared.fade_clock.store(0, Ordering::Relaxed);
+        assert!((shared.deck_highpass_hz(0) - FILTER_CUT_START_HZ).abs() < 1e-3);
+        assert_eq!(shared.deck_highpass_hz(1), 20.0);
+        assert_eq!(shared.deck_eq_db(0), (0.0, 0.0, 0.0));
+        assert_eq!(shared.deck_eq_db(1), (0.0, 0.0, 0.0));
+
+        // The cutoff climbs monotonically to the top of the band.
+        shared.fade_clock.store(500, Ordering::Relaxed);
+        let mid = shared.deck_highpass_hz(0);
+        assert!(mid > FILTER_CUT_START_HZ && mid < FILTER_CUT_END_HZ);
+        shared.fade_clock.store(1000, Ordering::Relaxed);
+        assert!((shared.deck_highpass_hz(0) - FILTER_CUT_END_HZ).abs() < 1.0);
+
+        // The incoming deck enters halfway through; the outgoing one fades in
+        // the last 30 % so the sweep does not end on a hard cut.
+        shared.fade_clock.store(400, Ordering::Relaxed);
+        assert_eq!(shared.deck_gain(1), 0.0);
+        assert!((shared.deck_gain(0) - 1.0).abs() < 1e-3);
+        shared.fade_clock.store(600, Ordering::Relaxed);
+        assert!(shared.deck_gain(1) > 0.0);
+        shared.fade_clock.store(1000, Ordering::Relaxed);
+        assert!(shared.deck_gain(0) < 1e-3);
+        assert!((shared.deck_gain(1) - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn tempo_ramp_is_smooth_and_lands_exactly_on_both_ends() {
+        assert!((ramp_value(1.05, 1.0, 0.0) - 1.05).abs() < 1e-5);
+        assert!((ramp_value(1.05, 1.0, 1.0) - 1.0).abs() < 1e-5);
+        let mid = ramp_value(1.05, 1.0, 0.5);
+        assert!((mid - 1.025).abs() < 1e-5, "mid {mid}");
+        // No overshoot outside the ramp.
+        assert!((ramp_value(1.05, 1.0, -1.0) - 1.05).abs() < 1e-5);
+        assert!((ramp_value(1.05, 1.0, 2.0) - 1.0).abs() < 1e-5);
     }
 
     #[test]

@@ -85,6 +85,15 @@ export interface PlaybackTransition {
   tempoRatio: number;
   /** Linear gain for the incoming deck during the overlap (loudness match). */
   inGain: number;
+  /**
+   * Normalised point inside the overlap where the outgoing deck is handed
+   * over. Before it the outgoing track stays at full level.
+   */
+  handoff: number;
+  /** `crossfade`, `beatMix` or `filterCut`. */
+  technique: string;
+  /** Seconds after handover over which a beat match ramps back to natural tempo. */
+  tempoRampSecs: number;
 }
 
 export interface AnalysisProgress {

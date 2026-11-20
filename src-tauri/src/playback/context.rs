@@ -58,10 +58,27 @@ pub struct PlaybackTransition {
     /// Linear gain for the incoming deck during the overlap (loudness match).
     #[serde(default = "unity")]
     pub in_gain: f32,
+    /// Normalised handoff point inside the overlap.
+    #[serde(default = "half")]
+    pub handoff: f32,
+    /// `crossfade`, `beatMix` or `filterCut`.
+    #[serde(default = "default_technique")]
+    pub technique: String,
+    /// Seconds after handover over which the beat match is ramped back.
+    #[serde(default)]
+    pub tempo_ramp_secs: f32,
 }
 
 fn unity() -> f32 {
     1.0
+}
+
+fn half() -> f32 {
+    0.5
+}
+
+fn default_technique() -> String {
+    "crossfade".to_string()
 }
 
 /// How long before the Mix Out point the incoming deck is opened and prefilled.
@@ -113,6 +130,12 @@ enum FadePhase {
         blend_secs: f64,
         tempo_ratio: f32,
         in_gain: f32,
+        /// Normalised handoff for the engine envelope.
+        handoff: f32,
+        /// The plan wants a high-pass filter cut instead of a beat match.
+        filter_cut: bool,
+        /// Seconds the incoming deck takes to return to natural tempo.
+        tempo_ramp_secs: f32,
         token: u64,
         failed: bool,
     },
@@ -1024,6 +1047,7 @@ impl PlaybackContext {
                     Some(plan) => {
                         let start = plan.out_at.max(0.0);
                         let remaining = start - position;
+                        let filter_cut = plan.technique.eq_ignore_ascii_case("filterCut");
                         if position + 0.02 >= start {
                             // If the user seeks past the Mix Out point, shrink
                             // the fade to whatever time is actually left so it
@@ -1056,6 +1080,7 @@ impl PlaybackContext {
                                         path,
                                         in_at: plan.in_at.max(0.0),
                                         tempo_ratio: plan.tempo_ratio,
+                                        tempo_ramp_secs: plan.tempo_ramp_secs,
                                     });
                                 }
                                 token
@@ -1070,6 +1095,9 @@ impl PlaybackContext {
                                 blend_secs: plan.blend_secs,
                                 tempo_ratio: plan.tempo_ratio,
                                 in_gain: plan.in_gain,
+                                handoff: plan.handoff,
+                                filter_cut,
+                                tempo_ramp_secs: plan.tempo_ramp_secs,
                                 token,
                                 failed: false,
                             }
@@ -1083,6 +1111,9 @@ impl PlaybackContext {
                                 blend_secs: plan.blend_secs,
                                 tempo_ratio: plan.tempo_ratio,
                                 in_gain: plan.in_gain,
+                                handoff: plan.handoff,
+                                filter_cut,
+                                tempo_ramp_secs: plan.tempo_ramp_secs,
                                 token: 0,
                                 failed: true,
                             }
@@ -1099,6 +1130,9 @@ impl PlaybackContext {
                 blend_secs,
                 tempo_ratio,
                 in_gain,
+                handoff,
+                filter_cut,
+                tempo_ramp_secs,
                 token,
                 mut failed,
             } => {
@@ -1112,12 +1146,15 @@ impl PlaybackContext {
                         shared.take_crossfade_state(CrossfadeState::Failed);
                         failed = true;
                     }
-                    if position + 0.02 >= out_at {
+                    if position + 1e-3 >= out_at {
                         if !failed && state == CrossfadeState::Ready {
                             let _ = self.engine.send(Command::StartCrossfade {
                                 token,
                                 blend_secs,
                                 in_gain,
+                                out_at,
+                                handoff,
+                                filter_cut,
                             });
                             FadePhase::Crossfading {
                                 from,
@@ -1162,6 +1199,7 @@ impl PlaybackContext {
                                     path,
                                     in_at,
                                     tempo_ratio,
+                                    tempo_ramp_secs,
                                 });
                             }
                             FadePhase::Preparing {
@@ -1172,6 +1210,9 @@ impl PlaybackContext {
                                 blend_secs,
                                 tempo_ratio,
                                 in_gain,
+                                handoff,
+                                filter_cut,
+                                tempo_ramp_secs,
                                 token,
                                 failed: false,
                             }
@@ -1185,6 +1226,9 @@ impl PlaybackContext {
                                 blend_secs,
                                 tempo_ratio,
                                 in_gain,
+                                handoff,
+                                filter_cut,
+                                tempo_ramp_secs,
                                 token: 0,
                                 failed: true,
                             }
@@ -1197,6 +1241,9 @@ impl PlaybackContext {
                                 blend_secs,
                                 tempo_ratio,
                                 in_gain,
+                                handoff,
+                                filter_cut,
+                                tempo_ramp_secs,
                                 token: 0,
                                 failed: false,
                             }
@@ -1210,6 +1257,9 @@ impl PlaybackContext {
                             blend_secs,
                             tempo_ratio,
                             in_gain,
+                            handoff,
+                            filter_cut,
+                            tempo_ramp_secs,
                             token,
                             failed,
                         }
