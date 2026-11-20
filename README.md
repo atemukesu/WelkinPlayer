@@ -4,7 +4,7 @@
 
 # Welkin
 
-基于 [Tauri 3](https://v3.tauri.app/) 的跨平台音乐播放器。通过 WebDAV 或本地文件夹读取音乐收藏，把资料、歌单与播放进度跨设备同步，并提供 AMLL 逐字歌词、桌面悬浮歌词与系统媒体控制。音频解码与播放全部在 Rust 后端完成，前端只负责界面与队列调度。Linux 使用 CEF（Chromium）作为 WebView 后端，Windows / macOS / Android 使用系统 WebView。
+基于 [Tauri 3](https://v3.tauri.app/) 的跨平台音乐播放器。通过 WebDAV 或本地文件夹读取音乐收藏，把资料、歌单与播放进度跨设备同步，并提供 AMLL 逐字歌词、桌面悬浮歌词与系统媒体控制。
 
 - 官网：<https://welkin.atemukesu.com>
 - 仓库：<https://github.com/atemukesu/WelkinPlayer>
@@ -21,10 +21,9 @@
 ## 功能特性
 
 - **音乐来源**：同时配置多个 WebDAV 与本地文件夹来源，可指定其中一个作为云端同步位置。
-- **歌词**：AMLL 逐字歌词渲染；在线歌词按顺序从 QQ 音乐、网易云音乐、AMLL 歌词库获取；本地同名字幕优先。
-- **桌面悬浮歌词**：独立的透明歌词窗口（Android 为系统悬浮窗）。
+- **歌词**：AMLL 逐字歌词渲染、支持在线获取歌词。
+- **桌面悬浮歌词**：独立的透明歌词窗口。
 - **系统媒体控制**：Windows SMTC、macOS Now Playing、Linux MPRIS、Android MediaSession。
-- **Rust 播放引擎**：Symphonia 解码、cpal 输出（桌面 WASAPI / CoreAudio / ALSA，Android Oboe / AAudio），WebDAV 流媒体边下边播并支持精准 seek；按网络状态预取，支持手动缓存。
 - **跨设备同步**：昵称、歌单、收藏、播放进度等同步到指定来源。
 - **音乐管理**：元数据/封面读取与编辑、播放统计与排名。
 - **主题**：浅色/深色与多种主题色。
@@ -69,8 +68,6 @@ pnpm tauri build               # 构建桌面安装包
 pnpm tauri android build --apk # 构建 Android APK
 ```
 
-> Android release 签名通过环境变量注入：`ANDROID_KEYSTORE_PATH`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASSWORD`；未配置时回退为 debug 签名。
-
 ## 目录结构
 
 ```
@@ -89,6 +86,41 @@ pnpm tauri android build --apk # 构建 Android APK
 └─ .github/workflows/   # CI（发布流程）
 ```
 
+## 待办
+
+#### 播放
+- [ ] Equalizer: 均衡器
+- [ ] 音量归一化
+- [ ] 混响 (Reverb)、延迟 (Delay)、回声 (Echo)、合唱 (Chorus)、镶边 (Flanger)
+
+#### 智能过渡
+
+- [x] 智能过渡实验性上线（v1.4 RC）
+- [ ] 改善过渡效果和稳定性
+
+#### 平台与开发
+
+- [ ] CI/CD: 为 Arch Linux 生成构建产物
+
+#### 扩展系统
+- [ ] 安装 .zip 的主题包
+- [ ] 主题包：结构定义 & 解析 & 开发模式热重载
+- [ ] 安装 .js 的音源插件
+- [ ] 音源插件：js 解析
+- [ ] 音源插件：支持稀疏索引 
+- [ ] 长期规划中：安装 wasm 插件 
+
+### 参与路线图
+
+- 在 GitHub Issues 提出功能请求，说明使用场景、现有替代方案与期望行为。
+- 给已有 issue 点赞，帮助判断优先级。
+- 加入 QQ 群 `1109689488`，或通过爱发电支持开发。
+
 ## 许可证
 
 本项目基于 [GNU General Public License v3.0 only](https://www.gnu.org/licenses/gpl-3.0.html)（`GPL-3.0-only`）发布，详见 [LICENSE](LICENSE)。
+
+
+## 有关 AI 生成的声明
+
+本软件的代码使用 AI 辅助生成。
