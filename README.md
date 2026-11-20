@@ -6,6 +6,7 @@
 
 基于 [Tauri 3](https://v3.tauri.app/) 的跨平台音乐播放器。通过 WebDAV 或本地文件夹读取音乐收藏，把资料、歌单与播放进度跨设备同步，并提供 AMLL 逐字歌词、桌面悬浮歌词与系统媒体控制。音频解码与播放全部在 Rust 后端完成，前端只负责界面与队列调度。Linux 使用 CEF（Chromium）作为 WebView 后端，Windows / macOS / Android 使用系统 WebView。
 
+- 官网：<https://welkin.atemukesu.com>
 - 仓库：<https://github.com/atemukesu/WelkinPlayer>
 - 支持平台：Windows / macOS / Linux / Android
 - 界面语言：简体中文、English

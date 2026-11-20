@@ -6,6 +6,7 @@
 
 A cross-platform music player built with [Tauri 3](https://v3.tauri.app/). It reads your music collection over WebDAV or from local folders, syncs your profile, playlists and playback progress across devices, and provides AMLL word-by-word lyrics, a desktop lyrics overlay, and system media controls. Audio is decoded and played entirely in the Rust backend; the frontend only handles the UI and the play queue. Linux uses CEF (Chromium) as its webview runtime; Windows, macOS and Android use the system webview.
 
+- Website: <https://welkin.atemukesu.com>
 - Repository: <https://github.com/atemukesu/WelkinPlayer>
 - Platforms: Windows / macOS / Linux / Android
 - Languages: 简体中文, English
