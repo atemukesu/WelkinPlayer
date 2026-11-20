@@ -7,7 +7,7 @@
 import { computed, ref, watch } from "vue";
 import { Activity, ChevronLeft, ChevronRight, Heart, HeartHandshake, Library, ListMusic, ListPlus, Menu, Music2, Settings2, Signal, Wifi, WifiOff, X } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
-import { classificationNavItems, downloadNavItems, navItems } from "../lib/app";
+import { categoriesNavItem, classificationNavItems, downloadNavItems, navItems } from "../lib/app";
 import type { View } from "../lib/app";
 import { useNetworkStore } from "../stores/network";
 import { useLicenseStore } from "../stores/license";
@@ -21,6 +21,8 @@ const networkLabel = computed(() => (!network.available ? t("nav.networkOffline"
 /** Edition shown on the badge that links to the sponsor page. */
 const editionLabel = computed(() => (license.isPro ? t("sponsor.compare.badgePro") : t("nav.freeEdition")));
 const playlistsActive = computed(() => props.activeView === "playlists" || (props.activeView === "tracks" && !!props.activePlaylistId));
+/** Wide-screen "Categories" entry: active for the hub itself and any classification page or filter. */
+const categoriesActive = computed(() => props.activeView === "categories" || props.activeView === "artists" || props.activeView === "albums" || props.activeView === "sources" || props.activeView === "source-browser" || props.activeView === "source-config" || !!props.activeArtist || !!props.activeAlbum || !!props.activeSource);
 /** Mobile bottom bar: four primary destinations. Everything else lives in the left drawer. */
 const mobileTabs = [
   { key: "library", labelKey: "nav.library", icon: Library },
@@ -66,7 +68,7 @@ function isClassificationActive(id: View): boolean {
       <button class="relative mt-1.5 flex h-11 w-full items-center border border-transparent text-left text-[13px] font-semibold uppercase tracking-[0.2em] transition-colors" :class="[collapsed ? 'justify-center px-0' : 'gap-2 px-3', playlistsActive ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg']" :title="collapsed ? t('nav.playlists') : undefined" @click="emit('navigate', 'playlists')"><ListPlus :size="16" :stroke-width="1.8" /><span class="sidebar-nav-label truncate">{{ t("nav.playlists") }}</span></button>
       <div class="my-3 border-t border-line"></div>
       <button class="relative flex h-11 w-full items-center border border-transparent text-left text-[13px] font-semibold uppercase tracking-[0.2em] transition-colors" :class="[collapsed ? 'justify-center px-0' : 'gap-2 px-3', activeView === 'tracks' && !activePlaylistId && !activeArtist && !activeAlbum && !activeSource ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg']" :title="collapsed ? t('nav.tracks') : undefined" @click="emit('navigate', 'tracks')"><ListMusic :size="16" :stroke-width="1.8" /><span class="sidebar-nav-label truncate">{{ t("nav.tracks") }}</span></button>
-      <button v-for="item in classificationNavItems" :key="item.id" class="relative mt-1.5 flex h-11 w-full items-center border border-transparent text-left text-[13px] font-semibold uppercase tracking-[0.2em] transition-colors" :class="[collapsed ? 'justify-center px-0' : 'gap-2 px-3', isClassificationActive(item.id) ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg']" :title="collapsed ? t(item.labelKey) : undefined" @click="emit('navigate', item.id)"><component :is="item.icon" :size="16" :stroke-width="1.8" /><span class="sidebar-nav-label truncate">{{ t(item.labelKey) }}</span></button>
+      <button class="relative mt-1.5 flex h-11 w-full items-center border border-transparent text-left text-[13px] font-semibold uppercase tracking-[0.2em] transition-colors" :class="[collapsed ? 'justify-center px-0' : 'gap-2 px-3', categoriesActive ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg']" :title="collapsed ? t(categoriesNavItem.labelKey) : undefined" @click="emit('navigate', categoriesNavItem.id)"><component :is="categoriesNavItem.icon" :size="16" :stroke-width="1.8" /><span class="sidebar-nav-label truncate">{{ t(categoriesNavItem.labelKey) }}</span></button>
       <button class="relative mt-1.5 flex h-11 w-full items-center border border-transparent text-left text-[13px] font-semibold uppercase tracking-[0.2em] transition-colors" :class="[collapsed ? 'justify-center px-0' : 'gap-2 px-3', activeView === 'stats' ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg']" :title="collapsed ? t('nav.stats') : undefined" @click="emit('navigate', 'stats')"><Activity :size="16" :stroke-width="1.8" /><span class="sidebar-nav-label truncate">{{ t("nav.stats") }}</span></button>
       <button v-for="item in downloadNavItems" :key="item.id" class="relative mt-1.5 flex h-11 w-full items-center border border-transparent text-left text-[13px] font-semibold uppercase tracking-[0.2em] transition-colors" :class="[collapsed ? 'justify-center px-0' : 'gap-2 px-3', activeView === item.id ? 'ak-select' : 'text-muted hover:bg-fg/5 hover:text-fg']" :title="collapsed ? t(item.labelKey) : undefined" @click="emit('navigate', item.id)"><component :is="item.icon" :size="16" :stroke-width="1.8" /><span class="sidebar-nav-label truncate">{{ t(item.labelKey) }}</span></button>
     </div>

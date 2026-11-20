@@ -4,9 +4,9 @@
  */
 
 import type { Component } from "vue";
-import { CircleCheck, Disc3, HardDrive, HardDriveDownload, Heart, Library, ListMusic, Mic2, Settings2 } from "@lucide/vue";
+import { CircleCheck, Disc3, HardDrive, HardDriveDownload, Heart, LayoutGrid, Library, ListMusic, Mic2, Settings2 } from "@lucide/vue";
 
-export type View = "library" | "tracks" | "favorites" | "stats" | "artists" | "albums" | "sources" | "source-browser" | "source-config" | "playlists" | "playlist-new" | "lyrics-edit" | "track-edit" | "track-info" | "downloading" | "downloaded" | "settings" | "sponsor" | "player";
+export type View = "library" | "tracks" | "favorites" | "stats" | "categories" | "artists" | "albums" | "sources" | "source-browser" | "source-config" | "playlists" | "playlist-new" | "lyrics-edit" | "track-edit" | "track-info" | "downloading" | "downloaded" | "settings" | "sponsor" | "player";
 export type Theme = "light" | "dark";
 export type Accent = "amber" | "orange" | "cyan" | "red" | "green" | "blue";
 
@@ -29,6 +29,9 @@ export const collectionNavItems: NavItem[] = [
   { id: "favorites", labelKey: "nav.favorites", index: "F", icon: Heart },
   { id: "tracks", labelKey: "nav.tracks", index: "A", icon: ListMusic },
 ];
+
+/** Wide-screen hub that leads to every library classification. */
+export const categoriesNavItem: NavItem = { id: "categories", labelKey: "nav.categories", index: "G", icon: LayoutGrid };
 
 /** Library classifications, grouped with the collections in the navigation. */
 export const classificationNavItems: NavItem[] = [

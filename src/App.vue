@@ -69,6 +69,7 @@ import StatsView from "./views/StatsView.vue";
 import DownloadingView from "./views/DownloadingView.vue";
 import DownloadedView from "./views/DownloadedView.vue";
 import GroupedLibraryView from "./views/GroupedLibraryView.vue";
+import CategoriesView from "./views/CategoriesView.vue";
 import SourcesView from "./views/SourcesView.vue";
 import SourceBrowserView from "./views/SourceBrowserView.vue";
 import PlaylistsView from "./views/PlaylistsView.vue";
@@ -299,7 +300,7 @@ watch([() => player.queue, () => player.queueIndex], () => {
 });
 
 function readAccent(): Accent { const value = localStorage.getItem("welkin-accent"); return (accents.some((item) => item.id === value) ? value : "amber") as Accent; }
-function getViewFromHash(): View { const route = window.location.hash.slice(1); return route === "settings" || route === "sponsor" || route === "player" || route === "tracks" || route === "favorites" || route === "stats" || route === "artists" || route === "albums" || route === "sources" || route === "source-config" || route === "source-browser" || route === "playlists" || route === "playlist-new" || route === "lyrics-edit" || route === "track-edit" || route === "track-info" || route === "downloading" || route === "downloaded" ? route : "library"; }
+function getViewFromHash(): View { const route = window.location.hash.slice(1); return route === "settings" || route === "sponsor" || route === "player" || route === "tracks" || route === "favorites" || route === "stats" || route === "categories" || route === "artists" || route === "albums" || route === "sources" || route === "source-config" || route === "source-browser" || route === "playlists" || route === "playlist-new" || route === "lyrics-edit" || route === "track-edit" || route === "track-info" || route === "downloading" || route === "downloaded" ? route : "library"; }
 function setView(nextView: View) { view.value = nextView; window.location.hash = nextView === "library" ? "" : nextView; }
 function clearCollectionFilters() { playlistFilter.value = null; artistFilter.value = null; albumFilter.value = null; sourceFilter.value = null; }
 function navigate(nextView: View) { clearCollectionFilters(); setView(nextView); }
@@ -436,6 +437,7 @@ listen<TransitionStatus>("playback:transition", (event) => {
           <SourceBrowserView v-else-if="baseView === 'source-browser' && browseSourceId" key="source-browser" :source-id="browseSourceId" :loading="loadingLibrary" :downloading-track-id="downloadingTrackId" @back="navigate('sources')" @download-metadata="downloadMetadata" @edit-lyrics="editLyrics" @edit-info="editInfo" @show-info="showTrackInfo" @open-artist="openArtist" @open-album="openAlbum" />
           <SourceConfigView v-else-if="baseView === 'source-config'" key="source-config" @back="closeSourceConfig" />
           <GroupedLibraryView v-else-if="baseView === 'artists' || baseView === 'albums'" :key="baseView" :kind="baseView === 'artists' ? 'artists' : 'albums'" :loading="loadingLibrary" @open="onOpenGroup" />
+          <CategoriesView v-else-if="baseView === 'categories'" key="categories" @navigate="navigate" />
           <FavoritesView v-else-if="baseView === 'favorites'" key="favorites" @open-artist="openArtist" @open-album="openAlbum" :loading="loadingLibrary" :downloading-track-id="downloadingTrackId" @download-metadata="downloadMetadata" @edit-lyrics="editLyrics" @edit-info="editInfo" @show-info="showTrackInfo" />
           <PlaylistsView v-else-if="baseView === 'playlists'" key="playlists" @open-playlist="openUserPlaylist" @edit-playlist="editPlaylist" @create-playlist="createPlaylist" />
           <StatsView v-else-if="baseView === 'stats'" key="stats" :loading="loadingLibrary" :downloading-track-id="downloadingTrackId" @download-metadata="downloadMetadata" @edit-lyrics="editLyrics" @edit-info="editInfo" @show-info="showTrackInfo" />
