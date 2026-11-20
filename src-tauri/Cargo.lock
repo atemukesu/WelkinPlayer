@@ -447,8 +447,6 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 [[package]]
 name = "automix"
 version = "2.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b108bb97b6bb12f812bfaf7884b6a858c8f4e397f8d346f8a84442382834aa84"
 dependencies = [
  "thiserror 1.0.69",
 ]

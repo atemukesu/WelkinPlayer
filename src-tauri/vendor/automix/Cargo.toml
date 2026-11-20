@@ -1,0 +1,27 @@
+[package]
+name = "automix"
+version = "2.0.1"
+edition = "2024"
+authors = ["volt"]
+description = "Pure-DSP library for BPM/key/energy analysis and smart-crossfade point selection"
+license = "GPL-3.0-only"
+
+# Vendored from crates.io (automix 2.0.1) and trimmed:
+#
+# * Upstream ships a `build.rs` that unconditionally emits
+#   `cargo:rustc-link-lib=rubberband`, even though the crate advertises itself
+#   as pure Rust / no C dependency. That breaks every build that does not have
+#   librubberband installed (all CI runners).
+# * The only code that actually needs librubberband is the optional `mixer`
+#   module (`Deck` / `Crossfader`), which WelkinPlayer does not use. It is
+#   removed here, so the crate no longer references any external native symbol.
+#
+# Keeping the replacement local means CI can build on Windows, macOS, Linux and
+# Android without installing RubberBand. The remaining files are unmodified;
+# see README.md / LICENSE for upstream attribution.
+[lib]
+name = "automix"
+path = "src/lib.rs"
+
+[dependencies]
+thiserror = "1"
