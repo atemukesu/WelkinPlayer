@@ -126,14 +126,18 @@ export function replayProfileOps(
     switch (op.type) {
       case "setNickname": {
         if (profile.nickname !== op.value) {
-          if (profile.nickname !== base.nickname) {
-            pushConflict(conflicts, {
-              id: "nickname",
-              kind: "nickname",
-              name: "nickname",
-              local: op.value,
-              remote: profile.nickname,
-            });
+          // Compare with the original cloud document, not the replayed copy:
+          // an earlier queued op must not look like a remote edit.
+          if (remote.nickname !== base.nickname) {
+            if (op.value !== base.nickname) {
+              pushConflict(conflicts, {
+                id: "nickname",
+                kind: "nickname",
+                name: "nickname",
+                local: op.value,
+                remote: remote.nickname,
+              });
+            }
           } else {
             profile.nickname = op.value;
           }
@@ -156,14 +160,19 @@ export function replayProfileOps(
         const has = profile.favorites.includes(op.key);
         if (has !== op.value) {
           const baseHas = base.favorites.includes(op.key);
-          if (has !== baseHas) {
-            pushConflict(conflicts, {
-              id: `favorite:${op.key}`,
-              kind: "favorite",
-              name: shortKey(op.key),
-              local: op.value ? "on" : "off",
-              remote: has ? "on" : "off",
-            });
+          const remoteHas = remote.favorites.includes(op.key);
+          if (remoteHas !== baseHas) {
+            // Only a real local change conflicts; toggling twice back to the
+            // original value leaves the remote edit untouched.
+            if (op.value !== baseHas) {
+              pushConflict(conflicts, {
+                id: `favorite:${op.key}`,
+                kind: "favorite",
+                name: shortKey(op.key),
+                local: op.value ? "on" : "off",
+                remote: remoteHas ? "on" : "off",
+              });
+            }
           } else if (op.value) {
             profile.favorites.push(op.key);
           } else {
@@ -176,14 +185,17 @@ export function replayProfileOps(
         const has = profile.disabledLyrics.includes(op.key);
         if (has !== op.value) {
           const baseHas = base.disabledLyrics.includes(op.key);
-          if (has !== baseHas) {
-            pushConflict(conflicts, {
-              id: `lyrics:${op.key}`,
-              kind: "lyrics",
-              name: shortKey(op.key),
-              local: op.value ? "on" : "off",
-              remote: has ? "on" : "off",
-            });
+          const remoteHas = remote.disabledLyrics.includes(op.key);
+          if (remoteHas !== baseHas) {
+            if (op.value !== baseHas) {
+              pushConflict(conflicts, {
+                id: `lyrics:${op.key}`,
+                kind: "lyrics",
+                name: shortKey(op.key),
+                local: op.value ? "on" : "off",
+                remote: remoteHas ? "on" : "off",
+              });
+            }
           } else if (op.value) {
             profile.disabledLyrics.push(op.key);
           } else {
@@ -221,28 +233,31 @@ export function replayProfileOps(
         }
         if (playlist.name === op.name) break;
         const baseName = findPlaylist(base, op.id)?.name;
-        if (playlist.name !== baseName) {
-          pushConflict(conflicts, {
-            id: `playlist:${op.id}:name`,
-            kind: "playlistName",
-            name: playlist.name,
-            local: op.name,
-            remote: playlist.name,
-          });
+        const remoteName = findPlaylist(remote, op.id)?.name;
+        if (remoteName !== baseName) {
+          if (op.name !== baseName) {
+            pushConflict(conflicts, {
+              id: `playlist:${op.id}:name`,
+              kind: "playlistName",
+              name: playlist.name,
+              local: op.name,
+              remote: remoteName,
+            });
+          }
         } else {
           playlist.name = op.name;
         }
         break;
       }
       case "deletePlaylist": {
-        const playlist = findPlaylist(profile, op.id);
-        if (!playlist) break;
         const basePlaylist = findPlaylist(base, op.id);
-        if (basePlaylist && !sameValue(playlist, basePlaylist)) {
+        const remotePlaylist = findPlaylist(remote, op.id);
+        if (!remotePlaylist) break;
+        if (basePlaylist && !sameValue(remotePlaylist, basePlaylist)) {
           pushConflict(conflicts, {
             id: `playlist:${op.id}`,
             kind: "playlistDeleted",
-            name: playlist.name,
+            name: remotePlaylist.name,
           });
           break;
         }
@@ -319,6 +334,8 @@ export function replayProfileOps(
       case "updatePlaylist": {
         const playlist = findPlaylist(profile, op.id);
         const basePlaylist = findPlaylist(base, op.id);
+        /** The untouched cloud copy; earlier queued ops must not look remote. */
+        const remotePlaylist = findPlaylist(remote, op.id);
         if (!playlist) {
           pushConflict(conflicts, {
             id: `playlist:${op.id}`,
@@ -330,42 +347,58 @@ export function replayProfileOps(
         const patch = op.patch;
         /**
          * A patch from the editor carries every field, even unchanged ones.
-         * Only treat a field as a local edit when it differs from the base,
-         * otherwise an unrelated remote change would raise a false conflict.
+         * Compare local intent and the original remote value against the base
+         * snapshot, then merge:
+         *
+         * * remote untouched        → apply the local value (even when it equals
+         *                             the base again after an on/off burst);
+         * * remote changed, local no → keep the cloud value;
+         * * both changed            → conflict.
          */
         const localChanged = (value: unknown, baseValue: unknown): boolean =>
           basePlaylist ? !sameValue(value, baseValue) : true;
         const remoteChanged = (remoteValue: unknown, baseValue: unknown): boolean =>
           !!basePlaylist && !sameValue(remoteValue, baseValue);
+        const decide = (
+          localValue: unknown,
+          remoteValue: unknown,
+          baseValue: unknown,
+        ): "local" | "remote" | "conflict" => {
+          // Both sides landed on the same value: replaying it also repairs the
+          // working copy after an earlier queued op in the same burst.
+          if (sameValue(localValue, remoteValue)) return "local";
+          const changedLocally = localChanged(localValue, baseValue);
+          const changedRemotely = remoteChanged(remoteValue, baseValue);
+          if (changedRemotely) return changedLocally ? "conflict" : "remote";
+          return "local";
+        };
 
         if (patch.name !== undefined && playlist.name !== patch.name) {
-          const changedLocally = localChanged(patch.name, basePlaylist?.name);
-          const changedRemotely = remoteChanged(playlist.name, basePlaylist?.name);
-          if (changedLocally && changedRemotely) {
+          const choice = decide(patch.name, remotePlaylist?.name, basePlaylist?.name);
+          if (choice === "conflict") {
             pushConflict(conflicts, {
               id: `playlist:${op.id}:name`,
               kind: "playlistName",
               name: playlist.name,
               local: patch.name,
-              remote: playlist.name,
+              remote: remotePlaylist?.name ?? playlist.name,
             });
-          } else if (changedLocally) {
+          } else if (choice === "local") {
             playlist.name = patch.name;
           }
         }
 
         if (patch.tracks !== undefined && !sameValue(playlist.tracks, patch.tracks)) {
-          const changedLocally = localChanged(patch.tracks, basePlaylist?.tracks);
-          const changedRemotely = remoteChanged(playlist.tracks, basePlaylist?.tracks);
-          if (changedLocally && changedRemotely) {
+          const choice = decide(patch.tracks, remotePlaylist?.tracks, basePlaylist?.tracks);
+          if (choice === "conflict") {
             pushConflict(conflicts, {
               id: `playlist:${op.id}:tracks`,
               kind: "playlistTracks",
               name: playlist.name,
               local: String(patch.tracks.length),
-              remote: String(playlist.tracks.length),
+              remote: String(remotePlaylist?.tracks.length ?? playlist.tracks.length),
             });
-          } else if (changedLocally) {
+          } else if (choice === "local") {
             playlist.tracks = [...patch.tracks];
             if (patch.addedAt) playlist.addedAt = { ...patch.addedAt };
             markStale(playlist);
@@ -382,15 +415,15 @@ export function replayProfileOps(
           const remoteCover = playlist.coverFile ?? playlist.cover;
           if (localCover !== remoteCover) {
             const baseCover = basePlaylist?.coverFile ?? basePlaylist?.cover;
-            const changedLocally = localChanged(localCover, baseCover);
-            const changedRemotely = remoteChanged(remoteCover, baseCover);
-            if (changedLocally && changedRemotely) {
+            const originalRemoteCover = remotePlaylist?.coverFile ?? remotePlaylist?.cover;
+            const choice = decide(localCover, originalRemoteCover, baseCover);
+            if (choice === "conflict") {
               pushConflict(conflicts, {
                 id: `playlist:${op.id}:cover`,
                 kind: "playlistCover",
                 name: playlist.name,
               });
-            } else if (changedLocally) {
+            } else if (choice === "local") {
               playlist.cover = patch.clearCover ? undefined : patch.cover;
               playlist.coverFile = patch.coverFile;
             }
@@ -402,15 +435,14 @@ export function replayProfileOps(
           const localCoverTrack = patch.clearCoverTrack ? undefined : patch.coverTrack;
           if (playlist.coverTrack !== localCoverTrack) {
             const baseCoverTrack = basePlaylist?.coverTrack;
-            const changedLocally = localChanged(localCoverTrack, baseCoverTrack);
-            const changedRemotely = remoteChanged(playlist.coverTrack, baseCoverTrack);
-            if (changedLocally && changedRemotely) {
+            const choice = decide(localCoverTrack, remotePlaylist?.coverTrack, baseCoverTrack);
+            if (choice === "conflict") {
               pushConflict(conflicts, {
                 id: `playlist:${op.id}:cover`,
                 kind: "playlistCover",
                 name: playlist.name,
               });
-            } else if (changedLocally) {
+            } else if (choice === "local") {
               playlist.coverTrack = localCoverTrack;
             }
           }
@@ -421,15 +453,14 @@ export function replayProfileOps(
           const localSmart = patch.clearSmartTransition ? undefined : patch.smartTransition;
           if (!sameValue(playlist.smartTransition, localSmart)) {
             const baseSmart = basePlaylist?.smartTransition;
-            const changedLocally = localChanged(localSmart, baseSmart);
-            const changedRemotely = remoteChanged(playlist.smartTransition, baseSmart);
-            if (changedLocally && changedRemotely) {
+            const choice = decide(localSmart, remotePlaylist?.smartTransition, baseSmart);
+            if (choice === "conflict") {
               pushConflict(conflicts, {
                 id: `playlist:${op.id}:smart`,
                 kind: "playlistTracks",
                 name: playlist.name,
               });
-            } else if (changedLocally) {
+            } else if (choice === "local") {
               playlist.smartTransition = localSmart;
             }
           }
