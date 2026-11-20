@@ -5,7 +5,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { ListChecks, Pencil, Play, RefreshCw, Search, Sparkles } from "@lucide/vue";
+import { ListChecks, LoaderCircle, Pencil, Play, RefreshCw, Search, Sparkles } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { usePlayerStore } from "../stores/player";
 import type { Track } from "../stores/player";
@@ -78,6 +78,7 @@ const tracks = computed(() => {
 });
 const smartEnabled = computed(() => activePlaylist.value?.smartTransition?.enabled === true);
 const smartReady = computed(() => activePlaylist.value?.smartTransition?.status === "ready");
+const smartBusy = computed(() => (activePlaylist.value ? smart.isBusy(activePlaylist.value.id) : false));
 /** Smart transitions pin playback to the analysed order. */
 const smartLocked = computed(() => smartEnabled.value && smartReady.value);
 /** Tracks in the analysed order, when that document is loaded. */
@@ -177,29 +178,46 @@ function isCurrentQueue(playlist: Playlist): boolean {
   const queueKeys = player.queue.map(trackKey).filter((key): key is string => !!key);
   return queueKeys.length > 0 && queueKeys.every((key) => playlistKeys.has(key));
 }
-/** Turn smart transitions on/off from the playlist header. */
+/**
+ * One switch for the whole feature: turning it on analyses the playlist when
+ * needed, then applies the inferred order; turning it off restores the order
+ * the user had before. While a run is active a click opens the progress dialog.
+ */
 async function toggleSmart() {
   const playlist = activePlaylist.value;
   if (!playlist) return;
+  if (smart.isBusy(playlist.id)) {
+    smartOpen.value = true;
+    return;
+  }
   if (smartEnabled.value) {
-    smart.disable(playlist.id);
-    // Only drop the installed plans when they belong to this queue; another
+    await smart.disable(playlist.id);
+    // Only touch the live queue when it belongs to this playlist; another
     // playlist may be the one currently playing.
-    if (isCurrentQueue(playlist)) await smart.clearPlans();
+    if (isCurrentQueue(playlist)) {
+      await smart.clearPlans();
+      const keys = queueTracks.value
+        .map(trackKey)
+        .filter((key): key is string => !!key);
+      if (keys.length > 0) await player.reorderQueue(keys);
+    }
     pushToast("info", t("library.playlists.smart.disabled"));
     return;
   }
   let summary = smart.summaryFor(playlist.id);
   if (!summary) summary = await smart.load(playlist.id);
   if (!summary || summary.incomplete || playlist.smartTransition?.status === "stale") {
-    // Nothing trustworthy to enable yet: open the dialog to analyse or refresh.
+    // Nothing trustworthy to enable yet: show progress and run/resume the
+    // analysis. It is applied automatically once the run finishes.
     smartOpen.value = true;
-    return;
+    summary = await smart.analyze(playlist.id);
+    if (!summary || summary.incomplete) return;
   }
   if (!smart.applyOrder(playlist.id)) {
     smartOpen.value = true;
     return;
   }
+  smartOpen.value = false;
   useTrackSort("playlist").key.value = "default";
   pushToast("success", t("library.playlists.smart.applied"));
 }
@@ -215,7 +233,6 @@ watch(smartLocked, async (locked) => {
   await player.reorderQueue(summary.order);
   await armTransition();
 });
-function openSmart() { smartOpen.value = true; }
 function openContextMenu(event: MouseEvent, track: Track) { contextTrack.value = track; contextPosition.value = { x: event.clientX, y: event.clientY }; }
 function downloadMetadata(track: Track) { emit("downloadMetadata", track); }
 /**
@@ -266,24 +283,26 @@ function removeTrack(track: Track) {
                 <template v-if="activePlaylist">
                   <button type="button" class="ak-clip-tr flex h-10 shrink-0 items-center gap-2 bg-accent px-4 text-[13px] font-bold text-accent-fg transition-transform hover:scale-[1.02] active:scale-95 disabled:opacity-50" :disabled="!tracks.length" @click="playFirst"><Play :size="15" :stroke-width="2.2" />{{ t("library.play") }}</button>
                   <button type="button" class="ak-clip-tr flex h-10 shrink-0 items-center gap-2 border border-line px-4 text-[13px] font-semibold transition-colors hover:border-accent hover:text-accent" @click="emit('edit', activePlaylist.id)"><Pencil :size="15" />{{ t("library.edit") }}</button>
-                  <button type="button" class="ak-clip-tr flex h-10 shrink-0 items-center gap-2 border px-4 text-[13px] font-semibold transition-colors" :class="activePlaylist.smartTransition?.enabled ? 'border-accent/60 text-accent' : 'border-line hover:border-accent hover:text-accent'" :title="t('library.playlists.smart.buttonHint')" @click="openSmart">
-                    <Sparkles :size="15" />
-                    {{ activePlaylist.smartTransition?.status === 'ready' ? t('library.playlists.smart.badgeReady') : t('library.playlists.smart.button') }}
-                    <span v-if="activePlaylist.smartTransition?.status === 'stale'" class="border border-amber-500/50 px-1.5 text-[10px] font-mono uppercase text-amber-400">{{ t('library.playlists.smart.badgeStale') }}</span>
-                  </button>
                   <button
                     type="button"
                     role="switch"
                     :aria-checked="smartEnabled"
                     :title="t('library.playlists.smart.toggleHint')"
                     class="ak-clip-tr flex h-10 shrink-0 items-center gap-2 border px-3 text-[13px] font-semibold transition-colors"
-                    :class="smartEnabled ? 'border-accent/60 text-accent' : 'border-line text-muted hover:border-accent hover:text-accent'"
+                    :class="smartEnabled ? 'border-accent/60 text-accent' : smartReady ? 'border-line hover:border-accent hover:text-accent' : 'border-line text-muted hover:border-accent hover:text-accent'"
                     @click="toggleSmart"
                   >
+                    <LoaderCircle v-if="smartBusy" :size="15" class="shrink-0 animate-spin text-accent" />
+                    <Sparkles v-else :size="15" class="shrink-0" />
+                    {{ t("library.playlists.smart.button") }}
+                    <span
+                      v-if="!smartEnabled && activePlaylist.smartTransition?.status === 'stale'"
+                      class="h-1.5 w-1.5 rounded-full bg-amber-400"
+                      :title="t('library.playlists.smart.badgeStale')"
+                    />
                     <span class="relative inline-flex h-4 w-8 shrink-0 rounded-full transition-colors" :class="smartEnabled ? 'bg-accent/70' : 'bg-line'">
                       <span class="absolute top-0.5 h-3 w-3 rounded-full bg-bg transition-transform" :class="smartEnabled ? 'translate-x-[18px]' : 'translate-x-0.5'" />
                     </span>
-                    {{ smartEnabled ? t('library.playlists.smart.toggleOn') : t('library.playlists.smart.toggleOff') }}
                   </button>
                 </template>
                 <button v-else type="button" class="ak-clip-tr flex h-10 shrink-0 items-center gap-2 bg-accent px-4 text-[13px] font-bold text-accent-fg transition-transform hover:scale-[1.02] active:scale-95 disabled:opacity-50" :disabled="!tracks.length" @click="playFirst"><Play :size="15" :stroke-width="2.2" />{{ t("library.collections.playAll") }}</button>

@@ -292,11 +292,12 @@ export const useSmartTransitionStore = defineStore("smartTransition", () => {
             smartTransition: {
               enabled: previous?.enabled ?? false,
               file: summary.file,
-              algorithmVersion: 8,
+              algorithmVersion: 9,
               updatedAt: summary.updatedAt,
               // Opening the dialog must not clear a stale marker: the stored
               // document still describes the pre-edit track list.
               status: previous?.status === "stale" ? "stale" : "ready",
+              previousTracks: previous?.previousTracks,
             },
           });
         }
@@ -354,9 +355,10 @@ export const useSmartTransitionStore = defineStore("smartTransition", () => {
         smartTransition: {
           enabled: playlist.smartTransition?.enabled ?? false,
           file: summary.file,
-          algorithmVersion: 8,
+          algorithmVersion: 9,
           updatedAt: summary.updatedAt,
           status: "ready",
+          previousTracks: playlist.smartTransition?.previousTracks,
         },
       });
       return summary;
@@ -385,47 +387,74 @@ export const useSmartTransitionStore = defineStore("smartTransition", () => {
     }
   }
 
-  /** Apply the analysed order and enable transitions. */
+  /**
+   * Restore a saved entry order without dropping tracks that were added after
+   * smart transitions were enabled. Unknown entries stay at the end.
+   */
+  function restoreOrder(playlist: Playlist, order: string[]): string[] {
+    const restored: string[] = [];
+    for (const entry of order) {
+      if (playlist.tracks.includes(entry) && !restored.includes(entry)) restored.push(entry);
+    }
+    for (const entry of playlist.tracks) {
+      if (!restored.includes(entry)) restored.push(entry);
+    }
+    return restored;
+  }
+
+  /**
+   * Apply the analysed order and enable transitions. The current entry order
+   * is captured first, so turning the switch off can restore it verbatim.
+   */
   function applyOrder(playlistId: string): boolean {
     const playlist = profile.playlists.find((item) => item.id === playlistId);
     const summary = summaries.value[playlistId];
     if (!playlist || !summary || summary.incomplete) return false;
+    const previousTracks =
+      playlist.smartTransition?.enabled
+        ? (playlist.smartTransition.previousTracks?.length
+            ? playlist.smartTransition.previousTracks
+            : summary.previousOrder.length
+              ? summary.previousOrder
+              : playlist.tracks)
+        : playlist.tracks;
     const tracks = toPlaylistEntries(playlist, summary.order);
     profile.updatePlaylist(playlistId, {
       tracks,
       smartTransition: {
         enabled: true,
         file: summary.file,
-        algorithmVersion: 8,
+        algorithmVersion: 9,
         updatedAt: summary.updatedAt,
         status: "ready",
+        previousTracks: [...previousTracks],
       },
     });
     return true;
   }
 
-  /** Restore the order that existed before the first analysis. */
-  function undoOrder(playlistId: string): boolean {
+  /**
+   * Disable transitions and put the playlist back into the order the user had
+   * before turning them on. Falls back to the analysis' `previousOrder` for
+   * profiles saved before the switch captured its own snapshot.
+   */
+  async function disable(playlistId: string): Promise<boolean> {
     const playlist = profile.playlists.find((item) => item.id === playlistId);
-    const summary = summaries.value[playlistId];
-    if (!playlist || !summary || summary.previousOrder.length === 0) return false;
-    const tracks = toPlaylistEntries(playlist, summary.previousOrder);
+    if (!playlist?.smartTransition) return false;
+    let order = playlist.smartTransition.previousTracks;
+    if (!order || order.length === 0) {
+      const summary = summaries.value[playlistId] ?? (await load(playlistId));
+      order = summary?.previousOrder ?? [];
+    }
     profile.updatePlaylist(playlistId, {
-      tracks,
-      smartTransition: playlist.smartTransition
-        ? { ...playlist.smartTransition, enabled: false, status: "stale" }
-        : undefined,
+      ...(order.length > 0 ? { tracks: restoreOrder(playlist, order) } : {}),
+      smartTransition: {
+        ...playlist.smartTransition,
+        enabled: false,
+        previousTracks: undefined,
+      },
     });
     return true;
-  }
-
-  /** Disable transitions without touching the order. */
-  function disable(playlistId: string): void {
-    const playlist = profile.playlists.find((item) => item.id === playlistId);
-    if (!playlist?.smartTransition) return;
-    profile.updatePlaylist(playlistId, {
-      smartTransition: { ...playlist.smartTransition, enabled: false },
-    });
   }
 
   /** Delete the stored document and its profile pointer. */
@@ -520,7 +549,6 @@ export const useSmartTransitionStore = defineStore("smartTransition", () => {
     analyze,
     cancel,
     applyOrder,
-    undoOrder,
     disable,
     remove,
     armPlayback,

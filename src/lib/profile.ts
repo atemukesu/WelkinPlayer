@@ -52,6 +52,11 @@ export interface SmartTransitionMeta {
   updatedAt: number;
   /** `ready`, `stale` (playlist changed since analysis) or `missing`. */
   status: "ready" | "stale" | "missing";
+  /**
+   * Playlist entry order that was active when smart transitions were turned
+   * on. Turning them off restores exactly this order.
+   */
+  previousTracks?: string[];
 }
 
 /**
@@ -120,6 +125,9 @@ function parseSmartTransition(value: unknown): SmartTransitionMeta | undefined {
     updatedAt:
       typeof value.updatedAt === "number" && Number.isFinite(value.updatedAt) ? value.updatedAt : 0,
     status,
+    previousTracks: Array.isArray(value.previousTracks)
+      ? value.previousTracks.filter((item): item is string => typeof item === "string")
+      : undefined,
   };
 }
 
