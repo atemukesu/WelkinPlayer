@@ -29,7 +29,9 @@ import { coverPending, initial, percent } from "../lib/format";
 import { cssFontFamily } from "../lib/fonts";
 import { useWakeLock } from "../composables/useWakeLock";
 import RealtimeWaveform from "../components/RealtimeWaveform.vue";
-import TransitionIndicator from "../components/TransitionIndicator.vue";
+import TransitionInline from "../components/TransitionInline.vue";
+import { useTransitionTitleFlight } from "../composables/useTransitionTitleFlight";
+import { firstVisibleElement } from "../lib/titleFlight";
 import { Virtualizer } from "virtua/vue";
 import type { VirtualizerHandle } from "virtua/vue";
 import type { View } from "../lib/app";
@@ -135,8 +137,8 @@ let controlsTimer = 0;
 
 /**
  * Album-art crossfade. The full-screen player keeps the outgoing cover on top
- * and fades it out while the new one fades/scales in, so a smart transition is
- * also visible when the audio engine hands over between tracks.
+ * and simply fades it out while the new cover fades in, so a smart transition
+ * is visible without any slide or zoom.
  */
 const outgoingArt = ref<{ cover?: string; color: string } | null>(null);
 const artTransition = ref(false);
@@ -156,7 +158,23 @@ watch(
     artTimer = window.setTimeout(() => {
       artTransition.value = false;
       outgoingArt.value = null;
-    }, 900);
+    }, 700);
+  },
+);
+
+/** Inline next-title slots (desktop panel and the narrow-screen header). */
+const desktopTransition = ref<InstanceType<typeof TransitionInline> | null>(null);
+const mobileTransition = ref<InstanceType<typeof TransitionInline> | null>(null);
+/** Real title elements the inline text flies into. */
+const desktopTitleEl = ref<HTMLElement | null>(null);
+const mobileTitleEl = ref<HTMLElement | null>(null);
+
+useTransitionTitleFlight(
+  () => player.currentTrack,
+  () => player.transition,
+  {
+    inline: () => firstVisibleElement(desktopTransition.value?.getTitleElement(), mobileTransition.value?.getTitleElement()),
+    title: () => firstVisibleElement(desktopTitleEl.value, mobileTitleEl.value),
   },
 );
 
@@ -673,16 +691,21 @@ watch(
           <template v-else>{{ initial(player.currentTrack) }}</template>
         </span>
         <span class="grid min-w-0 gap-0.5">
-          <strong class="truncate text-sm font-semibold leading-tight">{{ player.currentTrack.title }}</strong>
-          <button
-            v-if="player.currentTrack.artist"
-            type="button"
-            class="truncate text-left text-xs leading-tight text-dim transition-colors hover:text-accent"
-            :title="t('library.openArtist')"
-            @click="emit('openArtist', player.currentTrack.artist)"
-          >
-            {{ player.currentTrack.artist }}
-          </button>
+          <strong class="truncate text-sm font-semibold leading-tight">
+            <span ref="mobileTitleEl" class="inline-block max-w-full truncate align-top">{{ player.currentTrack.title }}</span>
+          </strong>
+          <span class="flex min-w-0 items-center gap-1.5 text-dim">
+            <button
+              v-if="player.currentTrack.artist"
+              type="button"
+              class="min-w-0 max-w-[55%] shrink-0 truncate text-left text-xs leading-tight text-dim transition-colors hover:text-accent"
+              :title="t('library.openArtist')"
+              @click="emit('openArtist', player.currentTrack.artist)"
+            >
+              {{ player.currentTrack.artist }}
+            </button>
+            <TransitionInline ref="mobileTransition" class="min-w-0 flex-1 text-[11px]" />
+          </span>
         </span>
       </div>
     </header>
@@ -717,23 +740,18 @@ watch(
           <img v-if="player.currentTrack.cover" :key="player.currentTrack.cover" :src="player.currentTrack.cover" alt="" decoding="async" class="player-art-in h-full w-full object-cover" />
           <span v-else-if="coverPending(player.currentTrack)" class="grid h-full w-full place-items-center text-white/90"><LoaderCircle :size="40" :stroke-width="1.8" class="animate-spin" /></span>
           <span v-else-if="player.currentTrack.metaLoaded" class="grid h-full w-full place-items-center text-8xl font-black text-white/90">{{ initial(player.currentTrack) }}</span>
-          <img
-            v-if="player.transition?.phase === 'crossfading' && player.transitionNext?.cover"
-            :src="player.transitionNext.cover"
-            alt=""
-            aria-hidden="true"
-            decoding="async"
-            class="player-art-preview pointer-events-none absolute inset-y-0 right-0 h-full w-[38%] object-cover"
-            :style="{ transform: `translateX(${Math.max(0, 1 - player.transition.progress) * 100}%)` }"
-          />
           <img v-if="artTransition && outgoingArt?.cover" :src="outgoingArt.cover" alt="" decoding="async" class="player-art-out absolute inset-0 h-full w-full object-cover" />
         </div>
-        <div :key="`meta-${player.currentTrack.sourceId}-${player.currentTrack.path}-${player.currentTrack.id}`" class="player-meta-in mx-auto mt-4 hidden w-full max-w-[420px] md:block">
-          <h1 class="mt-3 text-2xl font-black leading-none tracking-tight lg:text-3xl">{{ player.currentTrack.title }}</h1>
-          <button v-if="player.currentTrack.artist" type="button" class="mt-2 block w-fit max-w-full truncate text-left text-base text-dim transition-colors hover:text-accent" :title="t('library.openArtist')" @click="emit('openArtist', player.currentTrack.artist)">{{ player.currentTrack.artist }}</button>
+        <div class="mx-auto mt-4 hidden w-full max-w-[420px] md:block">
+          <h1 class="mt-3 text-2xl font-black leading-none tracking-tight lg:text-3xl">
+            <span ref="desktopTitleEl" class="inline-block max-w-full truncate align-top">{{ player.currentTrack.title }}</span>
+          </h1>
+          <div class="mt-2 flex min-w-0 items-center gap-2 text-base text-dim">
+            <button v-if="player.currentTrack.artist" type="button" class="min-w-0 max-w-[55%] shrink-0 truncate text-left transition-colors hover:text-accent" :title="t('library.openArtist')" @click="emit('openArtist', player.currentTrack.artist)">{{ player.currentTrack.artist }}</button>
+            <TransitionInline ref="desktopTransition" class="min-w-0 flex-1 text-[0.8em]" />
+          </div>
         </div>
         <div class="mx-auto w-full max-w-[420px] md:mt-4">
-          <TransitionIndicator class="mb-2 w-full" />
           <div class="flex h-6 items-center">
             <input
               :value="sliderValue"
@@ -1052,61 +1070,33 @@ watch(
 }
 
 /*
- * Smart-transition visual handover. The outgoing cover stays mounted on top and
- * fades out while the incoming cover fades/scales in, and the title block slides
- * up. Audio is crossfaded by the Rust engine; this keeps the two in sync.
+ * Smart-transition visual handover. The covers cross-fade in place and the
+ * incoming title flies in from the inline readout beside the artist; audio is
+ * crossfaded by the Rust engine, so the visuals stay quiet and in sync.
  */
 .player-art-in {
-  animation: player-art-in 620ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  animation: player-art-in 520ms ease both;
 }
 
 .player-art-out {
-  animation: player-art-out 820ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
-}
-
-/* The incoming cover peeks in from the right during a smart mix, so the
- * visual overlap matches the audio overlap instead of only switching at the
- * handover. */
-.player-art-preview {
-  -webkit-mask-image: linear-gradient(to right, transparent, #000 42%);
-  mask-image: linear-gradient(to right, transparent, #000 42%);
-  opacity: 0.85;
-}
-
-.player-meta-in {
-  animation: player-meta-in 480ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  animation: player-art-out 620ms ease forwards;
 }
 
 @keyframes player-art-in {
   from {
     opacity: 0;
-    transform: scale(1.06);
   }
   to {
     opacity: 1;
-    transform: scale(1);
   }
 }
 
 @keyframes player-art-out {
   from {
     opacity: 1;
-    transform: scale(1);
   }
   to {
     opacity: 0;
-    transform: scale(0.96);
-  }
-}
-
-@keyframes player-meta-in {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
   }
 }
 </style>

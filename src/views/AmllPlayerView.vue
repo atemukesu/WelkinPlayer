@@ -26,7 +26,9 @@ import "@applemusic-like-lyrics/core/style.css";
 import AmllBackground from "../components/AmllBackground.vue";
 import AmllLyrics from "../components/AmllLyrics.vue";
 import RealtimeWaveform from "../components/RealtimeWaveform.vue";
-import TransitionIndicator from "../components/TransitionIndicator.vue";
+import TransitionInline from "../components/TransitionInline.vue";
+import { useTransitionTitleFlight } from "../composables/useTransitionTitleFlight";
+import { firstVisibleElement } from "../lib/titleFlight";
 import { usePlayerStore } from "../stores/player";
 import { useLyricsStore } from "../stores/lyrics";
 import { currentTime, seekPercent, seekTo } from "../lib/audio";
@@ -167,6 +169,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   cancelAnimationFrame(frame);
   window.clearTimeout(controlsTimer);
+  window.clearTimeout(artTimer);
   window.removeEventListener("keydown", onKeydown, true);
   window.removeEventListener("pointermove", bumpControls);
   window.removeEventListener("pointerdown", bumpControls);
@@ -210,6 +213,47 @@ watch(
     }
   },
   { immediate: true },
+);
+
+/**
+ * Cover crossfade on track changes: the outgoing image stays on top and fades
+ * out while the incoming one fades in, with no slide or scale.
+ */
+const outgoingArt = ref<{ cover?: string } | null>(null);
+const artTransition = ref(false);
+let artTimer = 0;
+
+watch(
+  () => player.currentTrack,
+  (next, previous) => {
+    if (!next || !previous) return;
+    const key = `${next.sourceId ?? ""}::${next.path ?? next.title}`;
+    const previousKey = `${previous.sourceId ?? ""}::${previous.path ?? previous.title}`;
+    if (key === previousKey) return;
+    outgoingArt.value = { cover: previous.cover };
+    artTransition.value = true;
+    window.clearTimeout(artTimer);
+    artTimer = window.setTimeout(() => {
+      artTransition.value = false;
+      outgoingArt.value = null;
+    }, 700);
+  },
+);
+
+/** Inline next-title slots (desktop panel and the narrow-screen header). */
+const desktopTransition = ref<InstanceType<typeof TransitionInline> | null>(null);
+const mobileTransition = ref<InstanceType<typeof TransitionInline> | null>(null);
+/** Real title elements the inline text flies into. */
+const desktopTitleEl = ref<HTMLElement | null>(null);
+const mobileTitleEl = ref<HTMLElement | null>(null);
+
+useTransitionTitleFlight(
+  () => player.currentTrack,
+  () => player.transition,
+  {
+    inline: () => firstVisibleElement(desktopTransition.value?.getTitleElement(), mobileTransition.value?.getTitleElement()),
+    title: () => firstVisibleElement(desktopTitleEl.value, mobileTitleEl.value),
+  },
 );
 
 const repeatTitle = computed(() => player.repeat === "one" ? t("controls.repeatOne") : player.repeat === "all" ? t("controls.repeatAll") : t("controls.repeatOff"));
@@ -329,8 +373,13 @@ function onLyricSeek(timeMs: number) {
           <template v-else>{{ initial(player.currentTrack) }}</template>
         </span>
         <span class="grid min-w-0 gap-0.5">
-          <strong class="truncate text-sm font-semibold leading-tight">{{ player.currentTrack.title }}</strong>
-          <small class="truncate text-xs leading-tight text-white/70">{{ player.currentTrack.artist }}</small>
+          <strong class="truncate text-sm font-semibold leading-tight">
+            <span ref="mobileTitleEl" class="inline-block max-w-full truncate align-top">{{ player.currentTrack.title }}</span>
+          </strong>
+          <span class="flex min-w-0 items-center gap-1.5 text-xs leading-tight text-white/70">
+            <small v-if="player.currentTrack.artist" class="min-w-0 max-w-[55%] shrink-0 truncate">{{ player.currentTrack.artist }}</small>
+            <TransitionInline ref="mobileTransition" class="min-w-0 flex-1 text-[11px]" />
+          </span>
         </span>
       </div>
     </header>
@@ -363,15 +412,21 @@ function onLyricSeek(timeMs: number) {
       <div class="amll-controls order-2 shrink-0 md:order-none md:min-h-0" :data-collapsed="controlsVisible ? 'false' : 'true'">
         <div class="relative flex flex-col items-center justify-center gap-6 px-6 pb-6 pt-4 md:h-full md:gap-6 md:px-0 md:py-10">
         <div class="relative hidden w-full max-w-[420px] md:block">
-          <div class="aspect-square w-full overflow-hidden rounded-2xl shadow-2xl shadow-black/40" :style="{ backgroundColor: player.currentTrack.color }">
-            <img v-if="player.currentTrack.cover" :src="player.currentTrack.cover" alt="" decoding="async" class="h-full w-full object-cover" />
+          <div class="relative aspect-square w-full overflow-hidden rounded-2xl shadow-2xl shadow-black/40" :style="{ backgroundColor: player.currentTrack.color }">
+            <img v-if="player.currentTrack.cover" :key="player.currentTrack.cover" :src="player.currentTrack.cover" alt="" decoding="async" class="player-art-in h-full w-full object-cover" />
             <span v-else-if="coverPending(player.currentTrack)" class="grid h-full w-full place-items-center text-white/90"><LoaderCircle :size="44" :stroke-width="1.8" class="animate-spin" /></span>
             <span v-else class="grid h-full w-full place-items-center text-8xl font-black text-white/90">{{ initial(player.currentTrack) }}</span>
+            <img v-if="artTransition && outgoingArt?.cover" :src="outgoingArt.cover" alt="" decoding="async" class="player-art-out absolute inset-0 h-full w-full object-cover" />
           </div>
         </div>
         <div class="hidden w-full max-w-[420px] text-center md:block md:text-left">
-          <h1 class="truncate text-2xl font-bold tracking-tight lg:text-3xl">{{ player.currentTrack.title }}</h1>
-          <p class="mt-2 truncate text-lg text-white/75">{{ player.currentTrack.artist }}</p>
+          <h1 class="truncate text-2xl font-bold tracking-tight lg:text-3xl">
+            <span ref="desktopTitleEl" class="inline-block max-w-full truncate align-top">{{ player.currentTrack.title }}</span>
+          </h1>
+          <div class="mt-2 flex min-w-0 items-center gap-2 text-lg text-white/75">
+            <p v-if="player.currentTrack.artist" class="min-w-0 max-w-[55%] shrink-0 truncate">{{ player.currentTrack.artist }}</p>
+            <TransitionInline ref="desktopTransition" class="min-w-0 flex-1" />
+          </div>
         </div>
 
          <div class="w-full max-w-[420px]">
@@ -406,7 +461,6 @@ function onLyricSeek(timeMs: number) {
               <template v-else>{{ player.totalTime }}</template>
             </button>
           </div>
-          <TransitionIndicator tone="light" compact class="mb-3 w-full" />
           <div class="mt-4 flex items-center justify-between gap-3">
             <button type="button" class="transition" :class="player.orderLocked ? 'text-white' : player.shuffle ? 'text-white' : 'text-white/50'" :title="shuffleTitle" :disabled="player.orderLocked" @click="player.toggleShuffle()">
               <Sparkles v-if="player.orderLocked" :size="20" :stroke-width="2" />
@@ -529,5 +583,32 @@ function onLyricSeek(timeMs: number) {
   border-radius: 9999px;
   background: #fff;
   border-color: rgba(0, 0, 0, 0.35);
+}
+
+/* Covers simply cross-fade on a track change; the title has its own flight. */
+.player-art-in {
+  animation: player-art-in 520ms ease both;
+}
+
+.player-art-out {
+  animation: player-art-out 620ms ease forwards;
+}
+
+@keyframes player-art-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes player-art-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
 }
 </style>

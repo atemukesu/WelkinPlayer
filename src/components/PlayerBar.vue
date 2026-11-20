@@ -26,7 +26,8 @@ import { seekPercent } from "../lib/audio";
 import * as audioQuality from "../lib/audioQuality";
 import LayeredSelect from "./LayeredSelect.vue";
 import RealtimeWaveform from "./RealtimeWaveform.vue";
-import TransitionIndicator from "./TransitionIndicator.vue";
+import TransitionInline from "./TransitionInline.vue";
+import { useTransitionIndicator } from "../composables/useTransitionIndicator";
 
 defineProps<{ waveform?: boolean }>();
 const emit = defineEmits<{ open: []; queue: []; openArtist: [artist: string]; openAlbum: [album: string] }>();
@@ -34,6 +35,7 @@ const emit = defineEmits<{ open: []; queue: []; openArtist: [artist: string]; op
 const { t } = useI18n();
 const player = usePlayerStore();
 const desktopLyrics = useDesktopLyricsStore();
+const { active: transitionActive } = useTransitionIndicator();
 /** Mobile control tray; desktop always renders the full set of controls. */
 const expanded = ref(false);
 
@@ -127,9 +129,6 @@ function endSeek() {
 
 <template>
   <footer class="relative border-t border-line bg-surface">
-    <div v-if="player.transition" class="pointer-events-none absolute inset-x-0 bottom-0 z-20 h-[2px] bg-accent/20">
-      <span class="block h-full bg-accent transition-[width] duration-150 ease-linear" :style="{ width: `${player.transition.progress * 100}%` }" />
-    </div>
     <input
       :value="sliderValue"
       :style="{ '--fill': percent(sliderValue), '--buffered': percent(player.bufferedProgress) }"
@@ -158,19 +157,23 @@ function endSeek() {
         >
           <img
             v-if="player.currentTrack?.cover"
+            :key="player.currentTrack.cover"
             :src="player.currentTrack.cover"
             alt=""
             decoding="async"
-            class="h-full w-full object-cover"
+            class="bar-art-in h-full w-full object-cover"
           />
           <LoaderCircle v-else-if="player.currentTrack && coverPending(player.currentTrack)" :size="18" :stroke-width="2" class="animate-spin" />
           <template v-else>{{ player.currentTrack ? initial(player.currentTrack) : "" }}</template>
         </button>
         <button type="button" class="min-w-0 truncate text-left text-[13px] font-semibold tracking-wide transition-colors hover:text-accent" @click="emit('open')">{{ player.currentTrack?.title }}</button>
-        <div class="flex min-w-0 items-center gap-1 text-[13px]">
-          <button v-if="player.currentTrack?.artist" type="button" class="min-w-0 truncate text-left text-muted transition-colors hover:text-accent" :title="t('library.openArtist')" @click.stop="emit('openArtist', player.currentTrack?.artist ?? '')">{{ player.currentTrack.artist }}</button>
-          <span v-if="player.currentTrack?.artist && player.currentTrack?.album" class="shrink-0 text-dim">·</span>
-          <button v-if="player.currentTrack?.album" type="button" class="min-w-0 truncate text-left text-dim transition-colors hover:text-accent" :title="t('library.openAlbum')" @click.stop="emit('openAlbum', player.currentTrack?.album ?? '')">{{ player.currentTrack.album }}</button>
+        <div class="flex min-w-0 items-center gap-1 text-[13px] text-dim">
+          <button v-if="player.currentTrack?.artist" type="button" class="min-w-0 max-w-[50%] shrink-0 truncate text-left text-muted transition-colors hover:text-accent" :title="t('library.openArtist')" @click.stop="emit('openArtist', player.currentTrack?.artist ?? '')">{{ player.currentTrack.artist }}</button>
+          <TransitionInline v-if="transitionActive" class="min-w-0 flex-1 text-[12px]" />
+          <template v-else>
+            <span v-if="player.currentTrack?.artist && player.currentTrack?.album" class="shrink-0 text-dim">·</span>
+            <button v-if="player.currentTrack?.album" type="button" class="min-w-0 truncate text-left text-dim transition-colors hover:text-accent" :title="t('library.openAlbum')" @click.stop="emit('openAlbum', player.currentTrack?.album ?? '')">{{ player.currentTrack.album }}</button>
+          </template>
         </div>
       </div>
 
@@ -200,9 +203,6 @@ function endSeek() {
       </div>
 
       <div class="ml-auto flex items-center gap-2">
-        <div class="hidden min-w-0 lg:block">
-          <TransitionIndicator compact class="max-w-[22rem]" />
-        </div>
         <span class="hidden font-mono text-[13px] tabular-nums text-muted lg:block">
           {{ player.elapsedTime }} / {{ player.totalTime }}
         </span>
@@ -289,7 +289,6 @@ function endSeek() {
       <div v-if="expanded" class="player-tray md:hidden">
       <div class="overflow-hidden">
       <div class="grid gap-3 border-t border-line px-4 py-3">
-      <TransitionIndicator compact class="w-full" />
       <div class="flex items-center justify-between">
         <button class="grid h-10 w-10 place-items-center" :class="player.orderLocked ? 'text-accent' : player.shuffle ? 'text-accent' : 'text-muted'" :title="shuffleTitle" :aria-label="shuffleTitle" :disabled="player.orderLocked" @click="player.toggleShuffle()">
           <Sparkles v-if="player.orderLocked" :size="17" :stroke-width="1.8" />
@@ -366,5 +365,25 @@ function endSeek() {
 .tray-leave-to {
   grid-template-rows: 0fr;
   opacity: 0;
+}
+
+/* Keep the mini-bar artwork quiet: a plain fade-in on each track change. */
+.bar-art-in {
+  animation: bar-art-in 260ms ease both;
+}
+
+@keyframes bar-art-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bar-art-in {
+    animation: none;
+  }
 }
 </style>
