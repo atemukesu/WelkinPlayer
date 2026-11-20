@@ -12,6 +12,12 @@ dist
 dist-ssr
 *.local
 
+# Arch packaging build outputs (makepkg run inside packaging/arch)
+*.pkg.tar.zst
+*.pkg.tar.zst.sig
+packaging/arch/pkg/
+packaging/arch/src/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

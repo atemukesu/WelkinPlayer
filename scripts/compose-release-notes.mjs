@@ -71,6 +71,7 @@ function classify(name) {
   if (lower.endsWith(".appimage")) return { group: "Linux", rank: 0, hint: "免安装，赋予可执行权限后直接运行" };
   if (lower.endsWith(".deb")) return { group: "Linux", rank: 0, hint: "Debian / Ubuntu 等" };
   if (lower.endsWith(".rpm")) return { group: "Linux", rank: 1, hint: "Fedora / RHEL / openSUSE 等" };
+  if (lower.endsWith(".pkg.tar.zst")) return { group: "Linux", rank: 2, hint: "Arch Linux / Manjaro 等（pacman -U 安装）" };
   if (lower.endsWith(".apk")) {
     const abi = androidAbi(name);
     const info = ANDROID_ABIS[abi];

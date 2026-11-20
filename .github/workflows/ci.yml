@@ -4,7 +4,8 @@ name: Test Linux
 # workflow) without publishing a tag.
 #
 # Unlike `release.yml` this does NOT sign bundles or upload a GitHub Release;
-# it only proves the Linux desktop build + AppImage/Deb bundling succeeds. Use
+# it only proves the Linux desktop build + deb/rpm bundling and the Arch
+# (.pkg.tar.zst) repackaging succeed. Use
 # it for fast iteration on CI failures (e.g. missing system libraries) instead
 # of pushing throwaway tags. No automatic push/PR triggers, so it never burns
 # runner minutes on its own.
@@ -92,3 +93,20 @@ jobs:
       # and the bundle turns into a ~12 MB package with no `libcef.so`.
       - name: Verify CEF runtime is bundled
         run: node scripts/verify-cef-bundle.mjs --bundle src-tauri/target/release/bundle
+
+      # Tauri has no pacman bundler, so the Arch package is the already verified
+      # .deb repackaged by makepkg. The official Arch container supplies
+      # makepkg/fakeroot/bsdtar; package-arch.sh runs it as an unprivileged user
+      # (makepkg refuses uid 0) and re-checks that libcef.so is inside the
+      # resulting .pkg.tar.zst. This mirrors the smoke test above without
+      # publishing anything.
+      - name: Build Arch package (.pkg.tar.zst)
+        run: |
+          mkdir -p dist/arch
+          docker run --rm \
+            -v "$PWD:/src:ro" \
+            -v "$PWD/dist/arch:/out" \
+            archlinux:base-devel \
+            bash /src/scripts/package-arch.sh \
+              --deb-dir /src/src-tauri/target/release/bundle/deb \
+              --out /out

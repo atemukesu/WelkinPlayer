@@ -1,0 +1,135 @@
+# Maintainer: Atemukesu <atommix823 at gmail dot com>
+#
+# Arch Linux package for Welkin. Upstream has no pacman bundler, so this
+# repackages the self-contained .deb produced by the Tauri release build: the
+# executable, the bundled CEF runtime and the desktop/icon files are installed
+# verbatim. Nothing is compiled here.
+#
+# CI builds this automatically from the .deb it just compiled (see
+# scripts/package-arch.sh, which sets the WELKIN_* variables below and passes
+# the local archive via WELKIN_LOCAL_DEB=1). The AUR package
+# (welkinplayer-bin) keeps a copy of this PKGBUILD with pinned sha256sums and
+# update-sha.mjs; bump pkgver/pkgrel/_gh_tag there on release.
+#
+# For a manual build against a published GitHub release:
+#
+#     makepkg -si
+#
+# `pkgver` may not contain a hyphen, so a SemVer pre-release such as
+# 1.4.0-rc.1 becomes 1.4.0rc.1 while _gh_tag keeps the real tag.
+
+pkgname=welkinplayer-bin
+pkgver=${WELKIN_PKGVER:-1.4.0rc.1}
+pkgrel=${WELKIN_PKGREL:-1}
+_gh_tag=${WELKIN_TAG:-v1.4.0-rc.1}
+
+pkgdesc='Cross-platform music player with WebDAV sync and AMLL word-by-word lyrics — prebuilt binary'
+arch=('x86_64')
+url='https://github.com/atemukesu/WelkinPlayer'
+license=('GPL-3.0-only')
+depends=(
+  'alsa-lib'
+  'at-spi2-core'
+  'cairo'
+  'dbus'
+  'expat'
+  'gdk-pixbuf2'
+  'glib2'
+  'glibc'
+  'graphene'
+  'gtk4'
+  'hicolor-icon-theme'
+  'libcups'
+  'libgcc'
+  'libx11'
+  'libxcb'
+  'libxcomposite'
+  'libxdamage'
+  'libxext'
+  'libxfixes'
+  'libxkbcommon'
+  'libxrandr'
+  'mesa'
+  'nspr'
+  'nss'
+  'pango'
+  'systemd-libs'
+  'wayland'
+)
+optdepends=(
+  'libayatana-appindicator: tray icon fallback on some desktops'
+  'gnome-keyring: password storage backend on GNOME'
+  'kwallet: password storage backend on KDE'
+  'pipewire: audio output and screen sharing on Wayland'
+)
+
+if [[ ${WELKIN_LOCAL_DEB:-0} == 1 ]]; then
+  # scripts/package-arch.sh copies the freshly built .deb and the repository
+  # LICENSE next to this PKGBUILD, so CI never downloads a release asset.
+  _deb_name='welkin.deb'
+  source=("$_deb_name" 'LICENSE-upstream')
+  noextract=("$_deb_name")
+else
+  _deb_name="Welkin_${_gh_tag#v}_amd64.deb"
+  source=(
+    "https://github.com/atemukesu/WelkinPlayer/releases/download/${_gh_tag}/${_deb_name}"
+    "LICENSE-upstream::https://raw.githubusercontent.com/atemukesu/WelkinPlayer/${_gh_tag}/LICENSE"
+  )
+  noextract=("$_deb_name")
+fi
+
+# CI passes the checksums of the local files; the AUR copy pins real values.
+sha256sums=("${WELKIN_DEB_SHA256:-SKIP}" "${WELKIN_LICENSE_SHA256:-SKIP}")
+
+# Upstream's binary is already stripped; repackaging must not touch it.
+options=('!strip' '!debug' '!lto')
+
+install=welkinplayer-bin.install
+
+prepare() {
+  # The deb is an ar archive; pipe data.tar.* straight into a second bsdtar so
+  # no intermediate copy of the ~150 MiB payload is written to disk. Local
+  # sources are symlinked into $srcdir by makepkg, hence -L.
+  local deb member
+  deb=$(find -L "$srcdir" -maxdepth 1 -type f -name '*.deb' -print -quit)
+  [[ -n $deb ]] || error 'no .deb source found in $srcdir'
+
+  member=$(bsdtar -tf "$deb" | grep -m1 '^data\.tar') ||
+    error "no data.tar.* member in $(basename "$deb")"
+
+  mkdir -p "$srcdir/deb"
+  bsdtar -xOf "$deb" "$member" | bsdtar -xf - -C "$srcdir/deb"
+
+  # Refuse to build a package that installs but cannot start: the Tauri bundler
+  # silently omits the CEF runtime when it does not detect tauri-runtime-cef.
+  local required=(
+    'usr/share/Welkin/welkinplayer'
+    'usr/share/Welkin/libcef.so'
+    'usr/share/Welkin/icudtl.dat'
+    'usr/share/Welkin/resources.pak'
+    'usr/share/Welkin/locales/en-US.pak'
+  )
+  local file
+  for file in "${required[@]}"; do
+    [[ -e $srcdir/deb/$file ]] || error "missing required bundled file: $file"
+  done
+}
+
+package() {
+  cp -a "$srcdir/deb/usr" "$pkgdir/"
+
+  # CEF refuses to start renderer processes unless its sandbox helper is setuid
+  # root. fakeroot records the mode in .MTREE, and pacman restores it on install.
+  chmod 4755 "$pkgdir/usr/share/Welkin/chrome-sandbox"
+
+  # Upstream ships the scaffolding placeholders "A Tauri App" and an empty
+  # Categories=, which leaves the entry uncategorised in application menus.
+  sed -i \
+    -e 's/^Comment=.*/Comment=Cross-platform music player with WebDAV sync and word-by-word lyrics/' \
+    -e 's/^Categories=.*/Categories=AudioVideo;Audio;Music;/' \
+    "$pkgdir/usr/share/applications/Welkin.desktop"
+
+  install -Dm644 "$srcdir/LICENSE-upstream" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+
+  find "$pkgdir" -mindepth 1 -type d -empty -delete
+}

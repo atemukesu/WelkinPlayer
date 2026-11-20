@@ -27,7 +27,7 @@ if (!bundle || !out || !os) {
 const WANTED = {
   windows: [".exe", ".exe.sig", ".msi", ".msi.sig"],
   macos: [".app.tar.gz", ".app.tar.gz.sig", ".dmg"],
-  linux: [".AppImage", ".AppImage.sig", ".deb", ".rpm"],
+  linux: [".AppImage", ".AppImage.sig", ".deb", ".rpm", ".pkg.tar.zst"],
 };
 
 mkdirSync(out, { recursive: true });
