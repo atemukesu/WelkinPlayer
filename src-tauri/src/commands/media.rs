@@ -164,6 +164,10 @@ pub(crate) fn write_lyric(dir: &Path, hash: &str, content: &str) -> Result<(), A
 }
 
 /// Delete the cached assets (metadata, cover, lyrics) for one track.
+///
+/// Only called when the file itself changed (same path, new size/mtime). A file
+/// vanishing from one listing is not a reason to drop its assets; see
+/// [`changed_asset_paths`].
 pub(crate) fn invalidate_track_assets(app: &AppHandle, source_id: &str, path: &str) {
     let dir = resolve_cache_dir(app);
     let hash = asset_hash(source_id, path);
@@ -346,6 +350,8 @@ pub fn save_library_cache(
 pub struct RefreshResult {
     pub entries: Vec<RemoteEntry>,
     pub changed: bool,
+    /// Files whose size/mtime changed, so their cached assets were dropped.
+    /// Songs that only disappeared from this scan are never listed here.
     pub changed_paths: Vec<String>,
     /// The fresh scan was not trusted as a complete snapshot, so the on-disk
     /// cache (and all cached metadata/covers/lyrics) was deliberately left
@@ -393,6 +399,33 @@ fn extend_with_cached(
     });
 }
 
+/// Paths whose cached assets (metadata, cover, lyrics) are provably stale.
+///
+/// Only files that still exist in the new listing *and* whose size or
+/// modification time changed are returned. A file that merely disappeared from
+/// a listing is deliberately excluded: WebDAV servers can return a short but
+/// syntactically valid listing, and treating "missing from this scan" as
+/// "deleted" used to wipe `meta/` and `covers/` for songs that were still there.
+/// The next launch then had to download every one of them again. Listing
+/// membership is guarded by the library cache; assets are keyed by file
+/// identity, not by whether a particular scan happened to see the file.
+fn changed_asset_paths(entries: &[RemoteEntry], cached: &[RemoteEntry]) -> Vec<String> {
+    let cached_meta: std::collections::HashMap<&str, (Option<u64>, Option<&str>)> = cached
+        .iter()
+        .map(|entry| (entry.path.as_str(), (entry.size, entry.modified.as_deref())))
+        .collect();
+
+    entries
+        .iter()
+        .filter(|entry| match cached_meta.get(entry.path.as_str()) {
+            Some((size, modified)) => *size != entry.size || *modified != entry.modified.as_deref(),
+            // Never seen before: there is no cached asset to invalidate.
+            None => false,
+        })
+        .map(|entry| entry.path.clone())
+        .collect()
+}
+
 /// Re-list a source immediately, comparing it with the cache by hash.
 ///
 /// The cache is only replaced by a *complete* scan that does not look like a
@@ -424,21 +457,10 @@ pub async fn refresh_source_library(
         .map(|value| value.trim().to_string());
     let old_entries = read_library_cache(&dir, &source_id);
 
-    let old_meta: std::collections::HashMap<&str, (Option<u64>, Option<&str>)> = old_entries
-        .iter()
-        .map(|entry| (entry.path.as_str(), (entry.size, entry.modified.as_deref())))
-        .collect();
-
-    let mut changed_paths = Vec::new();
-    for entry in &entries {
-        let unchanged = old_meta
-            .get(entry.path.as_str())
-            .map(|(size, modified)| *size == entry.size && *modified == entry.modified.as_deref())
-            .unwrap_or(false);
-        if !unchanged {
-            changed_paths.push(entry.path.clone());
-        }
-    }
+    // Only files whose content actually changed lose their cached metadata,
+    // cover, and lyrics. Songs that a short scan failed to report keep their
+    // assets and are served from disk when they reappear.
+    let changed_paths = changed_asset_paths(&entries, &old_entries);
     let changed = old_hash.as_deref() != Some(new_hash.as_str());
 
     let pending_file = library_pending_file(&dir, &source_id);
@@ -504,13 +526,6 @@ pub async fn refresh_source_library(
     if changed {
         for path in &changed_paths {
             invalidate_track_assets(&app, &source_id, path);
-        }
-        let live: std::collections::HashSet<&str> =
-            entries.iter().map(|entry| entry.path.as_str()).collect();
-        for entry in &old_entries {
-            if !live.contains(entry.path.as_str()) {
-                invalidate_track_assets(&app, &source_id, &entry.path);
-            }
         }
         write_atomic(
             &library_cache_file(&dir, &source_id),
@@ -895,6 +910,35 @@ mod tests {
         assert_eq!(deduped.len(), 2);
         assert_eq!(deduped[0].local_path, "Album/Song.flac");
         assert_eq!(deduped[1].local_path, "Other/Song.flac");
+    }
+
+    #[test]
+    fn only_files_with_changed_content_lose_their_cached_assets() {
+        let mut cached = vec![
+            entry("a.flac", "/webdav/a.flac", 10),
+            entry("b.flac", "/webdav/b.flac", 20),
+            entry("gone.flac", "/webdav/gone.flac", 30),
+        ];
+        cached[0].modified = Some("t1".into());
+        cached[1].modified = Some("t1".into());
+        cached[2].modified = Some("t1".into());
+
+        let mut fresh = vec![
+            entry("a.flac", "/webdav/a.flac", 10),
+            entry("b.flac", "/webdav/b.flac", 20),
+            // A path the cache does not know yet has no asset to invalidate.
+            entry("new.flac", "/webdav/new.flac", 40),
+        ];
+        fresh[0].modified = Some("t1".into());
+        fresh[1].modified = Some("t2".into());
+        fresh[2].modified = Some("t1".into());
+
+        // `gone.flac` missing from the fresh scan must NOT be invalidated: a
+        // short listing is not proof of deletion and used to force a re-download.
+        assert_eq!(
+            changed_asset_paths(&fresh, &cached),
+            vec!["/webdav/b.flac".to_string()]
+        );
     }
 
     #[test]
