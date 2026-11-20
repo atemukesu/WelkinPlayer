@@ -18,13 +18,18 @@ const root = ref<HTMLElement>();
 const menu = ref<HTMLElement>();
 const position = ref({ x: 0, y: 0 });
 
-const options: { value: TrackSortKey; labelKey: string }[] = [
-  { value: "default", labelKey: "library.sortDefault" },
-  { value: "title", labelKey: "library.sortTitle" },
-  { value: "artist", labelKey: "library.sortArtist" },
-  { value: "album", labelKey: "library.sortAlbum" },
-  { value: "duration", labelKey: "library.sortDuration" },
-];
+const options = computed<{ value: TrackSortKey; labelKey: string }[]>(() => {
+  const base: { value: TrackSortKey; labelKey: string }[] = [
+    { value: "default", labelKey: "library.sortDefault" },
+    { value: "title", labelKey: "library.sortTitle" },
+    { value: "artist", labelKey: "library.sortArtist" },
+    { value: "album", labelKey: "library.sortAlbum" },
+    { value: "duration", labelKey: "library.sortDuration" },
+  ];
+  // Playlists record real timestamps; favorites keep their add order in the profile.
+  if (props.context === "playlist" || props.context === "favorites") base.splice(1, 0, { value: "added", labelKey: "library.sortAdded" });
+  return base;
+});
 
 // Keep the menu fully inside the viewport, measuring its real rendered size.
 function clampToViewport() {
@@ -59,7 +64,10 @@ function close() {
 }
 
 function choose(value: TrackSortKey) {
-  useTrackSort(props.context).key.value = value;
+  const state = useTrackSort(props.context);
+  // "Date added" reads newest-first by default; the arrow still flips it.
+  if (value === "added" && state.key.value !== "added") state.dir.value = "desc";
+  state.key.value = value;
   close();
 }
 

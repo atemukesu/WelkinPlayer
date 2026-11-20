@@ -8,7 +8,7 @@ import type { Track } from "../stores/player";
 import { bucketLabel, bucketWeight } from "./reading";
 import { reading } from "./readings";
 
-export type TrackSortKey = "default" | "title" | "artist" | "album" | "duration";
+export type TrackSortKey = "default" | "title" | "artist" | "album" | "duration" | "added";
 export type TrackSortDir = "asc" | "desc";
 
 /** Each page keeps its own sort preference instead of sharing one global choice. */
@@ -25,7 +25,7 @@ function dirStorage(context: TrackSortContext) {
 }
 
 function normalizeKey(value: string | null): TrackSortKey {
-  return value === "title" || value === "artist" || value === "album" || value === "duration" ? value : "default";
+  return value === "title" || value === "artist" || value === "album" || value === "duration" || value === "added" ? value : "default";
 }
 
 function readKey(context: TrackSortContext): TrackSortKey {
@@ -78,7 +78,7 @@ export function parseDuration(value: string): number {
   return text.split(":").reduce((total, part) => total * 60 + Number(part), 0);
 }
 
-function compare(a: Track, b: Track, key: Exclude<TrackSortKey, "default">): number {
+function compare(a: Track, b: Track, key: Exclude<TrackSortKey, "default" | "added">): number {
   if (key === "duration") {
     const left = parseDuration(a.duration);
     const right = parseDuration(b.duration);
@@ -110,10 +110,28 @@ function compareReadings(a: string, b: string): number {
   return collator.compare(left, right);
 }
 
+/** Extra data some sort keys need; currently only the `"added"` order. */
+export interface TrackSortOptions {
+  /**
+   * Timestamp (ms) when the track was added, for the `"added"` key. Tracks
+   * without a value fall back to their position in the input, which keeps
+   * playlists written before timestamps existed in their stored order and lets
+   * favorites (which are stored in add order) use the same key.
+   */
+  addedAt?: (track: Track) => number | undefined;
+}
+
 /** Returns a new array sorted by the given key/direction; "default" returns the source untouched. */
-export function sortTracks(tracks: Track[], key: TrackSortKey, dir: TrackSortDir): Track[] {
+export function sortTracks(tracks: Track[], key: TrackSortKey, dir: TrackSortDir, options: TrackSortOptions = {}): Track[] {
   if (key === "default") return tracks;
   const factor = dir === "desc" ? -1 : 1;
+  if (key === "added") {
+    const weights = tracks.map((track, index) => options.addedAt?.(track) ?? index);
+    return tracks
+      .map((track, index) => ({ track, index }))
+      .sort((a, b) => (weights[a.index] - weights[b.index]) * factor || a.index - b.index)
+      .map((entry) => entry.track);
+  }
   return tracks
     .map((track, index) => ({ track, index }))
     // Fall back to the original position so equal rows keep their order.

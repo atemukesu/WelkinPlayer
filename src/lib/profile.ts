@@ -19,6 +19,12 @@ export interface Playlist {
   name: string;
   tracks: string[];
   /**
+   * Epoch milliseconds when each track was added, keyed by its remote path.
+   * Optional so playlists written before this field existed still load; a
+   * missing entry falls back to that track's position in {@link tracks}.
+   */
+  addedAt?: Record<string, number>;
+  /**
    * @deprecated Legacy uploaded cover embedded as a compressed data URL. New
    * covers are uploaded as standalone files and referenced by {@link coverFile};
    * this field is only kept so existing profiles render until they migrate.
@@ -172,10 +178,17 @@ export function parseProfile(raw: string | null | undefined, fallback: Profile):
         const tracks = Array.isArray(item.tracks)
           ? item.tracks.filter((track): track is string => typeof track === "string")
           : [];
+        const addedAt: Record<string, number> = {};
+        if (isRecord(item.addedAt)) {
+          for (const [key, value] of Object.entries(item.addedAt)) {
+            if (typeof value === "number" && Number.isFinite(value)) addedAt[key] = value;
+          }
+        }
         return [{
           id: typeof item.id === "string" ? item.id : createId(),
           name: item.name,
           tracks,
+          addedAt: Object.keys(addedAt).length > 0 ? addedAt : undefined,
           cover: typeof item.cover === "string" ? item.cover : undefined,
           coverFile: typeof item.coverFile === "string" ? item.coverFile : undefined,
           coverTrack: typeof item.coverTrack === "string" ? item.coverTrack : undefined,

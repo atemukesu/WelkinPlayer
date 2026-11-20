@@ -19,6 +19,8 @@ import type { Playlist, Profile, SmartTransitionMeta } from "./profile";
 export interface PlaylistPatch {
   name?: string;
   tracks?: string[];
+  /** Add timestamps matching `tracks`, sent alongside a full track-list patch. */
+  addedAt?: Record<string, number>;
   cover?: string;
   coverFile?: string;
   coverTrack?: string;
@@ -40,7 +42,7 @@ export type ProfileOp =
   | { type: "createPlaylist"; playlist: Playlist }
   | { type: "renamePlaylist"; id: string; name: string }
   | { type: "deletePlaylist"; id: string }
-  | { type: "addTrack"; id: string; key: string }
+  | { type: "addTrack"; id: string; key: string; at?: number }
   | { type: "removeTrack"; id: string; key: string }
   | { type: "moveTrack"; id: string; key: string; direction: "up" | "down" }
   | { type: "updatePlaylist"; id: string; patch: PlaylistPatch }
@@ -259,6 +261,7 @@ export function replayProfileOps(
         }
         if (!playlist.tracks.includes(op.key)) {
           playlist.tracks.push(op.key);
+          playlist.addedAt = { ...(playlist.addedAt ?? {}), [op.key]: op.at ?? Date.now() };
           markStale(playlist);
         }
         break;
@@ -275,6 +278,11 @@ export function replayProfileOps(
         }
         if (playlist.tracks.includes(op.key)) {
           playlist.tracks = playlist.tracks.filter((item) => item !== op.key);
+          if (playlist.addedAt) {
+            const next = { ...playlist.addedAt };
+            delete next[op.key];
+            playlist.addedAt = next;
+          }
           markStale(playlist);
         }
         break;
@@ -359,8 +367,12 @@ export function replayProfileOps(
             });
           } else if (changedLocally) {
             playlist.tracks = [...patch.tracks];
+            if (patch.addedAt) playlist.addedAt = { ...patch.addedAt };
             markStale(playlist);
           }
+        } else if (patch.addedAt && sameValue(playlist.tracks, patch.tracks)) {
+          // The list already matches; still carry timestamps the cloud lacks.
+          playlist.addedAt = { ...patch.addedAt };
         }
 
         const hasCoverFile = patch.coverFile !== undefined;

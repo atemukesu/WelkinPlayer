@@ -70,8 +70,21 @@ const sourceTracks = computed(() => {
 const sortContext = computed<TrackSortContext>(() => activePlaylist.value ? "playlist" : isGroup.value ? (groupKind.value === "artists" ? "artist" : "album") : "tracks");
 const sortKey = computed(() => useTrackSort(sortContext.value).key.value);
 const sortDir = computed(() => useTrackSort(sortContext.value).dir.value);
+/**
+ * Resolves a row's playlist "added" timestamp. Rows without one (playlists
+ * saved before timestamps existed, or a device-local duplicate) fall back to
+ * their position in the list.
+ */
+const playlistAddedAt = computed<((track: Track) => number | undefined) | undefined>(() => {
+  const times = activePlaylist.value?.addedAt;
+  if (!times) return undefined;
+  return (track) => {
+    const key = track.profileKey ?? profileKeyForTrack(track);
+    return key ? times[key] : undefined;
+  };
+});
 /** Source order with the chosen sort applied; the play queue follows this so "next" matches the screen. */
-const orderedTracks = computed(() => sortTracks(sourceTracks.value, sortKey.value, sortDir.value));
+const orderedTracks = computed(() => sortTracks(sourceTracks.value, sortKey.value, sortDir.value, { addedAt: playlistAddedAt.value }));
 const tracks = computed(() => {
   const value = query.value.trim().toLocaleLowerCase();
   return value ? orderedTracks.value.filter((track) => `${track.title} ${track.artist} ${track.album}`.toLocaleLowerCase().includes(value)) : orderedTracks.value;

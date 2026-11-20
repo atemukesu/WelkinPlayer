@@ -128,7 +128,16 @@ export const useProfileStore = defineStore("profile", () => {
       playCounts[next] = (playCounts[next] ?? 0) + count;
     }
     value.playCounts = playCounts;
-    value.playlists = value.playlists.map((playlist) => ({ ...playlist, tracks: playlist.tracks.map(migrate), coverTrack: playlist.coverTrack ? migrate(playlist.coverTrack) : playlist.coverTrack }));
+    value.playlists = value.playlists.map((playlist) => {
+      const tracks = playlist.tracks.map(migrate);
+      let addedAt = playlist.addedAt;
+      if (addedAt) {
+        const next: Record<string, number> = {};
+        for (const [key, at] of Object.entries(addedAt)) next[migrate(key)] = at;
+        addedAt = next;
+      }
+      return { ...playlist, tracks, addedAt, coverTrack: playlist.coverTrack ? migrate(playlist.coverTrack) : playlist.coverTrack };
+    });
     return { value, changed };
   }
 
@@ -611,14 +620,29 @@ export const useProfileStore = defineStore("profile", () => {
     const playlist = profile.value.playlists.find((item) => item.id === id);
     if (!playlist) return;
     if (patch.name !== undefined) playlist.name = patch.name.trim() || playlist.name;
-    if (patch.tracks !== undefined) playlist.tracks = [...patch.tracks];
+    if (patch.tracks !== undefined) {
+      // Keep the timestamp of tracks that were already in the playlist and
+      // stamp only the new ones, so "added" order survives edits/reorders.
+      const previousTimes = playlist.addedAt ?? {};
+      const now = Date.now();
+      const addedAt: Record<string, number> = {};
+      const tracks = [...patch.tracks];
+      tracks.forEach((key, index) => {
+        addedAt[key] = previousTimes[key] ?? now + index;
+      });
+      playlist.tracks = tracks;
+      playlist.addedAt = addedAt;
+    }
     if ("cover" in patch) playlist.cover = patch.cover;
     if ("coverFile" in patch) playlist.coverFile = patch.coverFile;
     if ("coverTrack" in patch) playlist.coverTrack = patch.coverTrack;
     if ("smartTransition" in patch) playlist.smartTransition = patch.smartTransition;
     const op: PlaylistPatch = {};
     if (patch.name !== undefined) op.name = playlist.name;
-    if (patch.tracks !== undefined) op.tracks = [...patch.tracks];
+    if (patch.tracks !== undefined) {
+      op.tracks = [...playlist.tracks];
+      if (playlist.addedAt) op.addedAt = { ...playlist.addedAt };
+    }
     if ("cover" in patch || "coverFile" in patch) {
       if (patch.cover === undefined && patch.coverFile === undefined) op.clearCover = true;
       else {
@@ -776,8 +800,10 @@ export const useProfileStore = defineStore("profile", () => {
     const playlist = profile.value.playlists.find((item) => item.id === id);
     if (!playlist || playlist.tracks.includes(path)) return;
     playlist.tracks.push(path);
+    const at = Date.now();
+    playlist.addedAt = { ...(playlist.addedAt ?? {}), [path]: at };
     markSmartTransitionStale(id);
-    enqueue({ type: "addTrack", id, key: path });
+    enqueue({ type: "addTrack", id, key: path, at });
     scheduleSave();
   }
 
@@ -786,6 +812,11 @@ export const useProfileStore = defineStore("profile", () => {
     const playlist = profile.value.playlists.find((item) => item.id === id);
     if (!playlist) return;
     playlist.tracks = playlist.tracks.filter((item) => item !== path);
+    if (playlist.addedAt) {
+      const next = { ...playlist.addedAt };
+      delete next[path];
+      playlist.addedAt = next;
+    }
     markSmartTransitionStale(id);
     enqueue({ type: "removeTrack", id, key: path });
     scheduleSave();
