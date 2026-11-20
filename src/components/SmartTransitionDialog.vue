@@ -295,7 +295,9 @@ watch(
               <AudioLines :size="18" />
             </span>
             <div class="min-w-0 flex-1">
-              <h2 class="truncate text-base font-black tracking-wide">{{ t("library.playlists.smart.title") }}</h2>
+              <h2 class="truncate text-base font-black tracking-wide">
+                {{ t("library.playlists.smart.title") }}<span class="ml-1 align-baseline text-[11px] font-normal tracking-normal text-dim">{{ t("library.playlists.smart.experimental") }}</span>
+              </h2>
               <p class="mt-0.5 line-clamp-2 text-xs text-dim">{{ t("library.playlists.smart.desc") }}</p>
             </div>
             <button

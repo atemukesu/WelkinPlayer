@@ -323,6 +323,7 @@ const messages = {
           noTracks: "这个歌单还没有歌曲，右键歌曲即可加入。",
           smart: {
             button: "智能过渡",
+            experimental: "（实验性）",
             buttonHint: "推断最佳播放顺序与衔接点",
             badgeReady: "已推断",
             badgeStale: "待更新",
@@ -1288,6 +1289,7 @@ const messages = {
           noTracks: "This playlist is empty. Right-click a track to add it.",
           smart: {
             button: "Smart transitions",
+            experimental: " (experimental)",
             buttonHint: "Infer the best play order and mix points",
             badgeReady: "Analysed",
             badgeStale: "Needs update",
