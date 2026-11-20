@@ -10,7 +10,7 @@ import { Check, ImagePlus, LoaderCircle, Music2, Search, Trash2, X } from "@luci
 import { useI18n } from "vue-i18n";
 import { usePlayerStore } from "../stores/player";
 import type { Track } from "../stores/player";
-import { useProfileStore } from "../stores/profile";
+import { profileKeyForTrack, tracksForPaths, useProfileStore } from "../stores/profile";
 import type { Playlist } from "../lib/profile";
 import { coverPending, initial } from "../lib/format";
 import { trackKey } from "../lib/sources";
@@ -36,14 +36,24 @@ const mode = ref<"upload" | "icon">(coverTrack.value ? "icon" : "upload");
 const cropSrc = ref<string | null>(null);
 const trackQuery = ref("");
 const listQuery = ref("");
-const selected = ref<Set<string>>(new Set(editing.value?.tracks ?? []));
+/** Key the track list uses for a row: device-local for real files, profile key for synced placeholders. */
+function rowKey(track: Track): string | undefined { return trackKey(track) ?? track.profileKey; }
+/**
+ * The playlist resolved against this device. Keys with no local file become
+ * greyed-out placeholder tracks instead of disappearing, so they stay visible
+ * (and selectable) in the editor.
+ */
+const editingTracks = computed(() => editing.value ? tracksForPaths(editing.value.tracks, player.tracks) : []);
+const selected = ref<Set<string>>(new Set(editingTracks.value.map((track) => rowKey(track)).filter((key): key is string => !!key)));
 /** Two-step delete guard: the first click arms, the second within the window deletes. */
 const pendingDelete = ref<string | null>(null);
 
 const selectedPaths = computed(() => {
+  const toProfileKey = (track: Track) => profileKeyForTrack(track) ?? track.profileKey;
   const known = player.tracks
     .filter((track) => trackKey(track) && selected.value.has(trackKey(track) as string))
-    .map((track) => trackKey(track) as string);
+    .map((track) => toProfileKey(track))
+    .filter((key): key is string => !!key);
   const knownSet = new Set(known);
   return [...known, ...[...selected.value].filter((key) => !knownSet.has(key))];
 });
@@ -52,9 +62,11 @@ const pickerTracks = computed(() => {
   const value = trackQuery.value.trim().toLocaleLowerCase();
   return player.tracks.filter((track) => track.path && (!value || `${track.title} ${track.artist}`.toLocaleLowerCase().includes(value)));
 });
+/** Synced entries this device cannot resolve; shown so they can be deselected and dropped. */
+const missingTracks = computed(() => editingTracks.value.filter((track) => track.unavailable));
 const listTracks = computed(() => {
   const value = listQuery.value.trim().toLocaleLowerCase();
-  const source = player.tracks.filter((track) => track.path);
+  const source = [...player.tracks.filter((track) => track.path), ...missingTracks.value];
   return value ? source.filter((track) => `${track.title} ${track.artist} ${track.album}`.toLocaleLowerCase().includes(value)) : source;
 });
 

@@ -55,8 +55,14 @@ function onWindowResize() {
 }
 
 const currentKey = computed(() => trackKey(props.track) ?? props.track.profileKey);
-const paths = computed(() => props.selectedPaths.length > 0 ? props.selectedPaths : (currentKey.value ? [currentKey.value] : []));
-const isSelection = computed(() => props.selectedPaths.length > 0);
+/**
+ * Only operate on the selection when the row that was right-clicked is part of
+ * it. Right-clicking outside a selection acts on that one row, which is the
+ * usual file-manager behaviour and keeps unavailable rows removable even while
+ * other tracks are selected.
+ */
+const isSelection = computed(() => props.selectedPaths.length > 0 && (!currentKey.value || props.selectedPaths.includes(currentKey.value)));
+const paths = computed(() => isSelection.value ? props.selectedPaths : (currentKey.value ? [currentKey.value] : []));
 const allFavorite = computed(() => paths.value.length > 0 && paths.value.every((key) => profile.isFavorite(key)));
 const favorite = computed(() => !isSelection.value && profile.isFavorite(currentKey.value));
 const lyricsDisabled = computed(() => !isSelection.value && !!currentKey.value && profile.isLyricsDisabled(currentKey.value));
@@ -145,7 +151,7 @@ onBeforeUnmount(() => {
             <template v-if="isSelection"><p class="truncate text-xs font-semibold tracking-wide">{{ t("library.menu.selectedCount", { count: paths.length }) }}</p></template>
             <template v-else><p class="truncate text-xs font-semibold tracking-wide">{{ track.title }}</p><p class="truncate text-[11px] text-black/60">{{ track.artist }}</p></template>
           </div>
-          <button v-if="paths.length && !track.unavailable" type="button" role="menuitem" class="track-menu__item" @click="toggleFavorite"><HeartOff v-if="isSelection ? allFavorite : favorite" :size="16" /><Heart v-else :size="16" />{{ (isSelection ? allFavorite : favorite) ? t("library.menu.unfavorite") : t("library.menu.favorite") }}</button>
+          <button v-if="paths.length && (!track.unavailable || allFavorite)" type="button" role="menuitem" class="track-menu__item" @click="toggleFavorite"><HeartOff v-if="isSelection ? allFavorite : favorite" :size="16" /><Heart v-else :size="16" />{{ (isSelection ? allFavorite : favorite) ? t("library.menu.unfavorite") : t("library.menu.favorite") }}</button>
           <button v-if="!track.unavailable" type="button" role="menuitem" class="track-menu__item" @click="showPlaylists = !showPlaylists"><ListPlus :size="16" /><span class="flex-1">{{ t("library.menu.addToPlaylist") }}</span><ChevronRight :size="14" class="transition-transform" :class="showPlaylists ? 'rotate-90' : ''" /></button>
           <div v-if="showPlaylists" class="track-menu__submenu"><p v-if="profile.playlists.length === 0" class="px-3 py-2 text-[11px] text-black/50">{{ t("library.menu.noPlaylists") }}</p><button v-for="playlist in profile.playlists" :key="playlist.id" type="button" class="track-menu__subitem" @click="addToPlaylist(playlist.id)"><span class="truncate">{{ playlist.name }}</span><span class="ml-auto font-mono text-[10px] text-black/40">{{ playlist.tracks.length }}</span></button></div>
           <button v-if="playlistId && !isSelection && canMoveUp" type="button" role="menuitem" class="track-menu__item" @click="moveTrack('up')"><ArrowUp :size="16" />{{ t("library.menu.moveUp") }}</button>
