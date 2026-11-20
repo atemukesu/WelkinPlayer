@@ -38,6 +38,8 @@ const selectMode = ref(false);
 const selected = ref<Set<string>>(new Set());
 const scrollEl = ref<HTMLElement | null>(null);
 const smartOpen = ref(false);
+/** Serializes rapid switch clicks; the enable/disable path awaits I/O. */
+const smartToggling = ref(false);
 
 const activePlaylist = computed(() => props.playlistId ? profile.playlists.find((item) => item.id === props.playlistId) ?? null : null);
 /** A generated artist/album collection, selected from the classification views. */
@@ -60,7 +62,8 @@ const groupTitle = computed(() => {
 });
 /** Representative cover for a generated collection: the first track that has artwork. */
 const groupCoverTrack = computed(() => groupTracks.value?.find((track) => track.cover) ?? groupTracks.value?.[0]);
-const sourceTracks = computed(() => {
+/** Entries in the profile's (shared) order, before any device-local smart mix. */
+const playlistTracks = computed(() => {
   if (activePlaylist.value) return tracksForPaths(activePlaylist.value.tracks, player.tracks);
   if (groupTracks.value) return groupTracks.value;
   if (sourceFilter.value) return player.tracks.filter((track) => track.sourceId === sourceFilter.value);
@@ -83,13 +86,7 @@ const playlistAddedAt = computed<((track: Track) => number | undefined) | undefi
     return key ? times[key] : undefined;
   };
 });
-/** Source order with the chosen sort applied; the play queue follows this so "next" matches the screen. */
-const orderedTracks = computed(() => sortTracks(sourceTracks.value, sortKey.value, sortDir.value, { addedAt: playlistAddedAt.value }));
-const tracks = computed(() => {
-  const value = query.value.trim().toLocaleLowerCase();
-  return value ? orderedTracks.value.filter((track) => `${track.title} ${track.artist} ${track.album}`.toLocaleLowerCase().includes(value)) : orderedTracks.value;
-});
-const smartEnabled = computed(() => activePlaylist.value?.smartTransition?.enabled === true);
+const smartEnabled = computed(() => (activePlaylist.value ? smart.isEnabled(activePlaylist.value.id) : false));
 const smartReady = computed(() => activePlaylist.value?.smartTransition?.status === "ready");
 const smartBusy = computed(() => (activePlaylist.value ? smart.isBusy(activePlaylist.value.id) : false));
 /** Aggregate analysis progress, shown on the switch while its dialog is closed. */
@@ -107,7 +104,7 @@ const smartOrderTracks = computed<Track[] | null>(() => {
   const summary = playlist ? smart.summaryFor(playlist.id) : null;
   if (!playlist || !summary || summary.incomplete) return null;
   const byKey = new Map<string, Track>();
-  for (const track of sourceTracks.value) {
+  for (const track of playlistTracks.value) {
     const key = trackKey(track);
     if (key) byKey.set(key, track);
   }
@@ -117,10 +114,22 @@ const smartOrderTracks = computed<Track[] | null>(() => {
     if (track) ordered.push(track);
   }
   // Never drop tracks the analysis did not know about.
-  for (const track of sourceTracks.value) {
+  for (const track of playlistTracks.value) {
     if (!ordered.includes(track)) ordered.push(track);
   }
   return ordered;
+});
+/**
+ * The list the page renders. While the local switch is on it follows the
+ * analysed order, but that order is never written back into the shared
+ * playlist — the profile stays exactly as the user arranged it.
+ */
+const sourceTracks = computed(() => (smartLocked.value ? (smartOrderTracks.value ?? playlistTracks.value) : playlistTracks.value));
+/** Source order with the chosen sort applied; the play queue follows this so "next" matches the screen. */
+const orderedTracks = computed(() => sortTracks(sourceTracks.value, sortKey.value, sortDir.value, { addedAt: playlistAddedAt.value }));
+const tracks = computed(() => {
+  const value = query.value.trim().toLocaleLowerCase();
+  return value ? orderedTracks.value.filter((track) => `${track.title} ${track.artist} ${track.album}`.toLocaleLowerCase().includes(value)) : orderedTracks.value;
 });
 /**
  * The queue smart playback uses: the analysed order when locked, otherwise
@@ -132,14 +141,13 @@ const queueTracks = computed(() => (smartLocked.value ? (smartOrderTracks.value 
 const letterIndex = computed(() => (sortKey.value === "title" && !selectMode.value && (sortContext.value === "tracks" || sortContext.value === "playlist") ? titleLetterIndex(tracks.value) : null));
 
 watch([() => props.playlistId, () => props.artist, () => props.album], () => { selectMode.value = false; selected.value = new Set(); });
-// Load the analysis document when opening an enabled playlist so playback can
-// use its exact order even before the dialog is opened.
+// Load the analysis document when opening a playlist whose switch is on so
+// playback can use its exact order even before the dialog is opened.
 watch(
   () => props.playlistId,
   (id) => {
     if (!id) return;
-    const playlist = profile.playlists.find((item) => item.id === id);
-    if (playlist?.smartTransition?.enabled) void smart.load(id);
+    if (smart.isEnabled(id)) void smart.load(id);
   },
   { immediate: true },
 );
@@ -205,41 +213,48 @@ function isCurrentQueue(playlist: Playlist): boolean {
  */
 async function toggleSmart() {
   const playlist = activePlaylist.value;
-  if (!playlist) return;
+  if (!playlist || smartToggling.value) return;
   if (smart.isBusy(playlist.id)) {
     smartOpen.value = true;
     return;
   }
-  if (smartEnabled.value) {
-    await smart.disable(playlist.id);
-    // Only touch the live queue when it belongs to this playlist; another
-    // playlist may be the one currently playing.
-    if (isCurrentQueue(playlist)) {
-      await smart.clearPlans();
-      const keys = queueTracks.value
-        .map(trackKey)
-        .filter((key): key is string => !!key);
-      if (keys.length > 0) await player.reorderQueue(keys);
+  // A click can await loading the document or starting an analysis. Ignore
+  // further clicks until that settles so two runs cannot interleave.
+  smartToggling.value = true;
+  try {
+    if (smartEnabled.value) {
+      await smart.disable(playlist.id);
+      // Only touch the live queue when it belongs to this playlist; another
+      // playlist may be the one currently playing.
+      if (isCurrentQueue(playlist)) {
+        await smart.clearPlans();
+        const keys = queueTracks.value
+          .map(trackKey)
+          .filter((key): key is string => !!key);
+        if (keys.length > 0) await player.reorderQueue(keys);
+      }
+      pushToast("info", t("library.playlists.smart.disabled"));
+      return;
     }
-    pushToast("info", t("library.playlists.smart.disabled"));
-    return;
+    let summary = smart.summaryFor(playlist.id);
+    if (!summary) summary = await smart.load(playlist.id);
+    if (!summary || summary.incomplete || playlist.smartTransition?.status === "stale") {
+      // Nothing trustworthy to enable yet: show progress and run/resume the
+      // analysis. It is applied automatically once the run finishes.
+      smartOpen.value = true;
+      summary = await smart.analyze(playlist.id);
+      if (!summary || summary.incomplete) return;
+    }
+    if (!smart.applyOrder(playlist.id)) {
+      smartOpen.value = true;
+      return;
+    }
+    smartOpen.value = false;
+    useTrackSort("playlist").key.value = "default";
+    pushToast("success", t("library.playlists.smart.applied"));
+  } finally {
+    smartToggling.value = false;
   }
-  let summary = smart.summaryFor(playlist.id);
-  if (!summary) summary = await smart.load(playlist.id);
-  if (!summary || summary.incomplete || playlist.smartTransition?.status === "stale") {
-    // Nothing trustworthy to enable yet: show progress and run/resume the
-    // analysis. It is applied automatically once the run finishes.
-    smartOpen.value = true;
-    summary = await smart.analyze(playlist.id);
-    if (!summary || summary.incomplete) return;
-  }
-  if (!smart.applyOrder(playlist.id)) {
-    smartOpen.value = true;
-    return;
-  }
-  smartOpen.value = false;
-  useTrackSort("playlist").key.value = "default";
-  pushToast("success", t("library.playlists.smart.applied"));
 }
 // Applying the analysed order (from the header switch or the dialog) pins the
 // live queue too, without restarting the current track.
@@ -299,7 +314,7 @@ function removeTrack(track: Track) {
                 <label class="flex h-10 min-w-0 flex-1 items-center gap-2 border border-line bg-surface px-3 @2xl:w-64 @2xl:flex-none"><Search :size="16" class="text-dim" /><input v-model="query" class="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-dim" :placeholder="t('library.search')" aria-label="Search library" /></label>
                 <button v-if="!activePlaylist && !isGroup" type="button" class="grid h-10 w-10 shrink-0 place-items-center border border-line text-dim transition-colors hover:border-accent hover:text-accent disabled:opacity-50" :title="t('library.refresh')" :disabled="refreshing" @click="emit('refresh')"><RefreshCw :size="16" :stroke-width="2" :class="refreshing ? 'animate-spin' : ''" /></button>
               </div>
-              <div v-if="activePlaylist || isGroup" class="flex items-center gap-3 @2xl:order-1" :class="activePlaylist ? 'order-1' : 'order-2'">
+              <div v-if="activePlaylist || isGroup" class="flex min-w-0 flex-wrap items-center gap-3 @2xl:order-1" :class="activePlaylist ? 'order-1' : 'order-2'">
                 <template v-if="activePlaylist">
                   <button type="button" class="ak-clip-tr flex h-10 shrink-0 items-center gap-2 bg-accent px-4 text-[13px] font-bold text-accent-fg transition-transform hover:scale-[1.02] active:scale-95 disabled:opacity-50" :disabled="!tracks.length" @click="playFirst"><Play :size="15" :stroke-width="2.2" />{{ t("library.play") }}</button>
                   <button type="button" class="ak-clip-tr flex h-10 shrink-0 items-center gap-2 border border-line px-4 text-[13px] font-semibold transition-colors hover:border-accent hover:text-accent" @click="emit('edit', activePlaylist.id)"><Pencil :size="15" />{{ t("library.edit") }}</button>

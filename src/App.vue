@@ -230,15 +230,15 @@ function findTrackByKey(key: string): Track | undefined {
 }
 
 /**
- * Re-arm smart transitions after restoring the last queue. The saved order was
- * already the analysed order while the playlist was locked, so we only need to
- * find the matching playlist, re-install the order and pin it again.
+ * Re-arm smart transitions after restoring the last queue. The saved queue was
+ * already in the analysed order, so find the matching playlist whose switch is
+ * on for this device, re-install the order and pin it again.
  */
 async function armRestoredSmart(keys: string[]) {
   if (keys.length === 0) return;
   const wanted = new Set(keys);
   const playlist = profile.playlists.find((item) => {
-    if (!item.smartTransition?.enabled || item.smartTransition.status !== "ready") return false;
+    if (!smart.isEnabled(item.id) || item.smartTransition?.status !== "ready") return false;
     const playlistKeys = tracksForPaths(item.tracks, player.tracks)
       .map(trackKey)
       .filter((key): key is string => !!key);

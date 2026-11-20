@@ -34,7 +34,39 @@ import {
   type SmartTrackInput,
   type TrackStage,
 } from "../lib/smartTransition";
-import type { Playlist } from "../lib/profile";
+import type { Playlist, SmartTransitionMeta } from "../lib/profile";
+
+/**
+ * The on/off switch is a per-device playback preference, not profile data.
+ * Syncing it made every toggle rewrite the shared playlist (order + pointer),
+ * which raced with the cloud document and showed playlist-sync conflicts.
+ * The analysed document is still shared; only this bit stays local.
+ */
+const ENABLED_STORAGE_KEY = "welkin-smart-transition-enabled";
+
+function readEnabledMap(): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem(ENABLED_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+    const result: Record<string, boolean> = {};
+    for (const [id, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (value === true) result[id] = true;
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+function writeEnabledMap(value: Record<string, boolean>): void {
+  try {
+    localStorage.setItem(ENABLED_STORAGE_KEY, JSON.stringify(value));
+  } catch {
+    // Quota or private mode: the in-memory map still works this session.
+  }
+}
 
 interface ProgressState {
   done: number;
@@ -75,6 +107,21 @@ export const useSmartTransitionStore = defineStore("smartTransition", () => {
   const cancelling = ref<Record<string, boolean>>({});
   const loading = ref<Record<string, boolean>>({});
   const errors = ref<Record<string, string | null>>({});
+  /** Playlists whose switch is on for this device only. */
+  const enabled = ref<Record<string, boolean>>(readEnabledMap());
+
+  function isEnabled(playlistId: string): boolean {
+    return enabled.value[playlistId] === true;
+  }
+
+  function setEnabled(playlistId: string, value: boolean) {
+    if (isEnabled(playlistId) === value) return;
+    const next = { ...enabled.value };
+    if (value) next[playlistId] = true;
+    else delete next[playlistId];
+    enabled.value = next;
+    writeEnabledMap(next);
+  }
 
   let unlisten: UnlistenFn[] = [];
   let listening: Promise<void> | null = null;
@@ -257,22 +304,6 @@ export const useSmartTransitionStore = defineStore("smartTransition", () => {
     return { inputs, entries, orderKeys };
   }
 
-  /** Map a list of playback keys back to the profile's playlist entry order. */
-  function toPlaylistEntries(playlist: Playlist, keys: string[]): string[] {
-    const { entries } = resolvedTracks(playlist);
-    const ordered: string[] = [];
-    for (const key of keys) {
-      const entry = entries.get(key);
-      if (entry && !ordered.includes(entry)) ordered.push(entry);
-    }
-    // Keep entries that could not be resolved (unavailable on this device) at
-    // the end so applying an order never loses them.
-    for (const entry of playlist.tracks) {
-      if (!ordered.includes(entry)) ordered.push(entry);
-    }
-    return ordered;
-  }
-
   /** Load the stored summary, updating the profile pointer when it is ready. */
   async function load(playlistId: string): Promise<SmartTransitionSummary | null> {
     if (loading.value[playlistId]) return summaryFor(playlistId);
@@ -288,18 +319,23 @@ export const useSmartTransitionStore = defineStore("smartTransition", () => {
         const playlist = profile.playlists.find((item) => item.id === playlistId);
         if (playlist) {
           const previous = playlist.smartTransition;
-          profile.updatePlaylist(playlistId, {
-            smartTransition: {
-              enabled: previous?.enabled ?? false,
-              file: summary.file,
-              algorithmVersion: 9,
-              updatedAt: summary.updatedAt,
-              // Opening the dialog must not clear a stale marker: the stored
-              // document still describes the pre-edit track list.
-              status: previous?.status === "stale" ? "stale" : "ready",
-              previousTracks: previous?.previousTracks,
-            },
-          });
+          const next: SmartTransitionMeta = {
+            // Preserve deprecated switch/order fields from older documents so
+            // merely loading never rewrites the cloud profile.
+            ...previous,
+            file: summary.file,
+            algorithmVersion: 9,
+            updatedAt: summary.updatedAt,
+            // Opening the dialog must not clear a stale marker: the stored
+            // document still describes the pre-edit track list.
+            status: previous?.status === "stale" ? "stale" : "ready",
+          };
+          // Loading is a read: only push a profile op when the pointer really
+          // changed (e.g. another device produced a newer document). Opening a
+          // playlist or its dialog must never enqueue a cloud write by itself.
+          if (JSON.stringify(previous) !== JSON.stringify(next)) {
+            profile.updatePlaylist(playlistId, { smartTransition: next });
+          }
         }
       }
       return summary;
@@ -351,14 +387,14 @@ export const useSmartTransitionStore = defineStore("smartTransition", () => {
       });
       summaries.value = { ...summaries.value, [playlistId]: summary };
       applySummaryStates(playlistId, summary);
+      const current = profile.playlists.find((item) => item.id === playlistId) ?? playlist;
       profile.updatePlaylist(playlistId, {
         smartTransition: {
-          enabled: playlist.smartTransition?.enabled ?? false,
+          ...current.smartTransition,
           file: summary.file,
           algorithmVersion: 9,
           updatedAt: summary.updatedAt,
           status: "ready",
-          previousTracks: playlist.smartTransition?.previousTracks,
         },
       });
       return summary;
@@ -388,72 +424,26 @@ export const useSmartTransitionStore = defineStore("smartTransition", () => {
   }
 
   /**
-   * Restore a saved entry order without dropping tracks that were added after
-   * smart transitions were enabled. Unknown entries stay at the end.
-   */
-  function restoreOrder(playlist: Playlist, order: string[]): string[] {
-    const restored: string[] = [];
-    for (const entry of order) {
-      if (playlist.tracks.includes(entry) && !restored.includes(entry)) restored.push(entry);
-    }
-    for (const entry of playlist.tracks) {
-      if (!restored.includes(entry)) restored.push(entry);
-    }
-    return restored;
-  }
-
-  /**
-   * Apply the analysed order and enable transitions. The current entry order
-   * is captured first, so turning the switch off can restore it verbatim.
+   * Turn transitions on for this device. The shared playlist order is left
+   * untouched: the queue and the visible list follow the analysed order while
+   * the switch is on, so enabling never writes the profile to the cloud.
    */
   function applyOrder(playlistId: string): boolean {
     const playlist = profile.playlists.find((item) => item.id === playlistId);
     const summary = summaries.value[playlistId];
     if (!playlist || !summary || summary.incomplete) return false;
-    const previousTracks =
-      playlist.smartTransition?.enabled
-        ? (playlist.smartTransition.previousTracks?.length
-            ? playlist.smartTransition.previousTracks
-            : summary.previousOrder.length
-              ? summary.previousOrder
-              : playlist.tracks)
-        : playlist.tracks;
-    const tracks = toPlaylistEntries(playlist, summary.order);
-    profile.updatePlaylist(playlistId, {
-      tracks,
-      smartTransition: {
-        enabled: true,
-        file: summary.file,
-        algorithmVersion: 9,
-        updatedAt: summary.updatedAt,
-        status: "ready",
-        previousTracks: [...previousTracks],
-      },
-    });
+    setEnabled(playlistId, true);
     return true;
   }
 
   /**
-   * Disable transitions and put the playlist back into the order the user had
-   * before turning them on. Falls back to the analysis' `previousOrder` for
-   * profiles saved before the switch captured its own snapshot.
+   * Turn transitions off for this device. The playlist was never reordered in
+   * the profile, so there is nothing to restore and no cloud write to make.
    */
   async function disable(playlistId: string): Promise<boolean> {
     const playlist = profile.playlists.find((item) => item.id === playlistId);
-    if (!playlist?.smartTransition) return false;
-    let order = playlist.smartTransition.previousTracks;
-    if (!order || order.length === 0) {
-      const summary = summaries.value[playlistId] ?? (await load(playlistId));
-      order = summary?.previousOrder ?? [];
-    }
-    profile.updatePlaylist(playlistId, {
-      ...(order.length > 0 ? { tracks: restoreOrder(playlist, order) } : {}),
-      smartTransition: {
-        ...playlist.smartTransition,
-        enabled: false,
-        previousTracks: undefined,
-      },
-    });
+    if (!playlist) return false;
+    setEnabled(playlistId, false);
     return true;
   }
 
@@ -477,6 +467,7 @@ export const useSmartTransitionStore = defineStore("smartTransition", () => {
     delete nextProgress[playlistId];
     progress.value = nextProgress;
     const playlist = profile.playlists.find((item) => item.id === playlistId);
+    setEnabled(playlistId, false);
     if (playlist?.smartTransition) {
       profile.updatePlaylist(playlistId, { smartTransition: undefined });
     }
@@ -494,7 +485,7 @@ export const useSmartTransitionStore = defineStore("smartTransition", () => {
    */
   async function armPlayback(playlistId: string): Promise<void> {
     const playlist = profile.playlists.find((item) => item.id === playlistId);
-    if (!playlist?.smartTransition?.enabled || playlist.smartTransition.status !== "ready") {
+    if (!isEnabled(playlistId) || playlist?.smartTransition?.status !== "ready") {
       await invoke("playback_clear_transition_plans").catch(() => {});
       return;
     }
@@ -518,7 +509,7 @@ export const useSmartTransitionStore = defineStore("smartTransition", () => {
   }
 
   const enabledCount = computed(
-    () => profile.playlists.filter((item) => item.smartTransition?.enabled).length,
+    () => profile.playlists.filter((item) => isEnabled(item.id)).length,
   );
 
   function dispose() {
@@ -536,6 +527,7 @@ export const useSmartTransitionStore = defineStore("smartTransition", () => {
     cancelling,
     loading,
     enabledCount,
+    isEnabled,
     ensureListener,
     isBusy,
     isCancelling,

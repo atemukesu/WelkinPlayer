@@ -48,8 +48,11 @@ export interface Playlist {
 
 /** Lightweight metadata stored in the profile for a smart-transition document. */
 export interface SmartTransitionMeta {
-  /** Whether smart transitions are enabled for playback. */
-  enabled: boolean;
+  /**
+   * @deprecated The on/off switch is device-local now (see the smart-transition
+   * store). Kept only so documents written by older versions still parse.
+   */
+  enabled?: boolean;
   /** Remote file name, e.g. `welkin-transition-<hash>.json`. */
   file: string;
   /** Analysis schema/algorithm version that produced the file. */
@@ -59,8 +62,8 @@ export interface SmartTransitionMeta {
   /** `ready`, `stale` (playlist changed since analysis) or `missing`. */
   status: "ready" | "stale" | "missing";
   /**
-   * Playlist entry order that was active when smart transitions were turned
-   * on. Turning them off restores exactly this order.
+   * @deprecated The playlist order is no longer rewritten when enabling; the
+   * switch only changes local playback. Kept for documents from older versions.
    */
   previousTracks?: string[];
 }
