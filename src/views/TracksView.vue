@@ -79,6 +79,13 @@ const tracks = computed(() => {
 const smartEnabled = computed(() => activePlaylist.value?.smartTransition?.enabled === true);
 const smartReady = computed(() => activePlaylist.value?.smartTransition?.status === "ready");
 const smartBusy = computed(() => (activePlaylist.value ? smart.isBusy(activePlaylist.value.id) : false));
+/** Aggregate analysis progress, shown on the switch while its dialog is closed. */
+const smartPercent = computed(() => {
+  const playlist = activePlaylist.value;
+  const value = playlist ? smart.progressFor(playlist.id) : null;
+  if (!value || value.total <= 0) return 0;
+  return Math.min(100, Math.round((value.done / value.total) * 100));
+});
 /** Smart transitions pin playback to the analysed order. */
 const smartLocked = computed(() => smartEnabled.value && smartReady.value);
 /** Tracks in the analysed order, when that document is loaded. */
@@ -288,13 +295,14 @@ function removeTrack(track: Track) {
                     role="switch"
                     :aria-checked="smartEnabled"
                     :title="t('library.playlists.smart.toggleHint')"
-                    class="ak-clip-tr flex h-10 shrink-0 items-center gap-2 border px-3 text-[13px] font-semibold transition-colors"
+                    class="ak-clip-tr relative flex h-10 shrink-0 items-center gap-2 overflow-hidden border px-3 text-[13px] font-semibold transition-colors"
                     :class="smartEnabled ? 'border-accent/60 text-accent' : smartReady ? 'border-line hover:border-accent hover:text-accent' : 'border-line text-muted hover:border-accent hover:text-accent'"
                     @click="toggleSmart"
                   >
                     <LoaderCircle v-if="smartBusy" :size="15" class="shrink-0 animate-spin text-accent" />
                     <Sparkles v-else :size="15" class="shrink-0" />
                     {{ t("library.playlists.smart.button") }}
+                    <span v-if="smartBusy" class="shrink-0 font-mono text-[10px] tabular-nums text-accent">{{ smartPercent }}%</span>
                     <span
                       v-if="!smartEnabled && activePlaylist.smartTransition?.status === 'stale'"
                       class="h-1.5 w-1.5 rounded-full bg-amber-400"
@@ -302,6 +310,9 @@ function removeTrack(track: Track) {
                     />
                     <span class="relative inline-flex h-4 w-8 shrink-0 rounded-full transition-colors" :class="smartEnabled ? 'bg-accent/70' : 'bg-line'">
                       <span class="absolute top-0.5 h-3 w-3 rounded-full bg-bg transition-transform" :class="smartEnabled ? 'translate-x-[18px]' : 'translate-x-0.5'" />
+                    </span>
+                    <span v-if="smartBusy" class="absolute inset-x-0 bottom-0 h-[2px] bg-accent/20">
+                      <span class="block h-full bg-accent transition-[width] duration-300" :style="{ width: `${smartPercent}%` }" />
                     </span>
                   </button>
                 </template>
