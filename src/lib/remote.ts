@@ -48,6 +48,13 @@ export function folderOfEntry(entry: RemoteEntry): string {
   return segments.slice(0, -1).join("/");
 }
 
+/** Human-readable location of a track: source name plus the folder inside it. */
+export function trackOrigin(track: Track): string {
+  const source = track.sourceName ?? "";
+  if (!track.folder) return source;
+  return source ? `${source} / ${track.folder}` : track.folder;
+}
+
 /** Convert a source entry into the library's track shape. */
 export function trackFromEntry(entry: RemoteEntry, index: number, source?: TrackSourceRef): Track {
   const segments = entry.localPath.split("/").filter(Boolean);

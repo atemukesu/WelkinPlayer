@@ -4,7 +4,7 @@
 -->
 
 <script setup lang="ts">
-import { Check, CloudOff, Copy, LoaderCircle, Play, Trash2 } from "@lucide/vue";
+import { Check, CloudOff, LoaderCircle, Play, Trash2 } from "@lucide/vue";
 import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 import type { Track } from "../stores/player";
@@ -13,6 +13,7 @@ import { trackKey } from "../lib/sources";
 import { pushToast } from "../lib/toast";
 import { requestMeta } from "../directives/requestMeta";
 import CacheBadge from "./CacheBadge.vue";
+import DuplicateBadge from "./DuplicateBadge.vue";
 
 const vRequestMeta = requestMeta;
 
@@ -20,17 +21,6 @@ const props = withDefaults(defineProps<{ track: Track; active?: boolean; playing
 const emit = defineEmits<{ play: [track: Track]; menu: [event: MouseEvent, track: Track]; remove: [track: Track]; openArtist: [artist: string]; toggle: [track: Track, event: MouseEvent] }>();
 const { t } = useI18n();
 const unavailable = computed(() => !!props.track.unavailable);
-/** Human-readable location: source name plus folder inside it. */
-const origin = computed(() => {
-  const { sourceName, folder } = props.track;
-  return folder ? `${sourceName ?? ""} / ${folder}` : (sourceName ?? "");
-});
-/** Tooltip listing the other identical copies of this file, if any. */
-const duplicateHint = computed(() =>
-  props.track.duplicates?.length
-    ? t("library.duplicateAt", { origins: props.track.duplicates.join(" · ") })
-    : undefined,
-);
 
 function activate(event: MouseEvent) {
   if (props.selectable) emit("toggle", props.track, event);
@@ -65,9 +55,8 @@ function openMenu(event: MouseEvent) {
       <span v-if="selectable" class="absolute left-2 top-2 grid h-7 w-7 place-items-center border-2 transition-colors" :class="selected ? 'border-accent bg-accent text-accent-fg' : 'border-white/80 bg-black/30 text-transparent'"><Check :size="15" :stroke-width="3" /></span>
       <span v-if="active && playing && !selectable" class="absolute left-2 top-2 grid h-6 w-6 place-items-center bg-accent text-accent-fg"><span class="ak-eq"><i></i><i></i><i></i></span></span>
     </div>
-    <div class="mt-3 flex min-w-0 items-center gap-1.5"><p class="truncate text-sm font-semibold tracking-wide" :class="active ? 'text-accent' : ''">{{ track.title }}</p><CloudOff v-if="unavailable" :size="14" class="shrink-0 text-dim" :aria-label="t('library.unavailable')" /><CacheBadge v-else :cache-key="trackKey(track)" /><span v-if="track.duplicates?.length" class="shrink-0 text-amber-400" :title="duplicateHint"><Copy :size="13" :stroke-width="2" /></span></div>
+    <div class="mt-3 flex min-w-0 items-center gap-1.5"><p class="truncate text-sm font-semibold tracking-wide" :class="active ? 'text-accent' : ''">{{ track.title }}</p><CloudOff v-if="unavailable" :size="14" class="shrink-0 text-dim" :aria-label="t('library.unavailable')" /><CacheBadge v-else :cache-key="trackKey(track)" /><DuplicateBadge :track="track" /></div>
     <button v-if="track.artist && !unavailable" type="button" class="block w-fit max-w-full truncate text-left text-xs text-muted transition-colors hover:text-accent" :title="t('library.openArtist')" @click.stop="emit('openArtist', track.artist)">{{ track.artist }}</button>
     <p v-else class="truncate text-xs text-muted">{{ track.artist }}</p>
-    <p v-if="origin" class="mt-0.5 truncate text-[11px] text-dim" :title="origin">{{ origin }}</p>
   </article>
 </template>

@@ -275,7 +275,6 @@ const messages = {
       cached: "已缓存",
       colTrack: "曲目",
       colAlbum: "专辑",
-      colSource: "来源 / 文件夹",
       colTime: "时长",
       emptyTitle: "未配置来源",
       emptyDesc: "尚未配置音乐来源，请前往设置添加。",
@@ -284,6 +283,7 @@ const messages = {
         usingCache: "部分来源无响应，正在使用本地缓存",
         partialListing: "部分目录未能读取，已保留原有缓存；请稍后重试",
         duplicateAt: "同名同大小的副本：{origins}",
+        origin: "来源：{origin}",
         cacheProtected: "远端返回的列表明显不完整，已保留原有缓存；请稍后重试",
         menu: {
           favorite: "喜欢",
@@ -1239,7 +1239,6 @@ const messages = {
       cached: "Cached",
       colTrack: "Track",
       colAlbum: "Album",
-      colSource: "Source / Folder",
       colTime: "Time",
       emptyTitle: "No source configured",
       emptyDesc: "No music source is configured. Add one in Settings.",
@@ -1248,6 +1247,7 @@ const messages = {
         usingCache: "Some sources are unavailable — using the local cache",
         partialListing: "Some folders could not be read; the existing cache was kept. Try again later.",
         duplicateAt: "Copies with the same name and size: {origins}",
+        origin: "Source: {origin}",
         cacheProtected: "The remote listing looked incomplete, so the existing cache was kept. Try again later.",
         menu: {
           favorite: "Favorite",

@@ -85,7 +85,7 @@ function playFromQueue(index: number) {
             </span>
             <span class="min-w-0 flex-1">
               <strong class="block truncate text-[12px] font-semibold">{{ track.title }}</strong>
-              <small class="block truncate text-[11px] text-muted">{{ track.artist }}<template v-if="track.sourceName"> · {{ track.sourceName }}<template v-if="track.folder"> / {{ track.folder }}</template></template></small>
+              <small class="block truncate text-[11px] text-muted">{{ track.artist }}</small>
             </span>
           </button>
         </template>
