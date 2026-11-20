@@ -29,6 +29,9 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::core::error::AppError;
 use crate::playback::fade_eq::{FadeEq, BASS_CUT_DB, HIGH_CUT_DB, MID_CUT_DB};
+use crate::playback::graphic_eq::{
+    EqualizerState, GraphicEq, BAND_COUNT, MAX_GAIN_DB, MAX_PREAMP_DB, MIN_PREAMP_DB,
+};
 use crate::playback::source::{open_track, open_track_inactive, ReadSeek};
 use crate::streaming::manual_cache::ManualCache;
 use crate::streaming::stream_cache::StreamCache;
@@ -669,6 +672,12 @@ pub struct Shared {
     muted: AtomicBool,
     /// Volume as `f32` bits, `0.0..=1.0`.
     volume: AtomicU32,
+    /// Graphic-EQ master switch. Off means the audio path is untouched.
+    eq_enabled: AtomicBool,
+    /// Twelve band gains in dB as `f32` bits.
+    eq_gains: [AtomicU32; BAND_COUNT],
+    /// Pre-amp in dB as `f32` bits; negative values leave headroom for boosts.
+    eq_preamp: AtomicU32,
     /// Extra gain for the smart-transition envelope, as `f32` bits. It is
     /// multiplied with the user volume so a fade never mutates the saved volume.
     transition_gain: AtomicU32,
@@ -795,6 +804,9 @@ impl Shared {
             worker_started: AtomicBool::new(false),
             muted: AtomicBool::new(false),
             volume: AtomicU32::new(1.0f32.to_bits()),
+            eq_enabled: AtomicBool::new(false),
+            eq_gains: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
+            eq_preamp: AtomicU32::new(0.0f32.to_bits()),
             transition_gain: AtomicU32::new(1.0f32.to_bits()),
             fade_clock: AtomicU64::new(0),
             fade_start_frame: AtomicU64::new(0),
@@ -936,6 +948,54 @@ impl Shared {
 
     fn volume(&self) -> f32 {
         f32::from_bits(self.volume.load(Ordering::Relaxed))
+    }
+
+    /// Replace the graphic-equaliser settings.
+    ///
+    /// Values are clamped to the ranges the DSP accepts so a malformed call
+    /// cannot destabilise the realtime filters. The audio thread reads the
+    /// atomics once per state block; no queueing or locking is involved.
+    pub fn set_equalizer(&self, enabled: bool, gains: &[f32], preamp_db: f32) {
+        for (slot, value) in self.eq_gains.iter().zip(gains.iter()) {
+            let gain = if value.is_finite() {
+                value.clamp(-MAX_GAIN_DB, MAX_GAIN_DB)
+            } else {
+                0.0
+            };
+            slot.store(gain.to_bits(), Ordering::Relaxed);
+        }
+        let preamp = if preamp_db.is_finite() {
+            preamp_db.clamp(MIN_PREAMP_DB, MAX_PREAMP_DB)
+        } else {
+            0.0
+        };
+        self.eq_preamp.store(preamp.to_bits(), Ordering::Relaxed);
+        self.eq_enabled.store(enabled, Ordering::Relaxed);
+    }
+
+    /// Snapshot of the equaliser, used to resync a reloaded webview.
+    pub fn equalizer(&self) -> EqualizerState {
+        EqualizerState {
+            enabled: self.eq_enabled.load(Ordering::Relaxed),
+            gains: self
+                .eq_gains
+                .iter()
+                .map(|slot| f32::from_bits(slot.load(Ordering::Relaxed)))
+                .collect(),
+            preamp: f32::from_bits(self.eq_preamp.load(Ordering::Relaxed)),
+        }
+    }
+
+    /// Copy of the equaliser parameters for the audio thread.
+    fn equalizer_params(&self) -> (bool, [f32; BAND_COUNT], f32) {
+        let gains = std::array::from_fn(|index| {
+            f32::from_bits(self.eq_gains[index].load(Ordering::Relaxed))
+        });
+        (
+            self.eq_enabled.load(Ordering::Relaxed),
+            gains,
+            f32::from_bits(self.eq_preamp.load(Ordering::Relaxed)),
+        )
     }
 
     /// Set the smart-transition gain envelope (0.0–1.0).
@@ -1447,6 +1507,9 @@ struct RingSource {
     ramp_frames: u32,
     /// Three-band EQ for this deck, used only during a crossfade.
     bands: FadeEq,
+    /// Twelve-band graphic EQ driven by the sound-settings window. It applies
+    /// to every sample of both decks, fading or not.
+    user_eq: GraphicEq,
     /// Low/mid/high band gains in dB for the current state block.
     eq_db: (f32, f32, f32),
     /// High-pass cutoff for the filter-cut technique (`20 Hz` bypasses it).
@@ -1549,6 +1612,8 @@ impl Iterator for RingSource {
             } else {
                 20.0
             };
+            let (eq_enabled, eq_gains, eq_preamp) = self.shared.equalizer_params();
+            self.user_eq.configure(eq_enabled, &eq_gains, eq_preamp);
             self.state_left =
                 SOURCE_STATE_BLOCK.div_ceil(self.channels as usize) * self.channels as usize;
         }
@@ -1619,6 +1684,7 @@ impl Iterator for RingSource {
                 } else {
                     value
                 };
+                let sample = self.user_eq.process(sample, self.channel_cursor as usize);
                 let output = sample * self.gain;
                 self.bus_power += output * output;
                 self.bus_samples += 1;
@@ -4167,6 +4233,7 @@ mod worker {
                 gain_step: 0.0,
                 ramp_frames: 0,
                 bands: FadeEq::new(rate),
+                user_eq: GraphicEq::new(rate),
                 eq_db: (0.0, 0.0, 0.0),
                 hp_hz: 20.0,
                 bus_power: 0.0,
@@ -4232,6 +4299,7 @@ mod tests {
             gain_step: 0.0,
             ramp_frames: 0,
             bands: FadeEq::new(1000),
+            user_eq: GraphicEq::new(1000),
             eq_db: (0.0, 0.0, 0.0),
             hp_hz: 20.0,
             bus_power: 0.0,
@@ -4376,6 +4444,30 @@ mod tests {
         }
         shared.set_volume_percent(f64::NAN);
         assert_eq!(shared.volume(), 0.0);
+    }
+
+    #[test]
+    fn user_equalizer_preamp_applies_outside_a_crossfade() {
+        let shared = Arc::new(Shared::new());
+        shared
+            .transport
+            .store(Transport::Paused as u8, Ordering::Relaxed);
+        shared.set_paused(false);
+        shared.set_equalizer(true, &[0.0; BAND_COUNT], -6.0);
+        let (mut ring, consumer) = Ring::new(40);
+        ring.push_slice(&[1.0; 40]);
+        let mut source = source(shared, &ring, consumer);
+        // The volume ramp takes `rate / 100` frames; by the tenth frame the
+        // source is at unity and only the pre-amp should remain.
+        let mut last = 0.0;
+        for _ in 0..20 {
+            last = source.next().unwrap();
+        }
+        let expected = 10f32.powf(-6.0 / 20.0);
+        assert!(
+            (last - expected).abs() < 0.02,
+            "got {last}, expected {expected}"
+        );
     }
 
     #[test]

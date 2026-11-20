@@ -9,7 +9,10 @@
 use tauri::State;
 
 use crate::core::error::AppError;
-use crate::playback::engine::{device_info, enumerate_devices, AudioState, Command, DeviceInfo, Engine};
+use crate::playback::engine::{
+    device_info, enumerate_devices, AudioState, Command, DeviceInfo, Engine,
+};
+use crate::playback::graphic_eq::EqualizerState;
 
 /// Load a track with an explicit initial playback intent. Building the byte
 /// source happens on the worker, so this returns as soon as the command is
@@ -97,6 +100,26 @@ pub fn audio_set_device(engine: State<Engine>, device_id: Option<String>) -> Res
 #[tauri::command]
 pub fn audio_set_quality(engine: State<Engine>, rate: u32) -> Result<(), AppError> {
     engine.send(Command::SetQuality { rate })
+}
+
+/// Replace the graphic-equaliser settings. Persistence belongs to the frontend
+/// (they are device-local); this only updates the engine's shared snapshot.
+#[tauri::command]
+pub fn audio_set_equalizer(
+    engine: State<Engine>,
+    enabled: bool,
+    gains: Vec<f32>,
+    preamp: Option<f32>,
+) {
+    engine
+        .shared()
+        .set_equalizer(enabled, &gains, preamp.unwrap_or(0.0));
+}
+
+/// Current equaliser settings, so a reloaded webview can resync.
+#[tauri::command]
+pub fn audio_get_equalizer(engine: State<Engine>) -> EqualizerState {
+    engine.shared().equalizer()
 }
 
 /// Stop playback and clear the loaded track.

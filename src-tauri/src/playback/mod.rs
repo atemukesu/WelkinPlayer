@@ -15,9 +15,11 @@
 //! `UniformSourceIterator` resamples and remaps channels to the device config,
 //! so the worker only has to decode at the file's native rate.
 
+pub mod biquad;
 pub mod commands;
 pub mod commands_context;
 pub mod context;
 pub mod engine;
 pub mod fade_eq;
+pub mod graphic_eq;
 pub mod source;

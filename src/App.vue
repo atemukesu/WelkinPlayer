@@ -10,6 +10,7 @@ import { describeError, invoke } from "./api";
 import { listen } from "@tauri-apps/api/event";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { initAudio, resumeAt, cancelResumeExcept } from "./lib/audio";
+import { initEqualizer } from "./lib/equalizer";
 import { accents } from "./lib/app";
 import type { Accent, Theme, View } from "./lib/app";
 import { albumKey, primaryArtist } from "./lib/grouping";
@@ -54,6 +55,7 @@ import AppNavigation from "./components/AppNavigation.vue";
 import QueuePanel from "./components/QueuePanel.vue";
 import PlayerBar from "./components/PlayerBar.vue";
 import AudioQualityModal from "./components/AudioQualityModal.vue";
+import SoundSettings from "./components/SoundSettings.vue";
 import MeteredPlaybackModal from "./components/MeteredPlaybackModal.vue";
 import SetupWizard from "./components/SetupWizard.vue";
 import ToastStack from "./components/ToastStack.vue";
@@ -401,7 +403,7 @@ function onGlobalKeydown(event: KeyboardEvent) {
   player.togglePlayback();
 }
 
-onMounted(() => { windowBehavior.sync(); window.addEventListener("hashchange", syncViewFromHash); window.addEventListener("keydown", onGlobalKeydown); window.addEventListener("beforeunload", savePlaybackPositionOnLeave); window.addEventListener("pagehide", savePlaybackPositionOnLeave); window.addEventListener("focus", recheckLicense); document.addEventListener("visibilitychange", onVisibilityChange); void initAudio(); void network.start(); void cache.start(); bootDesktopLyrics(); bootMediaControl(); void invoke<string>("ping").catch((error) => console.warn("[welkin] ping failed", describeError(error))); void bootstrap(); });
+onMounted(() => { windowBehavior.sync(); window.addEventListener("hashchange", syncViewFromHash); window.addEventListener("keydown", onGlobalKeydown); window.addEventListener("beforeunload", savePlaybackPositionOnLeave); window.addEventListener("pagehide", savePlaybackPositionOnLeave); window.addEventListener("focus", recheckLicense); document.addEventListener("visibilitychange", onVisibilityChange); void initAudio(); initEqualizer(); void network.start(); void cache.start(); bootDesktopLyrics(); bootMediaControl(); void invoke<string>("ping").catch((error) => console.warn("[welkin] ping failed", describeError(error))); void bootstrap(); });
 onUnmounted(() => { savePlaybackPosition(true); stopDesktopLyrics(); stopMediaControl(); window.removeEventListener("hashchange", syncViewFromHash); window.removeEventListener("keydown", onGlobalKeydown); window.removeEventListener("beforeunload", savePlaybackPositionOnLeave); window.removeEventListener("pagehide", savePlaybackPositionOnLeave); window.removeEventListener("focus", recheckLicense); document.removeEventListener("visibilitychange", onVisibilityChange); unlistenPlayback?.(); unlistenPlayback = null; unlistenTransition?.(); unlistenTransition = null; void profile.flush(); });
 
 // Mirror the Rust playback context into the store. The queue / play intent / next
@@ -453,6 +455,7 @@ listen<TransitionStatus>("playback:transition", (event) => {
     <AppNavigation placement="mobile" :active-view="baseView" :active-playlist-id="playlistFilter" :active-artist="artistFilter" :active-album="albumFilter" :active-source="sourceFilter" @navigate="navigate" @create-playlist="createPlaylist" @open-playlist="openUserPlaylist" />
     <ToastStack />
     <AudioQualityModal />
+    <SoundSettings />
     <MeteredPlaybackModal />
     <UpdateModal @friendly-error="showError" />
     <ProfileConflictDialog v-if="profile.conflict" :conflicts="profile.conflict.conflicts" :saving="profile.saving" @choose="profile.resolveConflict" />

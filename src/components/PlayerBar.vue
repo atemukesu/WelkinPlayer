@@ -11,6 +11,7 @@ import {
   Play,
   Repeat,
   Repeat1,
+  Settings2,
   Shuffle,
   SkipBack,
   SkipForward,
@@ -24,6 +25,7 @@ import { requestDesktopLyricPermission } from "../composables/useDesktopLyrics";
 import { coverPending, initial, percent } from "../lib/format";
 import { seekPercent } from "../lib/audio";
 import * as audioQuality from "../lib/audioQuality";
+import * as equalizer from "../lib/equalizer";
 import LayeredSelect from "./LayeredSelect.vue";
 import RealtimeWaveform from "./RealtimeWaveform.vue";
 import TransitionInline from "./TransitionInline.vue";
@@ -75,6 +77,11 @@ const rateTitle = computed(() => `${t("audioQuality.title")}: ${rateText.value}`
 function openQuality() {
   void audioQuality.refreshDeviceInfo();
   audioQuality.qualityModalOpen.value = true;
+}
+
+/** Open the sound-settings floating window next to the quality picker. */
+function openSoundSettings() {
+  equalizer.eqWindowOpen.value = true;
 }
 
 /** Toggle the floating lyrics; on Android ask for the overlay grant first. */
@@ -236,6 +243,16 @@ function endSeek() {
         />
         <button
           type="button"
+          class="hidden transition-colors md:block"
+          :title="t('soundSettings.title')"
+          :aria-label="t('soundSettings.title')"
+          :class="equalizer.eqEnabled.value ? 'text-accent' : 'text-muted hover:text-fg'"
+          @click="openSoundSettings"
+        >
+          <Settings2 :size="17" :stroke-width="1.8" />
+        </button>
+        <button
+          type="button"
           class="hidden font-mono text-[11px] tabular-nums text-dim transition-colors hover:text-accent md:block"
           :title="rateTitle"
           :aria-label="t('audioQuality.title')"
@@ -312,7 +329,7 @@ function endSeek() {
           <ListMusic :size="18" :stroke-width="1.8" />
         </button>
       </div>
-      <div class="flex items-center gap-3">
+      <div class="flex flex-wrap items-center gap-3">
         <span class="font-mono text-[12px] tabular-nums text-muted">{{ player.elapsedTime }} / {{ player.totalTime }}</span>
         <div class="ml-auto flex items-center gap-2">
           <LayeredSelect
@@ -331,11 +348,21 @@ function endSeek() {
           >
             {{ rateText }}
           </button>
+          <button
+            type="button"
+            class="grid h-8 w-8 shrink-0 place-items-center transition-colors"
+            :class="equalizer.eqEnabled.value ? 'text-accent' : 'text-muted hover:text-fg'"
+            :title="t('soundSettings.title')"
+            :aria-label="t('soundSettings.title')"
+            @click="openSoundSettings"
+          >
+            <Settings2 :size="16" :stroke-width="1.8" />
+          </button>
           <button type="button" class="text-dim transition-colors hover:text-fg" :title="player.muted ? t('controls.unmute') : t('controls.mute')" :aria-label="player.muted ? t('controls.unmute') : t('controls.mute')" @click="player.toggleMute()">
             <VolumeX v-if="player.muted" :size="17" :stroke-width="1.8" />
             <Volume2 v-else :size="17" :stroke-width="1.8" />
           </button>
-          <input v-model.number="player.volume" :style="{ '--fill': percent(player.volume) }" class="ak-slider w-28" type="range" min="0" max="100" aria-label="Volume" />
+          <input v-model.number="player.volume" :style="{ '--fill': percent(player.volume) }" class="ak-slider w-16 min-w-0 sm:w-28" type="range" min="0" max="100" aria-label="Volume" />
         </div>
       </div>
       </div>
