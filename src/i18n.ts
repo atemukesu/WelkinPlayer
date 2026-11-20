@@ -284,7 +284,7 @@ const messages = {
         partialListing: "部分目录未能读取，已保留原有缓存；请稍后重试",
         duplicateAt: "同名同大小的副本：{origins}",
         origin: "来源：{origin}",
-        cacheProtected: "远端返回的列表明显不完整，已保留原有缓存；请稍后重试",
+        cacheProtected: "检测到云端曲目变少，这可能是由于您手动删除了歌曲，也可能由于软件没有获取到完整的曲目。如果您手动删除了歌曲，请再更新一次",
         menu: {
           favorite: "喜欢",
           unfavorite: "取消喜欢",
@@ -1248,7 +1248,7 @@ const messages = {
         partialListing: "Some folders could not be read; the existing cache was kept. Try again later.",
         duplicateAt: "Copies with the same name and size: {origins}",
         origin: "Source: {origin}",
-        cacheProtected: "The remote listing looked incomplete, so the existing cache was kept. Try again later.",
+        cacheProtected: "The cloud library came back with fewer tracks. You may have deleted songs yourself, or the app may not have received the complete listing. If you did delete songs, refresh once more.",
         menu: {
           favorite: "Favorite",
           unfavorite: "Remove favorite",
