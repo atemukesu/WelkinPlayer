@@ -204,6 +204,15 @@ function editInEditor(file) {
   return readFileSync(file, "utf8").trim();
 }
 
+/** Current version from package.json, shown as a reference in the tag prompt. */
+function currentVersion() {
+  try {
+    return JSON.parse(readFileSync(PACKAGE_FILE, "utf8")).version?.trim() || "";
+  } catch {
+    return "";
+  }
+}
+
 function box(title, text) {
   const line = cyan("─".repeat(60));
   console.log(`\n${line}\n${bold(cyan(title))}\n${line}\n${text}\n${line}`);
@@ -221,7 +230,11 @@ async function main() {
   try {
     // 1. Resolve and validate the tag.
     let tag = options.positional[0];
-    if (!tag) tag = (await rl.question(`${cyan("请输入本次发布的 tag")}（如 v1.0.1）：`)).trim();
+    if (!tag) {
+      const current = currentVersion();
+      const hint = current ? `当前版本 ${magenta(`v${current}`)}，` : "";
+      tag = (await rl.question(`${cyan("请输入本次发布的 tag")}（${hint}如 v1.0.1）：`)).trim();
+    }
     if (!/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(tag))
       fail(`tag 格式不合法：${tag}（应形如 v1.0.1 或 v1.0.3-rc.1）`);
     const version = tag.slice(1);
