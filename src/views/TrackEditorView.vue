@@ -264,7 +264,7 @@ watch(() => props.path, load, { immediate: true });
         <span v-if="dirty" class="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.2em] text-accent"><span class="h-1.5 w-1.5 bg-accent"></span>{{ t("trackEditor.dirty") }}</span>
         <div class="ml-auto flex items-center gap-3">
           <button type="button" class="ak-clip-tr flex h-11 items-center gap-2 border border-line px-4 text-[13px] font-semibold transition-colors hover:border-accent hover:text-accent disabled:opacity-50" :disabled="!dirty || saving" @click="reset"><RotateCcw :size="15" />{{ t("trackEditor.reset") }}</button>
-          <button type="button" class="ak-clip-tr flex h-11 items-center gap-2 bg-accent px-6 text-[13px] font-bold text-accent-fg transition-transform hover:scale-[1.02] active:scale-95 disabled:opacity-50" :disabled="saving || !props.path || !!loadError || !sources.hasSources" @click="save"><Save :size="15" />{{ saving ? t("trackEditor.saving") : t("trackEditor.save") }}</button>
+          <button type="button" class="ak-clip-tr flex h-11 items-center gap-2 bg-accent px-6 text-[13px] font-bold text-accent-fg transition-transform hover:scale-[1.02] active:scale-95 disabled:opacity-50" :disabled="saving || !props.path || !sources.hasSources" @click="save"><Save :size="15" />{{ saving ? t("trackEditor.saving") : t("trackEditor.save") }}</button>
         </div>
       </footer>
     </template>
