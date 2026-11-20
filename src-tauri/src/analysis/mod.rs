@@ -48,7 +48,7 @@ pub const WINDOW_SECS: f32 = 60.0;
 /// Bump when the planning model changes. Stored per-track features are kept
 /// across this version and only the transitions are recomputed; bump
 /// [`SCHEMA_VERSION`] instead when the extracted features change.
-pub const ALGORITHM_VERSION: u32 = 7;
+pub const ALGORITHM_VERSION: u32 = 8;
 /// On-disk document schema (also invalidates cached per-track features when the
 /// feature set or DSP pipeline changes).
 pub const SCHEMA_VERSION: u32 = 2;
@@ -1361,39 +1361,63 @@ fn mix_out(grid: Option<&BeatGrid>, musical_end: f32, tail_offset: f32) -> f32 {
     line.clamp(tail_offset.max(0.0).min(musical_end), musical_end)
 }
 
-/// Default crossfade target: four bars, shortened to fit the 2.5-second cap.
-const BLEND_BARS: f32 = 4.0;
-/// Hard ceiling for the envelope, even at very slow tempos.
-const MAX_BLEND_SECS: f32 = 2.5;
-/// Below this the transition stops sounding like a mix.
+/// Default crossfade target, in bars. Eight bars is the shortest fade that
+/// still reads as a DJ-style blend rather than a quick cut; [`blend_secs`]
+/// shrinks it only when the outgoing track genuinely runs out of tail.
+const BLEND_BARS_TARGET: f32 = 8.0;
+/// Lower bound for the configurable bar count.
+const BLEND_BARS_MIN: f32 = 2.0;
+/// Upper bound for the configurable bar count. Sixteen bars is two full
+/// 32-beat phrases, the longest overlap this planner will attempt.
+const BLEND_BARS_MAX: f32 = 16.0;
+/// Hard ceiling in seconds for the envelope, even at very slow tempos.
+const MAX_BLEND_SECS: f32 = 30.0;
+/// Fallback length when a window has no usable tempo at all.
+const FALLBACK_BLEND_SECS: f32 = 8.0;
+/// Below this the transition stops sounding like a mix; the pair is treated as
+/// a fallback instead of a planned blend.
 const MIN_BLEND_SECS: f32 = 2.0;
 /// Tracks shorter than this get a short fade instead of a planned mix.
 const MIN_TRACK_SECS: f32 = 15.0;
 
-/// Fade length that fits the track's tempo: four bars, capped at 2.5 seconds
-/// so a transition never spends too long overlapping. This is the *intended*
-/// length; the actual envelope may shrink when the tail is shorter.
+/// Target blend length in bars.
+///
+/// Eight bars is the default because 2–2.5 second fades were the main reason
+/// transitions felt like cuts. It can be tuned per install with
+/// `WELKIN_TRANSITION_BARS` (clamped to [`BLEND_BARS_MIN`]..=[`BLEND_BARS_MAX`])
+/// without a rebuild.
+fn target_blend_bars() -> f32 {
+    static BARS: OnceLock<f32> = OnceLock::new();
+    *BARS.get_or_init(|| {
+        std::env::var("WELKIN_TRANSITION_BARS")
+            .ok()
+            .and_then(|value| value.trim().parse::<f32>().ok())
+            .filter(|value| value.is_finite())
+            .unwrap_or(BLEND_BARS_TARGET)
+            .clamp(BLEND_BARS_MIN, BLEND_BARS_MAX)
+    })
+}
+
+/// Fade length that fits the track's tempo: [`target_blend_bars`] bars, capped
+/// by [`MAX_BLEND_SECS`]. This is the *intended* length; the actual envelope
+/// may shrink when the tail is shorter.
 fn preferred_blend_secs(grid: Option<&BeatGrid>) -> f32 {
     let Some(grid) = grid else {
-        return MAX_BLEND_SECS;
+        return FALLBACK_BLEND_SECS;
     };
     let bar = BEATS_PER_BAR * grid.period;
     if !(bar.is_finite() && bar > 0.0) {
-        return MAX_BLEND_SECS;
+        return FALLBACK_BLEND_SECS;
     }
-    let bars = (MAX_BLEND_SECS / bar).floor().clamp(1.0, BLEND_BARS);
-    (bars * bar).clamp(MIN_BLEND_SECS, MAX_BLEND_SECS)
+    (target_blend_bars() * bar).clamp(MIN_BLEND_SECS, MAX_BLEND_SECS)
 }
 
-/// Fade length in seconds: the tempo's preferred four-bar blend, shrunk to
-/// whole bars when the outgoing track has less tail than that.
-///
-/// Deliberately *not* "the largest phrase that fits": stretching the fade to
-/// fill a long tail is what made every 120 BPM track overlap for 16 s.
+/// Fade length in seconds: the tempo's preferred blend, shrunk to whole bars
+/// when the outgoing track has less tail than that.
 fn blend_secs(grid: Option<&BeatGrid>, out_at: f32, musical_end: f32) -> f32 {
     let remaining = (musical_end - out_at).max(0.0);
     let Some(grid) = grid else {
-        return remaining.clamp(1.5, MAX_BLEND_SECS);
+        return remaining.clamp(1.5, FALLBACK_BLEND_SECS);
     };
     let preferred = preferred_blend_secs(Some(grid));
     if remaining + 1e-3 >= preferred {
@@ -1511,9 +1535,10 @@ fn detect_outro_start(track: &TrackAnalysis, musical_end: f32) -> Option<f32> {
 }
 
 /// Candidate Mix Out points across the whole decoded tail window, plus the
-/// fallback. The fade itself is capped at five seconds; the *start* is chosen
-/// musically (outro drop, energy/timbre continuity), so it is not forced to the
-/// very last bar of the file or limited to a fixed last thirty seconds.
+/// fallback. The fade length is the tempo's preferred phrase (shrunk to the
+/// remaining tail); the *start* is chosen musically (outro drop, energy/timbre
+/// continuity), so it is not forced to the very last bar of the file or
+/// limited to a fixed last thirty seconds.
 fn mix_out_candidates(
     grid: Option<&BeatGrid>,
     duration: f32,
@@ -2253,24 +2278,24 @@ mod tests {
     }
 
     #[test]
-    fn mix_out_starts_the_fade_on_the_tracks_final_bar() {
+    fn mix_out_starts_the_fade_a_phrase_before_the_end() {
         let g = grid(120.0, 0.0);
-        // Two seconds at 120 BPM = one bar; the last bar line before 198 is 198.
-        assert!((mix_out(Some(&g), 200.0, 120.0) - 198.0).abs() < 1e-3);
+        // Eight bars at 120 BPM = 16 s, so the fade starts on the 184 s bar line.
+        assert!((mix_out(Some(&g), 200.0, 120.0) - 184.0).abs() < 1e-3);
     }
 
     #[test]
-    fn blend_is_capped_at_two_and_a_half_seconds() {
-        // 60 BPM would prefer four bars, but the hard ceiling wins.
-        let slow = grid(60.0, 0.0);
-        assert!((blend_secs(Some(&slow), 184.0, 200.0) - 2.5).abs() < 1e-3);
-        let medium = grid(120.0, 0.0);
-        // One bar at 120 BPM = 2 s, under the 2.5 s ceiling.
-        assert!((blend_secs(Some(&medium), 184.0, 200.0) - 2.0).abs() < 1e-3);
-        // Less tail: shrink to whole bars instead of stretching the envelope.
-        assert!((blend_secs(Some(&medium), 197.0, 200.0) - 2.0).abs() < 1e-3);
-        // A grid-less track is capped too.
-        assert!(blend_secs(None, 0.0, 100.0) <= MAX_BLEND_SECS);
+    fn blend_uses_eight_bars_and_shrinks_to_the_tail() {
+        let medium = grid(120.0, 0.0); // one bar = 2 s
+        // Eight bars is the default target, not a one-bar quick cut.
+        assert!((blend_secs(Some(&medium), 184.0, 200.0) - 16.0).abs() < 1e-3);
+        // Less tail: shrink to whole bars instead of overshooting the file.
+        assert!((blend_secs(Some(&medium), 195.0, 200.0) - 4.0).abs() < 1e-3);
+        // Very slow tempos are capped in seconds, not stretched forever.
+        let slow = grid(30.0, 0.0); // one bar = 8 s, eight bars = 64 s
+        assert!((preferred_blend_secs(Some(&slow)) - MAX_BLEND_SECS).abs() < 1e-3);
+        // A grid-less track falls back to the default seconds length.
+        assert!((preferred_blend_secs(None) - FALLBACK_BLEND_SECS).abs() < 1e-3);
     }
 
     #[test]
@@ -2306,12 +2331,14 @@ mod tests {
         let plan = plan_transition(&out, &input);
         let fallback = mix_out(Some(&grid(120.0, 140.0)), 200.0, 140.0);
         assert_eq!(plan.mode, "strict");
-        // The envelope stays anchored to the track's end and is capped at five
-        // seconds instead of being stretched to fill the tail.
+        // The envelope is anchored to the track's end: an eight-bar blend that
+        // reaches exactly the last sample, not a one-bar quick cut.
         assert!(plan.out_at >= fallback - 1e-3);
         assert!(plan.out_at + plan.blend_secs <= 200.0 + 1e-3);
         assert!(plan.out_at + plan.blend_secs >= 198.0);
         assert!(plan.blend_secs <= MAX_BLEND_SECS);
+        // Eight bars at 120 BPM is 16 s.
+        assert!((plan.blend_secs - 16.0).abs() < 1e-3);
         assert!((plan.in_gain - 1.0).abs() < 1e-3);
         assert!((plan.tempo_ratio - 1.0).abs() < 1e-3);
     }

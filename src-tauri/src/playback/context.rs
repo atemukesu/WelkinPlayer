@@ -66,9 +66,39 @@ fn unity() -> f32 {
 
 /// How long before the Mix Out point the incoming deck is opened and prefilled.
 const CROSSFADE_PREPARE_LEAD_SECS: f64 = 8.0;
+/// Ceiling for the preparation lead. A long blend is prepared further ahead,
+/// but holding a decoded remote stream open for longer than this buys nothing:
+/// the incoming ring only keeps a couple of seconds of audio anyway.
+const CROSSFADE_MAX_PREPARE_LEAD_SECS: f64 = 20.0;
 /// Plans discovered later than this fall back to the sequential fade instead of
 /// trying to open a remote stream at the last moment.
 const CROSSFADE_MIN_LEAD_SECS: f64 = 0.4;
+/// Length of the sequential fade-out used when no second deck is available.
+/// It is intentionally short: a long fade into silence followed by a load gap
+/// sounds worse than a quick, clean handoff.
+const FALLBACK_FADE_SECS: f64 = 2.5;
+
+/// How far ahead the incoming deck should be opened for a blend of this length.
+///
+/// Longer blends need their second deck ready earlier, so the lead grows with
+/// the plan instead of staying at the old fixed eight seconds. This is what
+/// keeps an 8–16 bar mix on the real overlapping path instead of degrading to
+/// the fade-out / load / fade-in fallback at the last moment.
+fn prepare_lead(blend_secs: f64) -> f64 {
+    (blend_secs.max(0.0) + CROSSFADE_PREPARE_LEAD_SECS)
+        .clamp(CROSSFADE_PREPARE_LEAD_SECS, CROSSFADE_MAX_PREPARE_LEAD_SECS)
+}
+
+/// Fade-out length for the sequential fallback path. Capped by
+/// [`FALLBACK_FADE_SECS`] and by whatever is actually left in the track.
+fn fallback_fade_secs(blend_secs: f64, track_duration: f64, position: f64) -> f64 {
+    let cap = blend_secs.clamp(0.35, FALLBACK_FADE_SECS);
+    if track_duration > 0.5 {
+        cap.min((track_duration - position).max(0.35))
+    } else {
+        cap
+    }
+}
 
 /// The transition envelope currently in flight.
 enum FadePhase {
@@ -994,13 +1024,6 @@ impl PlaybackContext {
                     Some(plan) => {
                         let start = plan.out_at.max(0.0);
                         let remaining = start - position;
-                        let duration = if track_duration > 0.5 {
-                            plan.blend_secs
-                                .min((track_duration - position).max(0.0))
-                                .clamp(0.35, 30.0)
-                        } else {
-                            plan.blend_secs.clamp(0.35, 30.0)
-                        };
                         if position + 0.02 >= start {
                             // If the user seeks past the Mix Out point, shrink
                             // the fade to whatever time is actually left so it
@@ -1010,13 +1033,18 @@ impl PlaybackContext {
                                 to: plan.to,
                                 elapsed: 0.0,
                                 last_tick: Instant::now(),
-                                duration,
+                                duration: fallback_fade_secs(
+                                    plan.blend_secs,
+                                    track_duration,
+                                    position,
+                                ),
                                 in_at: plan.in_at.max(0.0),
                             }
                         } else if remaining > CROSSFADE_MIN_LEAD_SECS {
-                            // Request the second deck only once the lead window
-                            // is reached; token 0 means "not requested yet".
-                            let token = if remaining <= CROSSFADE_PREPARE_LEAD_SECS {
+                            // Request the second deck as soon as the lead window
+                            // for this blend is reached; token 0 means "not
+                            // requested yet".
+                            let token = if remaining <= prepare_lead(plan.blend_secs) {
                                 let token = runtime.crossfade_token.wrapping_add(1);
                                 runtime.crossfade_token = token;
                                 if let Some((source_id, path)) =
@@ -1104,13 +1132,8 @@ impl PlaybackContext {
                             // sequential fade from the current position.
                             let _ = self.engine.send(Command::CancelCrossfade);
                             shared.set_transition_gain(1.0);
-                            let duration = if track_duration > 0.5 {
-                                blend_secs
-                                    .min((track_duration - position).max(0.0))
-                                    .clamp(0.35, 30.0)
-                            } else {
-                                blend_secs.clamp(0.35, 30.0)
-                            };
+                            let duration =
+                                fallback_fade_secs(blend_secs, track_duration, position);
                             FadePhase::Out {
                                 from,
                                 to,
@@ -1127,7 +1150,7 @@ impl PlaybackContext {
                     } else if !failed && token == 0 {
                         let remaining = out_at - position;
                         if remaining > CROSSFADE_MIN_LEAD_SECS
-                            && remaining <= CROSSFADE_PREPARE_LEAD_SECS
+                            && remaining <= prepare_lead(blend_secs)
                         {
                             // Entered the lead window: request the second deck.
                             let token = runtime.crossfade_token.wrapping_add(1);
@@ -1220,15 +1243,10 @@ impl PlaybackContext {
                             let _ = self.engine.send(Command::CancelCrossfade);
                             shared.set_transition_gain(1.0);
                             // The second deck could not take over: finish with
-                            // the sequential fade so the next track still
+                            // the short sequential fade so the next track still
                             // enters at its Mix In point.
-                            let duration = if track_duration > 0.5 {
-                                blend_secs
-                                    .min((track_duration - position).max(0.0))
-                                    .clamp(0.35, 30.0)
-                            } else {
-                                blend_secs.clamp(0.35, 30.0)
-                            };
+                            let duration =
+                                fallback_fade_secs(blend_secs, track_duration, position);
                             FadePhase::Out {
                                 from,
                                 to,

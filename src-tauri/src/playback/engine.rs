@@ -60,24 +60,31 @@ const STREAM_REBUILD_BACKOFF_MILLIS: u64 = 5_000;
 const MAX_FORWARD_SEEK_SECONDS: f64 = 8.0;
 const SOURCE_STATE_BLOCK: usize = 256;
 
-/// Peak ceiling for the summed crossfade bus. Two masters near full scale add
-/// above 1.0 at equal power, so both decks share one gain reduction.
-const BUS_CEILING: f32 = 0.98;
-/// Never pull the bus down further than this (about -6 dB). Past that the mix
-/// is better served by the loudness compensation than by more headroom.
-const BUS_MIN_GAIN: f32 = 0.5;
+/// RMS ceiling for the summed crossfade bus. Equal-power fades already keep the
+/// perceived level constant, so this only catches genuinely hot material; it
+/// must not be based on summed peaks, which pulled every overlap down by
+/// 3–6 dB in the middle of the fade.
+const BUS_RMS_CEILING: f32 = 0.70;
+/// Never pull the bus down further than this (about -2.8 dB). Past that the mix
+/// is better served by the per-deck loudness match than by more headroom.
+const BUS_MIN_GAIN: f32 = 0.72;
 /// Per-block smoothing of the shared bus gain (256-sample blocks). Attack is
 /// fast enough to catch a new peak; release is slow enough not to pump.
 const BUS_ATTACK: f32 = 0.6;
 const BUS_RELEASE: f32 = 0.12;
 
-/// Gain that keeps the sum of two deck peaks under [`BUS_CEILING`]. This is a
-/// conservative estimate (it sums peaks rather than sampling the real mix), so
-/// it errs on the side of a little headroom instead of hard clipping.
-fn bus_headroom(peak_a: f32, peak_b: f32) -> f32 {
-    let sum = (peak_a.max(0.0) + peak_b.max(0.0)).max(0.0);
-    if sum > BUS_CEILING {
-        (BUS_CEILING / sum).clamp(BUS_MIN_GAIN, 1.0)
+/// Shared gain that keeps the *power* of the summed crossfade bus near the
+/// ceiling.
+///
+/// The inputs are mean squares (RMS²) of each deck over its last block. Two
+/// uncorrelated decks at equal-power gains sum to the power of one deck, so
+/// normal material stays at unity and the mid-fade volume sag disappears.
+/// Using summed peaks here (the old behaviour) treated two ±0 dBFS masters as
+/// if their peaks added coherently and attenuated the whole overlap.
+fn bus_headroom(power_a: f32, power_b: f32) -> f32 {
+    let combined = (power_a.max(0.0) + power_b.max(0.0)).sqrt();
+    if combined > BUS_RMS_CEILING {
+        (BUS_RMS_CEILING / combined).clamp(BUS_MIN_GAIN, 1.0)
     } else {
         1.0
     }
@@ -622,9 +629,10 @@ pub struct Shared {
     /// clock pauses so the outgoing deck is not faded into silence while the
     /// incoming one has no audio to replace it.
     fade_starved: AtomicBool,
-    /// Post-gain peak of each deck over its last state block, as `f32` bits.
-    /// Both decks read this to keep the summed crossfade bus under the ceiling.
-    deck_peak: [AtomicU32; 2],
+    /// Post-gain mean square (RMS²) of each deck over its last state block, as
+    /// `f32` bits. Both decks read this to keep the summed crossfade bus's
+    /// power under the ceiling without attenuating the whole overlap.
+    deck_power: [AtomicU32; 2],
     /// Which deck is audible: 0 = the regular deck, 1 = the crossfade incoming
     /// deck. After promotion this stays 1 and the old deck leaves the mixer.
     active_deck: AtomicU8,
@@ -708,7 +716,7 @@ impl Shared {
             fade_gain_in: AtomicU32::new(1.0f32.to_bits()),
             fade_done: AtomicBool::new(false),
             fade_starved: AtomicBool::new(false),
-            deck_peak: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
+            deck_power: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
             active_deck: AtomicU8::new(0),
             fade_from_deck: AtomicU8::new(0),
             crossfade_state: AtomicU8::new(CrossfadeState::None as u8),
@@ -859,11 +867,11 @@ impl Shared {
         f32::from_bits(self.transition_gain.load(Ordering::Relaxed))
     }
 
-    /// Clear the per-deck peak meters when a crossfade starts or is torn down,
+    /// Clear the per-deck power meters when a crossfade starts or is torn down,
     /// so a stale loud block cannot pull the next fade down.
-    fn reset_deck_peaks(&self) {
-        for peak in &self.deck_peak {
-            peak.store(0.0f32.to_bits(), Ordering::Relaxed);
+    fn reset_deck_power(&self) {
+        for power in &self.deck_power {
+            power.store(0.0f32.to_bits(), Ordering::Relaxed);
         }
     }
 
@@ -1232,8 +1240,10 @@ struct RingSource {
     bands: FadeEq,
     /// Bass-shelf gain in dB for the current state block.
     bass_db: f32,
-    /// Highest post-gain magnitude in the current state block.
-    bus_peak: f32,
+    /// Sum of squared post-gain samples in the current state block.
+    bus_power: f32,
+    /// Samples counted in the current state block, for the mean square.
+    bus_samples: usize,
     /// Shared headroom gain applied during a crossfade (unity otherwise).
     bus_gain: f32,
     channel_cursor: u16,
@@ -1243,26 +1253,33 @@ struct RingSource {
 }
 
 impl RingSource {
-    /// Publish this deck's post-gain peak for the block that just ended.
-    fn publish_bus_peak(&mut self, fading: bool) {
-        let peak = if fading { self.bus_peak } else { 0.0 };
-        self.shared.deck_peak[self.deck as usize].store(peak.to_bits(), Ordering::Relaxed);
-        self.bus_peak = 0.0;
+    /// Publish this deck's post-gain mean square for the block that just ended.
+    fn publish_bus_power(&mut self, fading: bool) {
+        let power = if fading && self.bus_samples > 0 {
+            self.bus_power / self.bus_samples as f32
+        } else {
+            0.0
+        };
+        self.shared.deck_power[self.deck as usize].store(power.to_bits(), Ordering::Relaxed);
+        self.bus_power = 0.0;
+        self.bus_samples = 0;
     }
 
     /// Common gain reduction for the summed crossfade bus.
     ///
     /// `rodio` sums the decks after us, so the only place headroom can act is
-    /// before that sum. Each deck publishes its post-envelope peak and both
-    /// then scale by the same estimate of the summed level. Outside a fade a
-    /// single track is always at unity, so normal playback is untouched.
+    /// before that sum. Each deck publishes the mean square of its post-envelope
+    /// output and both then scale by the same estimate of the summed power.
+    /// Outside a fade a single track is always at unity, so normal playback is
+    /// untouched; during a fade the equal-power envelope already keeps the
+    /// power constant, so this only engages on genuinely hot material.
     fn update_bus_gain(&mut self, fading: bool) {
         if !fading {
             self.bus_gain = 1.0;
             return;
         }
-        let a = f32::from_bits(self.shared.deck_peak[0].load(Ordering::Relaxed));
-        let b = f32::from_bits(self.shared.deck_peak[1].load(Ordering::Relaxed));
+        let a = f32::from_bits(self.shared.deck_power[0].load(Ordering::Relaxed));
+        let b = f32::from_bits(self.shared.deck_power[1].load(Ordering::Relaxed));
         let target = bus_headroom(a, b);
         let step = if target < self.bus_gain {
             BUS_ATTACK
@@ -1296,7 +1313,7 @@ impl Iterator for RingSource {
             is_active
         };
         if self.state_left == 0 {
-            self.publish_bus_peak(fading);
+            self.publish_bus_power(fading);
             self.update_bus_gain(fading);
             self.paused = self.shared.is_paused();
             let target = if self.shared.muted.load(Ordering::Relaxed) {
@@ -1385,7 +1402,8 @@ impl Iterator for RingSource {
                     value
                 };
                 let output = sample * self.gain;
-                self.bus_peak = self.bus_peak.max(output.abs());
+                self.bus_power += output * output;
+                self.bus_samples += 1;
                 Some(output * self.bus_gain)
             }
             None => {
@@ -2791,7 +2809,7 @@ mod worker {
             self.prepare_token = 0;
             self.incoming = None;
             let shared = &self.shared;
-            shared.reset_deck_peaks();
+            shared.reset_deck_power();
             shared.fade_active.store(false, Ordering::Release);
             shared.fade_done.store(false, Ordering::Release);
             shared.fade_starved.store(false, Ordering::Release);
@@ -2929,7 +2947,7 @@ mod worker {
             shared.fade_frames.store(frames.max(1), Ordering::Release);
             shared.fade_done.store(false, Ordering::Release);
             shared.fade_starved.store(false, Ordering::Release);
-            shared.reset_deck_peaks();
+            shared.reset_deck_power();
             shared.fade_from_deck.store(1 - deck, Ordering::Release);
             shared.fade_active.store(true, Ordering::Release);
             shared.set_crossfade_state(CrossfadeState::Fading);
@@ -2970,7 +2988,7 @@ mod worker {
             shared.active_deck.store(deck, Ordering::Release);
             shared.fade_active.store(false, Ordering::Release);
             shared.fade_starved.store(false, Ordering::Release);
-            shared.reset_deck_peaks();
+            shared.reset_deck_power();
             shared
                 .fade_gain_in
                 .store(1.0f32.to_bits(), Ordering::Release);
@@ -3739,7 +3757,8 @@ mod worker {
                 ramp_frames: 0,
                 bands: FadeEq::new(rate),
                 bass_db: 0.0,
-                bus_peak: 0.0,
+                bus_power: 0.0,
+                bus_samples: 0,
                 bus_gain: 1.0,
                 channel_cursor: 0,
                 waveform_peak: 0.0,
@@ -3802,7 +3821,8 @@ mod tests {
             ramp_frames: 0,
             bands: FadeEq::new(1000),
             bass_db: 0.0,
-            bus_peak: 0.0,
+            bus_power: 0.0,
+            bus_samples: 0,
             bus_gain: 1.0,
             channel_cursor: 0,
             waveform_peak: 0.0,
@@ -3939,15 +3959,17 @@ mod tests {
     }
 
     #[test]
-    fn fade_headroom_tames_the_summed_bus() {
-        // Each deck below the ceiling adds nothing.
-        assert_eq!(bus_headroom(0.5, 0.4), 1.0);
+    fn fade_headroom_uses_power_instead_of_summed_peaks() {
+        // Normal material (mean square ~0.04 per deck) is never attenuated:
+        // equal-power fades already keep the summed power constant.
+        assert_eq!(bus_headroom(0.04, 0.04), 1.0);
         assert_eq!(bus_headroom(0.0, 0.0), 1.0);
-        // Two near-full masters are pulled down to the ceiling.
-        let gain = bus_headroom(0.9, 0.9);
+        // Genuinely hot material is pulled towards the RMS ceiling, but the
+        // reduction is small rather than the old 3–6 dB mid-fade sag.
+        let gain = bus_headroom(0.36, 0.36);
         assert!(gain < 1.0);
-        assert!((0.9 * gain + 0.9 * gain - BUS_CEILING).abs() < 1e-3);
-        // Extremely loud masters stop at the floor instead of muting the mix.
+        assert!((0.72f32.sqrt() * gain - BUS_RMS_CEILING).abs() < 1e-3);
+        // The floor stops the bus from being muted.
         assert_eq!(bus_headroom(1.0, 1.0), BUS_MIN_GAIN);
         // Silence is never boosted.
         assert_eq!(bus_headroom(-0.0, 0.0), 1.0);

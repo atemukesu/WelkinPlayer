@@ -292,7 +292,7 @@ export const useSmartTransitionStore = defineStore("smartTransition", () => {
             smartTransition: {
               enabled: previous?.enabled ?? false,
               file: summary.file,
-              algorithmVersion: 3,
+              algorithmVersion: 8,
               updatedAt: summary.updatedAt,
               // Opening the dialog must not clear a stale marker: the stored
               // document still describes the pre-edit track list.
@@ -354,7 +354,7 @@ export const useSmartTransitionStore = defineStore("smartTransition", () => {
         smartTransition: {
           enabled: playlist.smartTransition?.enabled ?? false,
           file: summary.file,
-          algorithmVersion: 3,
+          algorithmVersion: 8,
           updatedAt: summary.updatedAt,
           status: "ready",
         },
@@ -396,7 +396,7 @@ export const useSmartTransitionStore = defineStore("smartTransition", () => {
       smartTransition: {
         enabled: true,
         file: summary.file,
-        algorithmVersion: 3,
+        algorithmVersion: 8,
         updatedAt: summary.updatedAt,
         status: "ready",
       },
