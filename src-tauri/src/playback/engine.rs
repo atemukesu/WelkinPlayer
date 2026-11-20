@@ -28,7 +28,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::core::error::AppError;
-use crate::playback::fade_eq::{FadeEq, BASS_CUT_DB};
+use crate::playback::fade_eq::{FadeEq, BASS_CUT_DB, HIGH_CUT_DB, MID_CUT_DB};
 use crate::playback::source::{open_track, open_track_inactive, ReadSeek};
 use crate::streaming::manual_cache::ManualCache;
 use crate::streaming::stream_cache::StreamCache;
@@ -99,6 +99,16 @@ const BASS_OUT_END: f32 = 0.50;
 const BASS_IN_START: f32 = 0.50;
 /// Position where the incoming bass is fully in.
 const BASS_IN_END: f32 = 0.78;
+/// The incoming deck starts with its presence/highs dipped, but it is silent at
+/// that point anyway. Opening them quickly means the dip is never heard: by the
+/// time the deck is audible it is already neutral.
+const PRESENCE_IN_START: f32 = 0.0;
+const PRESENCE_IN_END: f32 = 0.35;
+/// The outgoing deck keeps its midrange through the first quarter, then hands
+/// the presence band to the incoming one. It never dips both decks at once, so
+/// the long overlap does not lose 3–6 dB in the middle.
+const PRESENCE_OUT_START: f32 = 0.25;
+const PRESENCE_OUT_END: f32 = 0.62;
 
 /// Progress of a bass-swap window, clamped to `0..=1`.
 fn swap_progress(t: f32, start: f32, end: f32) -> f32 {
@@ -244,7 +254,9 @@ pub fn device_ranges() -> Vec<(u32, u32)> {
 /// their `1 … 384000` claim is a giveaway; their real ceiling is unknowable
 /// here, so we must not derive a "device maximum" from them.
 fn is_software_endpoint(ranges: &[(u32, u32)]) -> bool {
-    ranges.iter().any(|(low, high)| *low <= 100 && *high >= 384_000)
+    ranges
+        .iter()
+        .any(|(low, high)| *low <= 100 && *high >= 384_000)
 }
 
 /// Probe the default output device for the rates it supports. Read-only and
@@ -521,7 +533,10 @@ pub fn enumerate_android_devices() -> Vec<DeviceEntry> {
 /// to detect a plug/unplug.
 #[cfg(target_os = "android")]
 fn device_signature() -> String {
-    let mut ids: Vec<String> = enumerate_devices().into_iter().map(|device| format!("{}:{}", device.device_type, device.id)).collect();
+    let mut ids: Vec<String> = enumerate_devices()
+        .into_iter()
+        .map(|device| format!("{}:{}", device.device_type, device.id))
+        .collect();
     ids.sort();
     ids.join("|")
 }
@@ -929,29 +944,50 @@ impl Shared {
         }
     }
 
-    /// Bass-shelf gain (dB) for one deck during a crossfade.
+    /// Band gains (low, mid, high) in dB for one deck during a crossfade.
     ///
-    /// Both decks keep the equal-power envelope above, but their low end is
-    /// swapped in the middle of the fade: the outgoing bass is cut away before
-    /// the incoming bass is brought in. This is what stops two kick drums and
-    /// two basslines from piling up in the overlap.
+    /// Both decks keep the equal-power envelope above, but the bands are handed
+    /// over as the fade progresses. The bass is swapped first (the outgoing low
+    /// end is gone before the incoming one arrives). The presence and high
+    /// bands are then carved from the outgoing deck only, so a long overlap
+    /// stops sounding like two complete mixes fighting: by the middle of the
+    /// fade the outgoing track has lost its vocals/snares and cymbals while the
+    /// incoming one is already full-range.
     ///
-    /// Outside a fade the shelf is at 0 dB (exactly unity, so `RingSource`
-    /// skips it entirely).
-    fn deck_bass_db(&self, deck: u8) -> f32 {
+    /// Outside a fade every band is at 0 dB (exactly unity, so `RingSource`
+    /// skips the filters entirely).
+    fn deck_eq_db(&self, deck: u8) -> (f32, f32, f32) {
         if !self.fade_active.load(Ordering::Relaxed) {
-            return 0.0;
+            return (0.0, 0.0, 0.0);
         }
         let from = self.fade_from_deck.load(Ordering::Relaxed);
         let clock = self.fade_clock.load(Ordering::Relaxed);
         let start = self.fade_start_frame.load(Ordering::Relaxed);
         let frames = self.fade_frames.load(Ordering::Relaxed).max(1);
         let t = (clock.saturating_sub(start) as f32 / frames as f32).clamp(0.0, 1.0);
-        if deck == from {
+        let low = if deck == from {
             BASS_CUT_DB * swap_progress(t, BASS_OUT_START, BASS_OUT_END)
         } else {
             BASS_CUT_DB * (1.0 - swap_progress(t, BASS_IN_START, BASS_IN_END))
-        }
+        };
+        let (mid, high) = if deck == from {
+            let carved = swap_progress(t, PRESENCE_OUT_START, PRESENCE_OUT_END);
+            (MID_CUT_DB * carved, HIGH_CUT_DB * carved)
+        } else {
+            // Starts fully dipped while the deck is still silent, then opens
+            // before it becomes audible.
+            let dipped = 1.0 - swap_progress(t, PRESENCE_IN_START, PRESENCE_IN_END);
+            (MID_CUT_DB * dipped, HIGH_CUT_DB * dipped)
+        };
+        (low, mid, high)
+    }
+
+    /// Bass-shelf gain (dB) for one deck during a crossfade. Kept as a named
+    /// accessor for the bass-swap tests and for callers that only track the low
+    /// band.
+    #[cfg(test)]
+    fn deck_bass_db(&self, deck: u8) -> f32 {
+        self.deck_eq_db(deck).0
     }
 
     /// Whether an overlapping crossfade is currently being mixed.
@@ -1236,10 +1272,10 @@ struct RingSource {
     target_gain: f32,
     gain_step: f32,
     ramp_frames: u32,
-    /// Bass shelf for this deck, used only during a crossfade.
+    /// Three-band EQ for this deck, used only during a crossfade.
     bands: FadeEq,
-    /// Bass-shelf gain in dB for the current state block.
-    bass_db: f32,
+    /// Low/mid/high band gains in dB for the current state block.
+    eq_db: (f32, f32, f32),
     /// Sum of squared post-gain samples in the current state block.
     bus_power: f32,
     /// Samples counted in the current state block, for the mean square.
@@ -1328,10 +1364,10 @@ impl Iterator for RingSource {
                 self.ramp_frames = (self.rate / 100).max(1);
                 self.gain_step = (target - self.gain) / self.ramp_frames as f32;
             }
-            self.bass_db = if fading {
-                self.shared.deck_bass_db(self.deck)
+            self.eq_db = if fading {
+                self.shared.deck_eq_db(self.deck)
             } else {
-                0.0
+                (0.0, 0.0, 0.0)
             };
             self.state_left =
                 SOURCE_STATE_BLOCK.div_ceil(self.channels as usize) * self.channels as usize;
@@ -1396,7 +1432,8 @@ impl Iterator for RingSource {
                     self.shared.fade_done.store(true, Ordering::Release);
                 }
                 let sample = if fading {
-                    self.bands.set_gain_db(self.bass_db);
+                    let (low, mid, high) = self.eq_db;
+                    self.bands.set_gains_db(low, mid, high);
                     self.bands.process(value, self.channel_cursor as usize)
                 } else {
                     value
@@ -1553,7 +1590,16 @@ pub fn start(app: AppHandle, cache: Arc<StreamCache>, manual: Arc<ManualCache>) 
     let worker_shutdown = shutdown.clone();
     std::thread::Builder::new()
         .name("welkin-playback-worker".to_string())
-        .spawn(move || worker::run(worker_app, cache, manual, worker_shared, worker_shutdown, rx))
+        .spawn(move || {
+            worker::run(
+                worker_app,
+                cache,
+                manual,
+                worker_shared,
+                worker_shutdown,
+                rx,
+            )
+        })
         .unwrap_or_else(|error| panic!("failed to start playback worker: {error}"));
 
     let events_shared = shared.clone();
@@ -1611,8 +1657,7 @@ mod events {
                 let _ = app.emit("audio:state", state);
                 // MPRIS receives the position through the playback snapshot;
                 // update it every state tick instead of once per second.
-                if let Some(context) =
-                    app.try_state::<crate::playback::context::PlaybackContext>()
+                if let Some(context) = app.try_state::<crate::playback::context::PlaybackContext>()
                 {
                     context.apply_to_media_control();
                 }
@@ -1696,7 +1741,8 @@ mod events {
                 // Auto-advance the queue in Rust so playback survives a dead or
                 // throttled webview. The webview no longer drives next/previous;
                 // the context owns the queue and reloads the engine directly.
-                if let Some(context) = app.try_state::<crate::playback::context::PlaybackContext>() {
+                if let Some(context) = app.try_state::<crate::playback::context::PlaybackContext>()
+                {
                     context.on_ended();
                 }
             }
@@ -1822,8 +1868,8 @@ mod worker {
         } else {
             0.0
         };
-        let (reader, byte_len) = open_track_inactive(app, cache, manual, source_id, path)
-            .map_err(|e| e.to_string())?;
+        let (reader, byte_len) =
+            open_track_inactive(app, cache, manual, source_id, path).map_err(|e| e.to_string())?;
         let mut decoder = build_decoder(reader, byte_len).map_err(|e| e.to_string())?;
         let channels = decoder.channels().max(1);
         let native_rate = decoder.sample_rate().max(1);
@@ -1832,14 +1878,9 @@ mod worker {
             .map(|value| value.as_millis() as u64)
             .unwrap_or(0);
         if target > 0.05 {
-            if decoder
-                .try_seek(Duration::from_secs_f64(target))
-                .is_err()
-            {
+            if decoder.try_seek(Duration::from_secs_f64(target)).is_err() {
                 if target > MAX_FORWARD_SEEK_SECONDS {
-                    return Err(format!(
-                        "incoming stream cannot seek to {target:.3}s"
-                    ));
+                    return Err(format!("incoming stream cannot seek to {target:.3}s"));
                 }
                 // Rebuild and skip forward: bounded so a non-seekable remote
                 // stream cannot make preparation run for minutes.
@@ -1894,9 +1935,8 @@ mod worker {
             decoder: prepared.decoder,
             pending: Vec::with_capacity(DECODE_CHUNK),
             native: Vec::new(),
-            resampler: (work_rate != prepared.native_rate).then(|| {
-                Resampler::new(prepared.native_rate, work_rate, channels as usize)
-            }),
+            resampler: (work_rate != prepared.native_rate)
+                .then(|| Resampler::new(prepared.native_rate, work_rate, channels as usize)),
             source_done: false,
             stretch,
             applied_tempo: tempo,
@@ -2294,7 +2334,9 @@ mod worker {
         /// Publish the live stream rate, the device's advertised maximum, and
         /// Publish the live stream rate so the quality UI reflects reality.
         fn publish_device_rates(&self) {
-            self.shared.device_rate.store(self.device_rate, Ordering::Relaxed);
+            self.shared
+                .device_rate
+                .store(self.device_rate, Ordering::Relaxed);
         }
 
         /// Apply a new output-quality preference: reopen the output stream at
@@ -2462,9 +2504,7 @@ mod worker {
                     // Resolve the type from the enumerated list, then route to
                     // the matching device. The route is what actually makes
                     // audio play on the chosen device.
-                    if let Some(device) = enumerate_devices()
-                        .iter()
-                        .find(|device| &device.id == id)
+                    if let Some(device) = enumerate_devices().iter().find(|device| &device.id == id)
                     {
                         if let Err(error) = crate::platform::android::route_audio(
                             device.device_type as i32,
@@ -2540,7 +2580,10 @@ mod worker {
             // A user-pinned device that is no longer in the list was
             // unplugged: drop the pin and follow the system default.
             if let Some(pinned) = &self.selected_device {
-                if !enumerate_devices().iter().any(|device| &device.id == pinned) {
+                if !enumerate_devices()
+                    .iter()
+                    .any(|device| &device.id == pinned)
+                {
                     log::info!("playback: pinned device {pinned:?} disappeared, following default");
                     self.selected_device = None;
                     // The user explicitly chose that output; losing it should
@@ -2554,7 +2597,9 @@ mod worker {
             // Do not consume the observed signature before the rebuild
             // succeeds. A failed reopen during a phone call used to clear the
             // change, so the post-call device state never triggered a retry.
-            if self.last_stream_rebuild.elapsed() < Duration::from_millis(STREAM_REBUILD_BACKOFF_MILLIS) {
+            if self.last_stream_rebuild.elapsed()
+                < Duration::from_millis(STREAM_REBUILD_BACKOFF_MILLIS)
+            {
                 return;
             }
             self.last_stream_rebuild = std::time::Instant::now();
@@ -2569,7 +2614,9 @@ mod worker {
             if !self.shared.stream_error.swap(false, Ordering::AcqRel) {
                 return;
             }
-            if self.last_stream_rebuild.elapsed() < Duration::from_millis(STREAM_REBUILD_BACKOFF_MILLIS) {
+            if self.last_stream_rebuild.elapsed()
+                < Duration::from_millis(STREAM_REBUILD_BACKOFF_MILLIS)
+            {
                 // Keep the request pending so a later poll retries it.
                 self.shared.stream_error.store(true, Ordering::Release);
                 return;
@@ -2602,7 +2649,8 @@ mod worker {
                 return;
             }
             if self.last_progress_at.elapsed() < Duration::from_millis(STALL_REBUILD_MILLIS)
-                || self.last_stream_rebuild.elapsed() < Duration::from_millis(STREAM_REBUILD_BACKOFF_MILLIS)
+                || self.last_stream_rebuild.elapsed()
+                    < Duration::from_millis(STREAM_REBUILD_BACKOFF_MILLIS)
             {
                 return;
             }
@@ -2747,7 +2795,9 @@ mod worker {
                     // call, or the OS suspending AAudio) cannot be revived by
                     // clearing the pause flag: the callback itself is gone.
                     if self.shared.stream_error.swap(false, Ordering::AcqRel) {
-                        log::warn!("playback: play requested after a stream error; rebuilding the stream");
+                        log::warn!(
+                            "playback: play requested after a stream error; rebuilding the stream"
+                        );
                         self.last_stream_rebuild = std::time::Instant::now();
                         self.rebuild_stream();
                     }
@@ -2940,10 +2990,9 @@ mod worker {
             shared
                 .fade_gain_in
                 .store(loudness_gain.to_bits(), Ordering::Release);
-            shared.fade_start_frame.store(
-                shared.fade_clock.load(Ordering::Relaxed),
-                Ordering::Release,
-            );
+            shared
+                .fade_start_frame
+                .store(shared.fade_clock.load(Ordering::Relaxed), Ordering::Release);
             shared.fade_frames.store(frames.max(1), Ordering::Release);
             shared.fade_done.store(false, Ordering::Release);
             shared.fade_starved.store(false, Ordering::Release);
@@ -2951,9 +3000,7 @@ mod worker {
             shared.fade_from_deck.store(1 - deck, Ordering::Release);
             shared.fade_active.store(true, Ordering::Release);
             shared.set_crossfade_state(CrossfadeState::Fading);
-            self.append_source(
-                generation, channels, rate, consumer, done, progress, deck,
-            );
+            self.append_source(generation, channels, rate, consumer, done, progress, deck);
             log::debug!("playback: crossfade started deck={deck} frames={frames}");
         }
 
@@ -3012,13 +3059,9 @@ mod worker {
             shared.duration_ms.store(duration_ms, Ordering::Relaxed);
             // The incoming track is now the one playing: move the stream cache's
             // eviction protection to it before the UI reports the new playhead.
-            self.cache.set_active(&crate::commands::media::asset_hash(
-                &source_id, &path,
-            ));
-            *shared
-                .location
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()) = Some((source_id, path));
+            self.cache
+                .set_active(&crate::commands::media::asset_hash(&source_id, &path));
+            *shared.location.lock().unwrap_or_else(|e| e.into_inner()) = Some((source_id, path));
             shared.set_ended(incoming_ended);
             shared.set_crossfade_state(CrossfadeState::Done);
             self.current = Some(current);
@@ -3097,7 +3140,9 @@ mod worker {
                         self.publish_device_rates();
                     }
                     Err(error) => {
-                        log::warn!("playback: reopening output stream at {output_rate} Hz failed: {error}");
+                        log::warn!(
+                            "playback: reopening output stream at {output_rate} Hz failed: {error}"
+                        );
                     }
                 }
             }
@@ -3107,7 +3152,11 @@ mod worker {
             let cap = self.device_rate.min(rate);
             let mut work_rate = standard[0];
             for &r in &standard {
-                if r <= cap { work_rate = r; } else { break; }
+                if r <= cap {
+                    work_rate = r;
+                } else {
+                    break;
+                }
             }
             let work_rate = work_rate.max(1);
             let duration_ms = decoder
@@ -3756,7 +3805,7 @@ mod worker {
                 gain_step: 0.0,
                 ramp_frames: 0,
                 bands: FadeEq::new(rate),
-                bass_db: 0.0,
+                eq_db: (0.0, 0.0, 0.0),
                 bus_power: 0.0,
                 bus_samples: 0,
                 bus_gain: 1.0,
@@ -3820,7 +3869,7 @@ mod tests {
             gain_step: 0.0,
             ramp_frames: 0,
             bands: FadeEq::new(1000),
-            bass_db: 0.0,
+            eq_db: (0.0, 0.0, 0.0),
             bus_power: 0.0,
             bus_samples: 0,
             bus_gain: 1.0,
@@ -4031,9 +4080,48 @@ mod tests {
         shared.fade_clock.store(1000, Ordering::Relaxed);
         assert!((shared.deck_bass_db(0) - BASS_CUT_DB).abs() < 1e-3);
         assert_eq!(shared.deck_bass_db(1), 0.0);
-        // Mids and highs keep the equal-power envelope.
+        // Mids and highs follow the equal-power envelope.
         assert!(shared.deck_gain(0) < 1e-3);
         assert!((shared.deck_gain(1) - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn crossfade_carves_presence_from_the_outgoing_deck_only() {
+        let shared = Shared::new();
+        shared.active_deck.store(0, Ordering::Relaxed);
+        shared.fade_from_deck.store(0, Ordering::Relaxed);
+        shared.fade_start_frame.store(0, Ordering::Relaxed);
+        shared.fade_frames.store(1000, Ordering::Relaxed);
+        shared.fade_active.store(true, Ordering::Relaxed);
+
+        // At the start the incoming deck carries its (masked) dip, while the
+        // outgoing deck is untouched.
+        shared.fade_clock.store(0, Ordering::Relaxed);
+        let (_, out_mid, out_high) = shared.deck_eq_db(0);
+        assert_eq!(out_mid, 0.0);
+        assert_eq!(out_high, 0.0);
+        let (_, in_mid, in_high) = shared.deck_eq_db(1);
+        assert!((in_mid - MID_CUT_DB).abs() < 1e-3);
+        assert!((in_high - HIGH_CUT_DB).abs() < 1e-3);
+
+        // The incoming deck opens before it becomes audible, so by the middle
+        // of the fade only the outgoing presence is cut: never both at once.
+        shared.fade_clock.store(500, Ordering::Relaxed);
+        let (_, out_mid, _) = shared.deck_eq_db(0);
+        let (_, in_mid, in_high) = shared.deck_eq_db(1);
+        assert!(out_mid < MID_CUT_DB * 0.5, "out mid {out_mid}");
+        assert_eq!(in_mid, 0.0);
+        assert_eq!(in_high, 0.0);
+
+        // By the handover the outgoing midrange is fully carved and the
+        // incoming deck is neutral again for a seamless promotion.
+        shared.fade_clock.store(1000, Ordering::Relaxed);
+        let (_, out_mid, out_high) = shared.deck_eq_db(0);
+        assert!((out_mid - MID_CUT_DB).abs() < 1e-3);
+        assert!((out_high - HIGH_CUT_DB).abs() < 1e-3);
+        let (_, in_mid, in_high) = shared.deck_eq_db(1);
+        assert_eq!(in_mid, 0.0);
+        assert_eq!(in_high, 0.0);
     }
 
     #[test]

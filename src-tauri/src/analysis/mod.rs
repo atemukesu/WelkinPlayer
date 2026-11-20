@@ -48,7 +48,7 @@ pub const WINDOW_SECS: f32 = 60.0;
 /// Bump when the planning model changes. Stored per-track features are kept
 /// across this version and only the transitions are recomputed; bump
 /// [`SCHEMA_VERSION`] instead when the extracted features change.
-pub const ALGORITHM_VERSION: u32 = 8;
+pub const ALGORITHM_VERSION: u32 = 9;
 /// On-disk document schema (also invalidates cached per-track features when the
 /// feature set or DSP pipeline changes).
 pub const SCHEMA_VERSION: u32 = 2;
@@ -746,15 +746,8 @@ fn analyse_track(
     // The reader blocks on the remote download as the decoder consumes bytes,
     // so this first stage is where most of a WebDAV track's wall time goes.
     stage("downloading");
-    let (reader, byte_len, _scratch) = open_analysis_source(
-        app,
-        cache,
-        manual,
-        source_id,
-        path,
-        cancel,
-        download,
-    )?;
+    let (reader, byte_len, _scratch) =
+        open_analysis_source(app, cache, manual, source_id, path, cancel, download)?;
     if cancelled(cancel) {
         return Err(cancel_error());
     }
@@ -1347,45 +1340,60 @@ fn mix_in(grid: Option<&BeatGrid>, duration: f32) -> f32 {
 /// The fade still finishes with the track, so the Mix Out point sits on the last
 /// bar line before `musical_end - blend`. `musical_end` is the last moment with
 /// meaningful audio; trailing digital silence is not a mix target.
-fn mix_out(grid: Option<&BeatGrid>, musical_end: f32, tail_offset: f32) -> f32 {
+fn mix_out(grid: Option<&BeatGrid>, musical_end: f32, tail_offset: f32, bars: f32) -> f32 {
     let Some(grid) = grid else {
-        return (musical_end - preferred_blend_secs(None))
+        return (musical_end - preferred_blend_secs(None, bars))
             .max(tail_offset.max(0.0))
             .max(0.0);
     };
     if musical_end <= 1.0 {
         return 0.0;
     }
-    let blend = preferred_blend_secs(Some(grid));
+    let blend = preferred_blend_secs(Some(grid), bars);
     let line = grid.phrase_at_or_before((musical_end - blend).max(0.0), BEATS_PER_BAR);
     line.clamp(tail_offset.max(0.0).min(musical_end), musical_end)
 }
 
-/// Default crossfade target, in bars. Eight bars is the shortest fade that
-/// still reads as a DJ-style blend rather than a quick cut; [`blend_secs`]
-/// shrinks it only when the outgoing track genuinely runs out of tail.
-const BLEND_BARS_TARGET: f32 = 8.0;
-/// Lower bound for the configurable bar count.
-const BLEND_BARS_MIN: f32 = 2.0;
 /// Upper bound for the configurable bar count. Sixteen bars is two full
 /// 32-beat phrases, the longest overlap this planner will attempt.
 const BLEND_BARS_MAX: f32 = 16.0;
+/// Lower bound for the configurable bar count.
+const BLEND_BARS_MIN: f32 = 2.0;
+/// Default ceiling for an adaptive long blend. Most pairs never reach it: only
+/// sparse, tempo/key-compatible material is allowed to overlap for long.
+const BLEND_BARS_CAP_DEFAULT: f32 = 8.0;
+/// Blend lengths the adaptive policy can choose, in bars.
+///
+/// Two bars is the default for the common case: two complete mixes playing at
+/// once is what made the old long fades sound bad. Four and eight bars are
+/// reserved for pairs where both sections are sparse and the tempo/key match.
+const BLEND_BARS_SHORT: f32 = 2.0;
+const BLEND_BARS_MEDIUM: f32 = 4.0;
+const BLEND_BARS_LONG: f32 = 8.0;
+/// Maximum tempo correction for a long blend. Above this the WSOLA stretch
+/// becomes audible for the whole overlap, so the pair gets a short mix instead.
+const LONG_BLEND_TEMPO_TOLERANCE: f32 = 0.025;
+/// Mean energy (relative to the track's overall energy) below which a section
+/// counts as sparse enough to carry a longer overlap.
+const ACTIVITY_SPARSE: f32 = 0.45;
+/// Upper bound for a four-bar blend; above this the section is busy enough that
+/// only a short mix makes sense.
+const ACTIVITY_MODERATE: f32 = 0.68;
 /// Hard ceiling in seconds for the envelope, even at very slow tempos.
 const MAX_BLEND_SECS: f32 = 30.0;
 /// Fallback length when a window has no usable tempo at all.
-const FALLBACK_BLEND_SECS: f32 = 8.0;
+const FALLBACK_BLEND_SECS: f32 = 4.0;
 /// Below this the transition stops sounding like a mix; the pair is treated as
 /// a fallback instead of a planned blend.
 const MIN_BLEND_SECS: f32 = 2.0;
 /// Tracks shorter than this get a short fade instead of a planned mix.
 const MIN_TRACK_SECS: f32 = 15.0;
 
-/// Target blend length in bars.
+/// Ceiling for the adaptive blend length, in bars.
 ///
-/// Eight bars is the default because 2–2.5 second fades were the main reason
-/// transitions felt like cuts. It can be tuned per install with
-/// `WELKIN_TRANSITION_BARS` (clamped to [`BLEND_BARS_MIN`]..=[`BLEND_BARS_MAX`])
-/// without a rebuild.
+/// The default is eight bars, but only sparse and compatible pairs ever reach
+/// it. It can be tuned per install with `WELKIN_TRANSITION_BARS` (clamped to
+/// [`BLEND_BARS_MIN`]..=[`BLEND_BARS_MAX`]) without a rebuild.
 fn target_blend_bars() -> f32 {
     static BARS: OnceLock<f32> = OnceLock::new();
     *BARS.get_or_init(|| {
@@ -1393,15 +1401,15 @@ fn target_blend_bars() -> f32 {
             .ok()
             .and_then(|value| value.trim().parse::<f32>().ok())
             .filter(|value| value.is_finite())
-            .unwrap_or(BLEND_BARS_TARGET)
+            .unwrap_or(BLEND_BARS_CAP_DEFAULT)
             .clamp(BLEND_BARS_MIN, BLEND_BARS_MAX)
     })
 }
 
-/// Fade length that fits the track's tempo: [`target_blend_bars`] bars, capped
-/// by [`MAX_BLEND_SECS`]. This is the *intended* length; the actual envelope
-/// may shrink when the tail is shorter.
-fn preferred_blend_secs(grid: Option<&BeatGrid>) -> f32 {
+/// Fade length in seconds for a requested number of bars, capped by
+/// [`MAX_BLEND_SECS`]. This is the *intended* length; the actual envelope may
+/// shrink when the tail is shorter.
+fn preferred_blend_secs(grid: Option<&BeatGrid>, bars: f32) -> f32 {
     let Some(grid) = grid else {
         return FALLBACK_BLEND_SECS;
     };
@@ -1409,17 +1417,17 @@ fn preferred_blend_secs(grid: Option<&BeatGrid>) -> f32 {
     if !(bar.is_finite() && bar > 0.0) {
         return FALLBACK_BLEND_SECS;
     }
-    (target_blend_bars() * bar).clamp(MIN_BLEND_SECS, MAX_BLEND_SECS)
+    (bars * bar).clamp(MIN_BLEND_SECS, MAX_BLEND_SECS)
 }
 
-/// Fade length in seconds: the tempo's preferred blend, shrunk to whole bars
-/// when the outgoing track has less tail than that.
-fn blend_secs(grid: Option<&BeatGrid>, out_at: f32, musical_end: f32) -> f32 {
+/// Fade length in seconds: the requested bars, shrunk to whole bars when the
+/// outgoing track has less tail than that.
+fn blend_secs(grid: Option<&BeatGrid>, out_at: f32, musical_end: f32, bars: f32) -> f32 {
     let remaining = (musical_end - out_at).max(0.0);
     let Some(grid) = grid else {
         return remaining.clamp(1.5, FALLBACK_BLEND_SECS);
     };
-    let preferred = preferred_blend_secs(Some(grid));
+    let preferred = preferred_blend_secs(Some(grid), bars);
     if remaining + 1e-3 >= preferred {
         return preferred;
     }
@@ -1432,6 +1440,62 @@ fn blend_secs(grid: Option<&BeatGrid>, out_at: f32, musical_end: f32) -> f32 {
         (bars * bar).min(remaining)
     } else {
         remaining
+    }
+}
+
+/// Mean energy of a region relative to the track's overall energy, clamped to
+/// `0..=1`.
+///
+/// This is the planner's density proxy. It is deliberately energy-based: the
+/// analysis pipeline has no stem separation, so "sparse/instrumental" here
+/// means "the section carries noticeably less energy than the track as a
+/// whole", which is what an intro, breakdown or outro looks like in the curves.
+fn edge_activity(edge: &EdgeFeatures, reference: f32, offset: f32, span: f32) -> f32 {
+    let mean = edge
+        .energy_between(offset.max(0.0), span.max(1.0))
+        .unwrap_or_else(|| edge.mean_energy());
+    (mean / reference.max(0.02)).clamp(0.0, 1.0)
+}
+
+/// Whether a pair may use anything longer than the default short mix.
+///
+/// Long overlaps need the two grids to agree closely and the keys to be
+/// harmonically adjacent; otherwise the extra bars only expose stretching
+/// artefacts and clashing harmony.
+fn blend_pair_is_compatible(out: &TrackAnalysis, input: &TrackAnalysis) -> bool {
+    let out_bpm = grid_bpm(out.tail.bpm, out.bpm);
+    let in_bpm = grid_bpm(input.head.bpm, input.bpm);
+    tempo_is_close(out_bpm, in_bpm) && keys_are_compatible(&out.key_camelot, &input.key_camelot)
+}
+
+/// Adaptive blend length in bars for a concrete cue pair.
+fn adaptive_blend_bars(
+    out: &TrackAnalysis,
+    input: &TrackAnalysis,
+    out_at: f32,
+    in_at: f32,
+    grid: Option<&BeatGrid>,
+    musical_end: f32,
+    compatible: bool,
+) -> f32 {
+    let cap = target_blend_bars();
+    if !compatible {
+        return BLEND_BARS_SHORT.min(cap);
+    }
+    // Probe the section that the longest allowed blend would cover, so the
+    // decision reflects the material actually mixed, not the whole track.
+    let probe = preferred_blend_secs(grid, cap).max(1.0);
+    let out_span = (musical_end - out_at).clamp(1.0, probe);
+    let in_span = (input.duration - in_at).clamp(1.0, probe);
+    let out_activity = edge_activity(&out.tail, out.energy, out_at - out.tail_offset, out_span);
+    let in_activity = edge_activity(&input.head, input.energy, in_at, in_span);
+    let activity = out_activity.max(in_activity);
+    if activity <= ACTIVITY_SPARSE {
+        cap.min(BLEND_BARS_LONG)
+    } else if activity <= ACTIVITY_MODERATE {
+        cap.min(BLEND_BARS_MEDIUM)
+    } else {
+        BLEND_BARS_SHORT.min(cap)
     }
 }
 
@@ -1545,8 +1609,9 @@ fn mix_out_candidates(
     musical_end: f32,
     tail_offset: f32,
     tail_window: f32,
+    bars: f32,
 ) -> Vec<f32> {
-    let fallback = mix_out(grid, musical_end, tail_offset);
+    let fallback = mix_out(grid, musical_end, tail_offset, bars);
     let Some(grid) = grid else {
         return vec![fallback];
     };
@@ -1596,16 +1661,15 @@ fn mix_in_candidates(grid: Option<&BeatGrid>, duration: f32, head_window: f32) -
     lines
 }
 
-/// Fold a tempo ratio into one octave and only keep it when the correction is
-/// small enough to be musical. Large differences are left to drift instead of
-/// sounding like a chipmunk.
-fn fold_tempo_ratio(out_bpm: f32, in_bpm: f32) -> f32 {
+/// Fold a tempo ratio into one octave. Returns `None` when either tempo is
+/// unusable.
+fn folded_tempo_ratio(out_bpm: f32, in_bpm: f32) -> Option<f32> {
     if !(out_bpm.is_finite() && in_bpm.is_finite()) || out_bpm <= 1.0 || in_bpm <= 1.0 {
-        return 1.0;
+        return None;
     }
     let mut ratio = out_bpm / in_bpm;
     if !(ratio.is_finite() && ratio > 0.0) {
-        return 1.0;
+        return None;
     }
     while ratio < std::f32::consts::FRAC_1_SQRT_2 {
         ratio *= 2.0;
@@ -1613,10 +1677,35 @@ fn fold_tempo_ratio(out_bpm: f32, in_bpm: f32) -> f32 {
     while ratio >= std::f32::consts::SQRT_2 {
         ratio /= 2.0;
     }
-    if (0.90..=1.10).contains(&ratio) {
-        ratio
-    } else {
-        1.0
+    Some(ratio)
+}
+
+/// Whether the folded tempo correction is small enough for a long blend.
+fn tempo_is_close(out_bpm: f32, in_bpm: f32) -> bool {
+    folded_tempo_ratio(out_bpm, in_bpm)
+        .map(|ratio| (ratio - 1.0).abs() <= LONG_BLEND_TEMPO_TOLERANCE)
+        .unwrap_or(false)
+}
+
+/// Whether two Camelot keys sit next to each other on the wheel (or are the
+/// relative major/minor at the same number).
+fn keys_are_compatible(a: &str, b: &str) -> bool {
+    match (camelot_parts(a), camelot_parts(b)) {
+        (Some((na, _)), Some((nb, _))) => {
+            let raw = (na as i32 - nb as i32).unsigned_abs();
+            raw.min(12 - raw) <= 1
+        }
+        _ => false,
+    }
+}
+
+/// Fold a tempo ratio into one octave and only keep it when the correction is
+/// small enough to be musical. Large differences are left to drift instead of
+/// sounding like a chipmunk.
+fn fold_tempo_ratio(out_bpm: f32, in_bpm: f32) -> f32 {
+    match folded_tempo_ratio(out_bpm, in_bpm) {
+        Some(ratio) if (0.90..=1.10).contains(&ratio) => ratio,
+        _ => 1.0,
     }
 }
 
@@ -1739,13 +1828,30 @@ fn plan_transition(out: &TrackAnalysis, input: &TrackAnalysis) -> TransitionPlan
     // Very short tracks have no room for a planned mix; fade quickly instead of
     // skipping most of either track.
     let short_track = out.duration < MIN_TRACK_SECS || input.duration < MIN_TRACK_SECS;
+    let compatible = blend_pair_is_compatible(out, input);
     let (mut out_at, mut in_at, mut blend) = if short_track {
         let blend = (out.duration.min(input.duration) * 0.1).clamp(0.5, 1.5);
         ((musical_end - blend).max(0.0), 0.0, blend)
     } else {
-        let out_at = mix_out(out_grid.as_ref(), musical_end, out.tail_offset);
+        // Place a provisional Mix Out with the longest allowed blend, choose the
+        // adaptive length from the material around that cue, then re-place it.
+        // Busy tracks default to two bars; only sparse, compatible pairs earn
+        // four or eight.
+        let cap = target_blend_bars();
+        let probe_out = mix_out(out_grid.as_ref(), musical_end, out.tail_offset, cap);
+        let probe_in = mix_in(in_grid.as_ref(), input.duration);
+        let bars = adaptive_blend_bars(
+            out,
+            input,
+            probe_out,
+            probe_in,
+            out_grid.as_ref(),
+            musical_end,
+            compatible,
+        );
+        let out_at = mix_out(out_grid.as_ref(), musical_end, out.tail_offset, bars);
         let in_at = mix_in(in_grid.as_ref(), input.duration);
-        let blend = blend_secs(out_grid.as_ref(), out_at, musical_end);
+        let blend = blend_secs(out_grid.as_ref(), out_at, musical_end, bars);
         (out_at, in_at, blend)
     };
     let mut out_db = out.tail.loudness_between(out_at - out.tail_offset, blend);
@@ -1762,16 +1868,27 @@ fn plan_transition(out: &TrackAnalysis, input: &TrackAnalysis) -> TransitionPlan
                 musical_end,
                 out.tail_offset,
                 out.tail_window(),
+                target_blend_bars(),
             );
             let ins = mix_in_candidates(Some(in_grid), input.duration, input.head_window());
             let mut best: Option<(f32, f32, f32, f32, Option<f32>, Option<f32>)> = None;
             for candidate_out in outs {
-                let candidate_blend = blend_secs(Some(out_grid), candidate_out, musical_end);
-                if candidate_blend < MIN_BLEND_SECS {
-                    continue;
-                }
                 for candidate_in in &ins {
                     if *candidate_in > input.duration.max(0.0) {
+                        continue;
+                    }
+                    let bars = adaptive_blend_bars(
+                        out,
+                        input,
+                        candidate_out,
+                        *candidate_in,
+                        Some(out_grid),
+                        musical_end,
+                        compatible,
+                    );
+                    let candidate_blend =
+                        blend_secs(Some(out_grid), candidate_out, musical_end, bars);
+                    if candidate_blend < MIN_BLEND_SECS {
                         continue;
                     }
                     let (score, db_out, db_in) = cue_score(
@@ -2064,7 +2181,8 @@ pub fn analyze_playlist(
                     .clamp(2, 4),
             )
             .max(1);
-        let (sender, receiver) = std::sync::mpsc::channel::<(usize, Result<TrackAnalysis, AppError>)>();
+        let (sender, receiver) =
+            std::sync::mpsc::channel::<(usize, Result<TrackAnalysis, AppError>)>();
         let queue = AtomicUsize::new(0);
         let queue = &queue;
         let pending = &pending;
@@ -2078,11 +2196,15 @@ pub fn analyze_playlist(
                     }
                     let index = pending[cursor];
                     let input = &inputs[index];
-                    let result = analyse_track(app, cache, manual, input, cancel, &|value| {
-                        stage(index, &input.key, &input.title, value)
-                    }, &|done, total| {
-                        download(index, &input.key, &input.title, done, total)
-                    });
+                    let result = analyse_track(
+                        app,
+                        cache,
+                        manual,
+                        input,
+                        cancel,
+                        &|value| stage(index, &input.key, &input.title, value),
+                        &|done, total| download(index, &input.key, &input.title, done, total),
+                    );
                     if cancelled(cancel) {
                         break;
                     }
@@ -2142,9 +2264,7 @@ pub fn analyze_playlist(
     let tracks: Vec<TrackAnalysis> = slots
         .into_iter()
         .enumerate()
-        .map(|(index, slot)| {
-            slot.unwrap_or_else(|| skipped_track(&inputs[index], "分析未完成"))
-        })
+        .map(|(index, slot)| slot.unwrap_or_else(|| skipped_track(&inputs[index], "分析未完成")))
         .collect();
     Ok(assemble_document(
         playlist_id,
@@ -2281,21 +2401,61 @@ mod tests {
     fn mix_out_starts_the_fade_a_phrase_before_the_end() {
         let g = grid(120.0, 0.0);
         // Eight bars at 120 BPM = 16 s, so the fade starts on the 184 s bar line.
-        assert!((mix_out(Some(&g), 200.0, 120.0) - 184.0).abs() < 1e-3);
+        assert!((mix_out(Some(&g), 200.0, 120.0, BLEND_BARS_LONG) - 184.0).abs() < 1e-3);
+        // The default short mix starts much later: two bars = 4 s.
+        assert!((mix_out(Some(&g), 200.0, 120.0, BLEND_BARS_SHORT) - 196.0).abs() < 1e-3);
     }
 
     #[test]
-    fn blend_uses_eight_bars_and_shrinks_to_the_tail() {
+    fn blend_uses_the_requested_bars_and_shrinks_to_the_tail() {
         let medium = grid(120.0, 0.0); // one bar = 2 s
-        // Eight bars is the default target, not a one-bar quick cut.
-        assert!((blend_secs(Some(&medium), 184.0, 200.0) - 16.0).abs() < 1e-3);
+        assert!((blend_secs(Some(&medium), 184.0, 200.0, BLEND_BARS_LONG) - 16.0).abs() < 1e-3);
+        assert!((blend_secs(Some(&medium), 196.0, 200.0, BLEND_BARS_SHORT) - 4.0).abs() < 1e-3);
         // Less tail: shrink to whole bars instead of overshooting the file.
-        assert!((blend_secs(Some(&medium), 195.0, 200.0) - 4.0).abs() < 1e-3);
+        assert!((blend_secs(Some(&medium), 195.0, 200.0, BLEND_BARS_LONG) - 4.0).abs() < 1e-3);
         // Very slow tempos are capped in seconds, not stretched forever.
         let slow = grid(30.0, 0.0); // one bar = 8 s, eight bars = 64 s
-        assert!((preferred_blend_secs(Some(&slow)) - MAX_BLEND_SECS).abs() < 1e-3);
+        assert!((preferred_blend_secs(Some(&slow), BLEND_BARS_LONG) - MAX_BLEND_SECS).abs() < 1e-3);
         // A grid-less track falls back to the default seconds length.
-        assert!((preferred_blend_secs(None) - FALLBACK_BLEND_SECS).abs() < 1e-3);
+        assert!((preferred_blend_secs(None, BLEND_BARS_SHORT) - FALLBACK_BLEND_SECS).abs() < 1e-3);
+    }
+
+    #[test]
+    fn adaptive_blend_prefers_short_mixes_and_only_stretches_for_compatible_sparse_pairs() {
+        let g = grid(120.0, 0.0);
+        let mut busy_out = track(120.0, "8A");
+        busy_out.tail.energy_curve = vec![0.5; 120]; // at the track's own level
+        let mut busy_in = track(120.0, "8A");
+        busy_in.head.energy_curve = vec![0.5; 120];
+        assert_eq!(
+            adaptive_blend_bars(&busy_out, &busy_in, 180.0, 16.0, Some(&g), 200.0, true),
+            BLEND_BARS_SHORT
+        );
+
+        let mut sparse_out = track(120.0, "8A");
+        sparse_out.tail.energy_curve = vec![0.1; 120];
+        let mut sparse_in = track(120.0, "8A");
+        sparse_in.head.energy_curve = vec![0.1; 120];
+        assert_eq!(
+            adaptive_blend_bars(&sparse_out, &sparse_in, 180.0, 16.0, Some(&g), 200.0, true),
+            BLEND_BARS_LONG
+        );
+
+        // Same sparse material, but the pair is not compatible: still short.
+        assert_eq!(
+            adaptive_blend_bars(&sparse_out, &sparse_in, 180.0, 16.0, Some(&g), 200.0, false),
+            BLEND_BARS_SHORT
+        );
+    }
+
+    #[test]
+    fn long_blends_require_close_tempo_and_adjacent_keys() {
+        assert!(tempo_is_close(124.0, 126.0));
+        assert!(!tempo_is_close(124.0, 132.0));
+        assert!(keys_are_compatible("8A", "8A"));
+        assert!(keys_are_compatible("8A", "9A"));
+        assert!(keys_are_compatible("8A", "8B"));
+        assert!(!keys_are_compatible("8A", "11A"));
     }
 
     #[test]
@@ -2329,7 +2489,7 @@ mod tests {
         input.head.loudness_curve_resolution_seconds = 0.1;
 
         let plan = plan_transition(&out, &input);
-        let fallback = mix_out(Some(&grid(120.0, 140.0)), 200.0, 140.0);
+        let fallback = mix_out(Some(&grid(120.0, 140.0)), 200.0, 140.0, BLEND_BARS_LONG);
         assert_eq!(plan.mode, "strict");
         // The envelope is anchored to the track's end: an eight-bar blend that
         // reaches exactly the last sample, not a one-bar quick cut.

@@ -1,21 +1,22 @@
 // Copyright 2026 Atemukesu
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! Per-deck bass EQ used by the crossfade.
+//! Per-deck three-band EQ used by the crossfade.
 //!
 //! The crossfade used to apply one equal-power gain to each deck, so both
 //! tracks kept their full bass for the whole overlap. Two kick drums and two
 //! basslines then sum into a muddy low end that no fade length can fix.
 //!
-//! Real DJ mixers solve this with a low-band EQ: the outgoing deck's bass is
-//! cut away before the incoming deck's bass is brought in. This module is that
-//! EQ, implemented as one RBJ low-shelf biquad per deck and channel. At 0 dB
-//! its coefficients are exactly unity, so a normal (non-fading) deck is not
-//! touched; during a crossfade the engine drives it down to
-//! [`BASS_CUT_DB`] on the outgoing deck and back up on the incoming one.
+//! A bass swap alone is enough for a two-second cut, but a longer blend leaves
+//! two complete mixes playing at once: vocals, snares and hi-hats fight across
+//! the whole midrange. This module therefore exposes three bands — a low shelf,
+//! a presence peak and a high shelf — and the engine hands the dominant band
+//! from the outgoing deck to the incoming one as the fade progresses.
 //!
-//! A shelf, unlike `sample - lowpass`, is a clean bass control: attenuating it
-//! really removes the low end instead of leaving a phase-shifted residual.
+//! At 0 dB every biquad is exactly unity, so a normal (non-fading) deck is not
+//! touched; during a crossfade the engine drives each band independently.
+//! A shelf/peak, unlike `sample - lowpass`, is a clean control: attenuating it
+//! really removes that band instead of leaving a phase-shifted residual.
 //! The project already vendors `automix`, whose private `EQ3Band` uses the same
 //! biquad form, but it is not exposed and is fixed at deck load time, so a
 //! small local implementation is simpler than adapting it.
@@ -29,6 +30,28 @@ pub const BASS_SHELF_HZ: f32 = 150.0;
 /// like a filter sweep.
 pub const BASS_CUT_DB: f32 = -24.0;
 
+/// Centre of the presence peak that carries most vocals and snares.
+pub const MID_HZ: f32 = 1_200.0;
+/// Width of the presence peak. A moderate Q keeps the cut musical instead of
+/// turning it into a resonant notch.
+pub const MID_Q: f32 = 0.9;
+/// How far the outgoing presence band is dipped when the incoming deck takes
+/// over. Subtle on purpose: `FadeEq` should clear space, not hollow the mix.
+pub const MID_CUT_DB: f32 = -6.0;
+
+/// Corner of the high shelf.
+pub const HIGH_SHELF_HZ: f32 = 6_000.0;
+/// How far the outgoing highs are dipped. Cymbals and hats are the second
+/// biggest source of long-blend clutter after the vocal band.
+pub const HIGH_CUT_DB: f32 = -4.0;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BandKind {
+    LowShelf,
+    Peaking,
+    HighShelf,
+}
+
 #[derive(Clone, Copy)]
 struct BiquadCoeffs {
     b0: f32,
@@ -39,6 +62,16 @@ struct BiquadCoeffs {
 }
 
 impl BiquadCoeffs {
+    fn unity() -> Self {
+        Self {
+            b0: 1.0,
+            b1: 0.0,
+            b2: 0.0,
+            a1: 0.0,
+            a2: 0.0,
+        }
+    }
+
     /// RBJ audio EQ cookbook low-shelf, normalised by `a0`.
     ///
     /// `slope` is the shelf slope (`S = 1`).
@@ -60,6 +93,53 @@ impl BiquadCoeffs {
             a2: ((a + 1.0) + (a - 1.0) * cos_w0 - beta) / a0,
         }
     }
+
+    /// RBJ high-shelf, normalised by `a0`.
+    fn high_shelf(sample_rate: f32, freq: f32, gain_db: f32) -> Self {
+        let rate = sample_rate.max(1.0);
+        let freq = freq.clamp(1.0, rate * 0.45);
+        let a = 10f32.powf(gain_db / 40.0);
+        let w0 = 2.0 * PI * freq / rate;
+        let cos_w0 = w0.cos();
+        let sin_w0 = w0.sin();
+        let alpha = sin_w0 * 0.5 * std::f32::consts::SQRT_2;
+        let beta = 2.0 * a.sqrt() * alpha;
+        let a0 = (a + 1.0) - (a - 1.0) * cos_w0 + beta;
+        Self {
+            b0: a * ((a + 1.0) + (a - 1.0) * cos_w0 + beta) / a0,
+            b1: -2.0 * a * ((a - 1.0) + (a + 1.0) * cos_w0) / a0,
+            b2: a * ((a + 1.0) + (a - 1.0) * cos_w0 - beta) / a0,
+            a1: 2.0 * ((a - 1.0) - (a + 1.0) * cos_w0) / a0,
+            a2: ((a + 1.0) - (a - 1.0) * cos_w0 - beta) / a0,
+        }
+    }
+
+    /// RBJ peaking EQ, normalised by `a0`.
+    fn peaking(sample_rate: f32, freq: f32, q: f32, gain_db: f32) -> Self {
+        let rate = sample_rate.max(1.0);
+        let freq = freq.clamp(1.0, rate * 0.45);
+        let a = 10f32.powf(gain_db / 40.0);
+        let w0 = 2.0 * PI * freq / rate;
+        let cos_w0 = w0.cos();
+        let sin_w0 = w0.sin();
+        let alpha = sin_w0 / (2.0 * q.max(0.1));
+        let a0 = 1.0 + alpha / a;
+        Self {
+            b0: (1.0 + alpha * a) / a0,
+            b1: (-2.0 * cos_w0) / a0,
+            b2: (1.0 - alpha * a) / a0,
+            a1: (-2.0 * cos_w0) / a0,
+            a2: (1.0 - alpha / a) / a0,
+        }
+    }
+
+    fn for_kind(kind: BandKind, sample_rate: f32, freq: f32, q: f32, gain_db: f32) -> Self {
+        match kind {
+            BandKind::LowShelf => Self::low_shelf(sample_rate, freq, gain_db),
+            BandKind::Peaking => Self::peaking(sample_rate, freq, q, gain_db),
+            BandKind::HighShelf => Self::high_shelf(sample_rate, freq, gain_db),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -79,46 +159,96 @@ impl BiquadState {
     }
 }
 
-/// One deck's bass shelf. State is kept per output channel so a stereo signal
-/// is filtered independently and the two channels stay identical.
-pub struct FadeEq {
+/// One filter band with independent state per output channel.
+struct Band {
+    kind: BandKind,
     sample_rate: f32,
+    freq: f32,
+    q: f32,
     coeffs: BiquadCoeffs,
     state: [BiquadState; 2],
     gain_db: f32,
+}
+
+impl Band {
+    fn new(kind: BandKind, sample_rate: f32, freq: f32, q: f32) -> Self {
+        Self {
+            kind,
+            sample_rate,
+            freq,
+            q,
+            coeffs: BiquadCoeffs::unity(),
+            state: [BiquadState::default(); 2],
+            gain_db: 0.0,
+        }
+    }
+
+    /// Set the band gain in dB. Recomputes coefficients only when it changed
+    /// enough to be audible, so the audio thread does no needless trig.
+    fn set_gain_db(&mut self, gain_db: f32) {
+        if (gain_db - self.gain_db).abs() < 0.01 {
+            return;
+        }
+        self.gain_db = gain_db;
+        self.coeffs = if gain_db.abs() < 0.001 {
+            BiquadCoeffs::unity()
+        } else {
+            BiquadCoeffs::for_kind(self.kind, self.sample_rate, self.freq, self.q, gain_db)
+        };
+    }
+
+    #[inline]
+    fn process(&mut self, sample: f32, channel: usize) -> f32 {
+        if self.gain_db.abs() < 0.001 {
+            return sample;
+        }
+        self.state[channel.min(1)].process(sample, &self.coeffs)
+    }
+}
+
+/// One deck's three-band EQ. State is kept per output channel so a stereo
+/// signal is filtered independently and the two channels stay identical.
+pub struct FadeEq {
+    low: Band,
+    mid: Band,
+    high: Band,
 }
 
 impl FadeEq {
     pub fn new(sample_rate: u32) -> Self {
         let rate = sample_rate.max(1) as f32;
         Self {
-            sample_rate: rate,
-            coeffs: BiquadCoeffs::low_shelf(rate, BASS_SHELF_HZ, 0.0),
-            state: [BiquadState::default(); 2],
-            gain_db: 0.0,
+            low: Band::new(BandKind::LowShelf, rate, BASS_SHELF_HZ, 1.0),
+            mid: Band::new(BandKind::Peaking, rate, MID_HZ, MID_Q),
+            high: Band::new(BandKind::HighShelf, rate, HIGH_SHELF_HZ, 1.0),
         }
     }
 
-    /// Set the shelf gain in dB. Recomputes coefficients only when it changed
-    /// enough to be audible, so the audio thread does no needless trig.
+    /// Set all three band gains in dB. The engine updates them once per state
+    /// block with the values for the current crossfade position.
+    pub fn set_gains_db(&mut self, low_db: f32, mid_db: f32, high_db: f32) {
+        self.low.set_gain_db(low_db);
+        self.mid.set_gain_db(mid_db);
+        self.high.set_gain_db(high_db);
+    }
+
+    /// Convenience for the bass-only case (tests and any caller that does not
+    /// need the presence bands).
+    #[cfg(test)]
     pub fn set_gain_db(&mut self, gain_db: f32) {
-        if (gain_db - self.gain_db).abs() < 0.01 {
-            return;
-        }
-        self.gain_db = gain_db;
-        self.coeffs = BiquadCoeffs::low_shelf(self.sample_rate, BASS_SHELF_HZ, gain_db);
+        self.set_gains_db(gain_db, 0.0, 0.0);
     }
 
-    /// Apply the shelf to one sample of `channel`.
+    /// Apply the three bands to one sample of `channel`.
     ///
     /// Output channels beyond stereo share the right-channel state, which is
     /// fine because the engine only ever mixes mono or stereo.
     #[inline]
     pub fn process(&mut self, sample: f32, channel: usize) -> f32 {
-        if self.gain_db.abs() < 0.001 {
-            return sample;
-        }
-        self.state[channel.min(1)].process(sample, &self.coeffs)
+        let channel = channel.min(1);
+        let sample = self.low.process(sample, channel);
+        let sample = self.mid.process(sample, channel);
+        self.high.process(sample, channel)
     }
 }
 
@@ -140,6 +270,20 @@ mod tests {
         20.0 * (a / b).log10()
     }
 
+    /// Feed one mono tone through the EQ and return the steady-state response.
+    fn response(eq: &mut FadeEq, freq: f32) -> f32 {
+        const RATE: f32 = 48_000.0;
+        let input = tone(RATE, freq, 9_600);
+        let mut output = Vec::new();
+        for (index, sample) in input.iter().enumerate() {
+            let filtered = eq.process(*sample, 0);
+            if index >= 2_000 {
+                output.push(filtered);
+            }
+        }
+        db(rms(&output), rms(&input[2_000..]))
+    }
+
     #[test]
     fn unity_gain_is_transparent() {
         let mut eq = FadeEq::new(48_000);
@@ -150,22 +294,40 @@ mod tests {
 
     #[test]
     fn cut_removes_bass_but_keeps_treble() {
+        let mut bass = FadeEq::new(48_000);
+        bass.set_gain_db(BASS_CUT_DB);
+        assert!(response(&mut bass, 60.0) < -12.0);
+
+        let mut treble = FadeEq::new(48_000);
+        treble.set_gain_db(BASS_CUT_DB);
+        assert!(response(&mut treble, 4_000.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn presence_band_clears_the_vocal_range_only() {
+        let mut mid = FadeEq::new(48_000);
+        mid.set_gains_db(0.0, MID_CUT_DB, 0.0);
+        // The peak sits on vocals/snares and leaves the extreme lows and highs.
+        assert!(response(&mut mid, MID_HZ) < -4.0);
+        assert!(response(&mut mid, 60.0).abs() < 1.0);
+        assert!(response(&mut mid, 12_000.0).abs() < 1.5);
+    }
+
+    #[test]
+    fn high_shelf_clears_cymbals_only() {
+        let mut high = FadeEq::new(48_000);
+        high.set_gains_db(0.0, 0.0, HIGH_CUT_DB);
+        assert!(response(&mut high, 12_000.0) < -2.5);
+        assert!(response(&mut high, 300.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn stacked_bands_are_transparent_when_all_zero() {
         let mut eq = FadeEq::new(48_000);
-        eq.set_gain_db(BASS_CUT_DB);
-        let bass = tone(48_000.0, 60.0, 9_600);
-        let treble = tone(48_000.0, 4_000.0, 9_600);
-        let mut bass_out = Vec::new();
-        let mut treble_out = Vec::new();
-        for i in 0..9_600 {
-            let low = eq.process(bass[i], 0);
-            let high = eq.process(treble[i], 1);
-            // Skip the filter's start-up transient before measuring.
-            if i >= 2_000 {
-                bass_out.push(low);
-                treble_out.push(high);
-            }
+        eq.set_gains_db(0.0, 0.0, 0.0);
+        let input = tone(48_000.0, 1_000.0, 1_024);
+        for (index, sample) in input.iter().enumerate() {
+            assert_eq!(eq.process(*sample, index % 2), *sample);
         }
-        assert!(db(rms(&bass_out), rms(&bass[2_000..])) < -12.0);
-        assert!(db(rms(&treble_out), rms(&treble[2_000..])).abs() < 0.5);
     }
 }
