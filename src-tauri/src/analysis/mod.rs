@@ -48,10 +48,10 @@ pub const WINDOW_SECS: f32 = 60.0;
 /// Bump when the planning model changes. Stored per-track features are kept
 /// across this version and only the transitions are recomputed; bump
 /// [`SCHEMA_VERSION`] instead when the extracted features change.
-pub const ALGORITHM_VERSION: u32 = 11;
+pub const ALGORITHM_VERSION: u32 = 12;
 /// On-disk document schema (also invalidates cached per-track features when the
 /// feature set or DSP pipeline changes).
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 /// Prefix that scopes transition documents away from audio and other objects.
 pub const FILE_PREFIX: &str = "welkin-transition-";
 
@@ -93,7 +93,7 @@ pub struct TrackInput {
     pub title: String,
 }
 
-/// The edge features `automix` needs, kept in a serializable form.
+/// The edge features the transition planner needs, kept in a serializable form.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EdgeFeatures {
@@ -107,6 +107,17 @@ pub struct EdgeFeatures {
     pub chroma: Vec<f32>,
     #[serde(default)]
     pub energy_curve: Vec<f32>,
+    /// Source-agnostic "a lead is carrying this section" curve, one value per
+    /// [`ENERGY_RESOLUTION_SECS`] block (`0..=1`).
+    ///
+    /// This is not stem separation: it is the share of amplitude in the vocal
+    /// band (300–3400 Hz) after removing the bass and cymbals. Instruments and
+    /// vocals both light it up, which is exactly what matters for a mix — two
+    /// presence-heavy sections on top of each other are what makes a
+    /// beat-aligned transition still sound crowded. Empty on documents written
+    /// before it existed; the planner then falls back to the energy curve.
+    #[serde(default)]
+    pub presence_curve: Vec<f32>,
     #[serde(default)]
     pub loudness_curve_db: Vec<f32>,
     #[serde(default)]
@@ -121,7 +132,11 @@ pub struct EdgeFeatures {
 }
 
 impl EdgeFeatures {
-    fn from_features(features: &TrackFeatures, downbeat_offset: u32) -> Self {
+    fn from_features(
+        features: &TrackFeatures,
+        downbeat_offset: u32,
+        presence_curve: Vec<f32>,
+    ) -> Self {
         Self {
             bpm: round(features.bpm),
             key: features.key.clone(),
@@ -129,6 +144,7 @@ impl EdgeFeatures {
             mfcc: features.mfcc.iter().map(|v| round(*v)).collect(),
             chroma: features.chroma.iter().map(|v| round(*v)).collect(),
             energy_curve: features.energy_curve.iter().map(|v| round(*v)).collect(),
+            presence_curve,
             loudness_curve_db: features
                 .loudness_curve_db
                 .iter()
@@ -874,6 +890,15 @@ fn analyse_track(
     } else {
         low_band_onset(&tail_samples, rate as i32, channels as i32)
     };
+    // Presence-band activity is what the planner uses to place the handoff and
+    // to avoid stacking two leads. It only needs the decoded samples, so it is
+    // computed here alongside the downbeat envelopes.
+    let head_presence = presence_curve(&head_samples, rate as i32, channels as i32);
+    let tail_presence = if tail_is_head {
+        head_presence.clone()
+    } else {
+        presence_curve(&tail_samples, rate as i32, channels as i32)
+    };
 
     if cancelled(cancel) {
         return Err(cancel_error());
@@ -933,10 +958,12 @@ fn analyse_track(
     let head = EdgeFeatures::from_features(
         &head_features,
         downbeat_offset(&head_low, &head_features.beats, head_features.bpm),
+        head_presence,
     );
     let tail = EdgeFeatures::from_features(
         &tail_features,
         downbeat_offset(&tail_low, &tail_features.beats, tail_features.bpm),
+        tail_presence,
     );
     let confidence_ok = head.bpm > 1.0 && !head.key.is_empty() && duration_known;
     Ok(TrackAnalysis {
@@ -1208,6 +1235,230 @@ fn low_band_onset(samples: &[f32], sample_rate: i32, channels: i32) -> Vec<f32> 
         previous = energy;
     }
     onset
+}
+
+/// Envelope rate of the presence detector, in frames per second.
+const PRESENCE_FPS: f32 = 50.0;
+/// Lower edge of the presence band. Everything below is kick/bass and is
+/// explicitly excluded so a bass drop does not read as a lead.
+const PRESENCE_LOW_HZ: f32 = 300.0;
+/// Upper edge of the presence band. Cymbals and air live above this; leaving
+/// them out keeps a busy hi-hat pattern from reading as presence.
+const PRESENCE_HIGH_HZ: f32 = 3_400.0;
+/// Presence share (band amplitude ÷ full amplitude) mapped to `0..=1`. Real
+/// mixes sit around 0.35–0.6; a solo vocal sits near 1.0.
+const PRESENCE_SHARE_FLOOR: f32 = 0.28;
+const PRESENCE_SHARE_CEIL: f32 = 0.62;
+/// Full-band amplitude below which a block is treated as silence (`≈ -48 dBFS`
+/// for a normalised mix), so dither and fades do not read as presence.
+const PRESENCE_RMS_FLOOR: f32 = 0.004;
+/// Presence value at or above which a block counts as carrying a lead.
+const PRESENCE_ACTIVE: f32 = 0.45;
+/// Shortest presence burst the planner treats as a real phrase. A single
+/// syllable or a snare hit must not move the handoff point.
+const PRESENCE_MIN_SPAN_SECS: f32 = 0.8;
+/// Gaps up to this are bridged: breathing, a held note after a word, or a
+/// two-block dip in the detector are all still one phrase.
+const PRESENCE_MERGE_GAP_SECS: f32 = 1.0;
+
+/// Direct-form-II biquad used only by the analysis-side band split.
+#[derive(Clone, Copy)]
+struct AnalysisBiquad {
+    b0: f32,
+    b1: f32,
+    b2: f32,
+    a1: f32,
+    a2: f32,
+    z1: f32,
+    z2: f32,
+}
+
+impl AnalysisBiquad {
+    fn low_pass(rate: f32, freq: f32, q: f32) -> Self {
+        let (cos_w0, alpha) = Self::terms(rate, freq, q);
+        let a0 = 1.0 + alpha;
+        Self {
+            b0: (1.0 - cos_w0) * 0.5 / a0,
+            b1: (1.0 - cos_w0) / a0,
+            b2: (1.0 - cos_w0) * 0.5 / a0,
+            a1: -2.0 * cos_w0 / a0,
+            a2: (1.0 - alpha) / a0,
+            z1: 0.0,
+            z2: 0.0,
+        }
+    }
+
+    fn high_pass(rate: f32, freq: f32, q: f32) -> Self {
+        let (cos_w0, alpha) = Self::terms(rate, freq, q);
+        let a0 = 1.0 + alpha;
+        Self {
+            b0: (1.0 + cos_w0) * 0.5 / a0,
+            b1: -(1.0 + cos_w0) / a0,
+            b2: (1.0 + cos_w0) * 0.5 / a0,
+            a1: -2.0 * cos_w0 / a0,
+            a2: (1.0 - alpha) / a0,
+            z1: 0.0,
+            z2: 0.0,
+        }
+    }
+
+    fn terms(rate: f32, freq: f32, q: f32) -> (f32, f32) {
+        let rate = rate.max(1.0);
+        let freq = freq.clamp(1.0, rate * 0.45);
+        let w0 = std::f32::consts::TAU * freq / rate;
+        (w0.cos(), w0.sin() / (2.0 * q.max(0.05)))
+    }
+
+    #[inline]
+    fn process(&mut self, x: f32) -> f32 {
+        let y = self.b0 * x + self.z1;
+        self.z1 = self.b1 * x - self.a1 * y + self.z2;
+        self.z2 = self.b2 * x - self.a2 * y;
+        y
+    }
+}
+
+/// Share of the vocal band in each [`ENERGY_RESOLUTION_SECS`] block, `0..=1`.
+///
+/// A 300–3400 Hz band split is the cheapest signal that separates "a lead is
+/// carrying this section" from "this is a bass drop / breakdown". It is a
+/// proxy, not source separation, but it lines up with the part of the spectrum
+/// two overlapping tracks actually fight over, which is what the planner needs
+/// when it decides where to hand over.
+fn presence_curve(samples: &[f32], sample_rate: i32, channels: i32) -> Vec<f32> {
+    if samples.is_empty() || sample_rate <= 0 || channels <= 0 {
+        return Vec::new();
+    }
+    let rate = sample_rate as f32;
+    let channels = channels as usize;
+    // One envelope sample every `hop` input frames, then one curve value every
+    // `block` envelope samples. Every input frame is filtered: decimating before
+    // the band split would alias the 300–3400 Hz band onto itself.
+    let hop = ((rate / PRESENCE_FPS) as usize).max(1);
+    let frames = samples.len() / channels;
+    if frames < hop * 4 {
+        return Vec::new();
+    }
+    let mut low_pass =
+        AnalysisBiquad::low_pass(rate, PRESENCE_HIGH_HZ, std::f32::consts::FRAC_1_SQRT_2);
+    let mut high_pass =
+        AnalysisBiquad::high_pass(rate, PRESENCE_LOW_HZ, std::f32::consts::FRAC_1_SQRT_2);
+    let dt = 1.0 / rate;
+    // 20 ms envelope follower: long enough to average individual cycles,
+    // short enough to keep syllable-rate movement inside the 0.5 s block.
+    let emission = dt / (0.02 + dt);
+    let block = ((ENERGY_RESOLUTION_SECS * PRESENCE_FPS) as usize).max(1);
+    let mut band_env = 0.0f32;
+    let mut full_env = 0.0f32;
+    let mut frame_band = 0.0f64;
+    let mut frame_full = 0.0f64;
+    let mut band_sum = 0.0f64;
+    let mut full_sum = 0.0f64;
+    let mut count = 0usize;
+    let mut curve = Vec::with_capacity(frames / (hop * block) + 1);
+    for frame in 0..frames {
+        let base = frame * channels;
+        let mut sum = 0.0f32;
+        for channel in 0..channels {
+            sum += samples[base + channel];
+        }
+        let x = sum / channels as f32;
+        let band = high_pass.process(low_pass.process(x));
+        band_env += emission * (band.abs() - band_env);
+        full_env += emission * (x.abs() - full_env);
+        frame_band += (band_env as f64) * (band_env as f64);
+        frame_full += (full_env as f64) * (full_env as f64);
+        if (frame + 1) % hop == 0 {
+            let divisor = hop as f64;
+            band_sum += frame_band / divisor;
+            full_sum += frame_full / divisor;
+            frame_band = 0.0;
+            frame_full = 0.0;
+            count += 1;
+            if count == block {
+                curve.push(presence_value(
+                    band_sum / count as f64,
+                    full_sum / count as f64,
+                ));
+                band_sum = 0.0;
+                full_sum = 0.0;
+                count = 0;
+            }
+        }
+    }
+    if count > 0 {
+        curve.push(presence_value(
+            band_sum / count as f64,
+            full_sum / count as f64,
+        ));
+    }
+    curve
+}
+
+/// Map one block's band/full mean squares onto the `0..=1` presence scale.
+fn presence_value(band_ms: f64, full_ms: f64) -> f32 {
+    let full = full_ms.max(0.0).sqrt() as f32;
+    if !full.is_finite() || full < PRESENCE_RMS_FLOOR {
+        return 0.0;
+    }
+    let band = band_ms.max(0.0).sqrt() as f32;
+    let share = (band / full).clamp(0.0, 1.0);
+    let value = ((share - PRESENCE_SHARE_FLOOR) / (PRESENCE_SHARE_CEIL - PRESENCE_SHARE_FLOOR))
+        .clamp(0.0, 1.0);
+    round(value)
+}
+
+/// One contiguous stretch of presence-band activity, in absolute seconds.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PresenceSpan {
+    start: f32,
+    end: f32,
+}
+
+/// Merge the per-block presence curve into spans of real phrases.
+fn presence_spans(edge: &EdgeFeatures, offset: f32) -> Vec<PresenceSpan> {
+    let resolution = ENERGY_RESOLUTION_SECS;
+    let mut spans = Vec::new();
+    let mut run: Option<PresenceSpan> = None;
+    for (index, value) in edge.presence_curve.iter().enumerate() {
+        let start = offset + index as f32 * resolution;
+        let end = start + resolution;
+        let active = value.is_finite() && *value >= PRESENCE_ACTIVE;
+        match run {
+            Some(mut span) => {
+                if active {
+                    span.end = end;
+                    run = Some(span);
+                } else if end - span.end > PRESENCE_MERGE_GAP_SECS + 1e-3 {
+                    // The gap is long enough to be a real break, not a breath.
+                    push_span(&mut spans, span);
+                    run = None;
+                }
+                // Otherwise hold the run open so a breath does not split one
+                // phrase in two.
+            }
+            None => {
+                if active {
+                    run = Some(PresenceSpan { start, end });
+                }
+            }
+        }
+    }
+    if let Some(span) = run {
+        push_span(&mut spans, span);
+    }
+    spans
+}
+
+fn push_span(spans: &mut Vec<PresenceSpan>, span: PresenceSpan) {
+    if span.end - span.start >= PRESENCE_MIN_SPAN_SECS - 1e-3 {
+        spans.push(span);
+    }
+}
+
+/// First moment a lead enters the head window, if there is one.
+fn first_presence_start(edge: &EdgeFeatures, offset: f32) -> Option<f32> {
+    presence_spans(edge, offset).first().map(|span| span.start)
 }
 
 /// Beat period used to snap onset peaks onto a lattice.
@@ -1674,15 +1925,42 @@ fn blend_secs(grid: Option<&BeatGrid>, out_at: f32, musical_end: f32, bars: f32)
 
 /// Point inside the overlap where the outgoing deck should be handed over.
 ///
-/// Without stem separation the planner has no vocal detector, so it uses the
-/// outgoing section's own energy: hold the track at full level while it is
-/// still carrying material, and only start the audible fade once it has
-/// dropped. Starting the EQ carve a quarter into a two-bar overlap is what made
-/// a beat-aligned transition still sound abrupt.
-fn handoff_position(out: &TrackAnalysis, out_at: f32, blend: f32) -> f32 {
+/// The lead's last presence burst is the right moment: hold the outgoing track
+/// at full level while something is still carrying the melody, then start the
+/// audible fade. Falling back to the energy curve keeps documents written
+/// before the presence feature usable, and still beats starting the carve a
+/// quarter into the overlap.
+fn handoff_position(
+    out: &TrackAnalysis,
+    out_at: f32,
+    blend: f32,
+    presence: &[PresenceSpan],
+) -> f32 {
     if !(blend.is_finite() && blend > 0.5) {
         return 0.55;
     }
+    let mut handoff = presence
+        .iter()
+        .map(|span| span.end)
+        .filter(|end| end.is_finite() && *end > out_at + 0.1)
+        .fold(0.0f32, f32::max);
+    handoff = if handoff > out_at {
+        ((handoff - out_at) / blend).clamp(0.5, 0.85)
+    } else {
+        energy_handoff(out, out_at, blend)
+    };
+    // Always leave a real fade: a handoff at 85 % of a four-bar overlap would
+    // turn the last 15 % into a cut.
+    let tail = (MIN_HANDOFF_FADE_SECS / blend).min(MIN_HANDOFF_FADE_SHARE);
+    handoff.min(1.0 - tail).max(0.45)
+}
+
+/// Energy-only fallback for [`handoff_position`].
+///
+/// Holds the outgoing deck while its last quarter-second blocks are still at
+/// least 70 % of the block it entered on, so a tail that steps down hands over
+/// at the step instead of at the (already quiet) end.
+fn energy_handoff(out: &TrackAnalysis, out_at: f32, blend: f32) -> f32 {
     let offset = (out_at - out.tail_offset).max(0.0);
     let reference = out
         .tail
@@ -1699,12 +1977,7 @@ fn handoff_position(out: &TrackAnalysis, out_at: f32, blend: f32) -> f32 {
         }
         at += 0.25;
     }
-    let mut handoff = (last / blend).clamp(0.5, 0.85);
-    // Always leave a real fade: a handoff at 85 % of a four-bar overlap would
-    // turn the last 15 % into a cut.
-    let tail = (MIN_HANDOFF_FADE_SECS / blend).min(MIN_HANDOFF_FADE_SHARE);
-    handoff = handoff.min(1.0 - tail).max(0.45);
-    handoff
+    (last / blend).clamp(0.5, 0.85)
 }
 
 /// Largest tempo correction that is still a musical beat-match. Past this the
@@ -2022,6 +2295,96 @@ fn loudness_gain(out_db: Option<f32>, in_db: Option<f32>) -> f32 {
     }
 }
 
+/// Seconds of simultaneous presence-band activity across a candidate overlap.
+///
+/// Both sides are mapped onto the outgoing track's timeline; the incoming deck
+/// advances `rate` seconds per outgoing second, so its spans are divided by
+/// that rate. A high value means two leads (or two busy mid-range sections)
+/// would sing over each other, which is the artefact that remains after beat
+/// alignment and EQ are already right.
+fn presence_clash(
+    out_spans: &[PresenceSpan],
+    out_start: f32,
+    out_span: f32,
+    in_spans: &[PresenceSpan],
+    in_start: f32,
+    in_span_b: f32,
+    rate: f32,
+) -> f32 {
+    if out_spans.is_empty() || in_spans.is_empty() {
+        return 0.0;
+    }
+    let rate = if rate.is_finite() && rate > 0.05 {
+        rate
+    } else {
+        1.0
+    };
+    let out_end = out_start + out_span.max(0.0);
+    let in_end = in_start + in_span_b.max(0.0);
+    let mut total = 0.0f32;
+    for a in out_spans {
+        let a_start = a.start.max(out_start);
+        let a_end = a.end.min(out_end);
+        if a_end <= a_start {
+            continue;
+        }
+        for b in in_spans {
+            let b_start = b.start.max(in_start);
+            let b_end = b.end.min(in_end);
+            if b_end <= b_start {
+                continue;
+            }
+            let mapped_start = out_start + (b_start - in_start) / rate;
+            let mapped_end = out_start + (b_end - in_start) / rate;
+            let overlap = a_end.min(mapped_end) - a_start.max(mapped_start);
+            if overlap > 0.0 {
+                total += overlap;
+            }
+        }
+    }
+    total
+}
+
+/// Move the incoming entry so its first lead arrives as the outgoing deck
+/// leaves, instead of playing a long instrumental intro under the overlap.
+///
+/// Only applied when the head has a genuinely later entry: if the first
+/// presence burst is already within the overlap, starting at the normal Mix In
+/// is correct. The shift stays on a bar line and never goes past 40 % of the
+/// track, so the new track still gets to establish itself.
+fn presence_entry(
+    input: &TrackAnalysis,
+    in_at: f32,
+    blend: f32,
+    rate: f32,
+    grid: Option<&BeatGrid>,
+) -> f32 {
+    let Some(first) = first_presence_start(&input.head, 0.0) else {
+        return in_at;
+    };
+    let rate = if rate.is_finite() && rate > 0.05 {
+        rate
+    } else {
+        1.0
+    };
+    // The incoming deck reaches `first` after this much outgoing time.
+    let target = first - blend.max(0.0) * rate;
+    if !target.is_finite() || target <= in_at + 0.5 {
+        return in_at;
+    }
+    let line = match grid {
+        Some(grid) => grid.phrase_at_or_before(target, BEATS_PER_BAR),
+        None => target,
+    };
+    if !line.is_finite() || line <= in_at + 0.5 {
+        return in_at;
+    }
+    if input.duration > 1.0 && line > input.duration * 0.4 {
+        return in_at;
+    }
+    line
+}
+
 /// Continuity score for one candidate cue pair. Lower is better.
 fn cue_score(
     out: &TrackAnalysis,
@@ -2031,6 +2394,9 @@ fn cue_score(
     blend: f32,
     musical_end: f32,
     outro_start: Option<f32>,
+    out_spans: &[PresenceSpan],
+    in_spans: &[PresenceSpan],
+    rate: f32,
 ) -> (f32, Option<f32>, Option<f32>) {
     let tail_window = out.tail_window().max(1.0);
     let head_window = input.head_window().max(1.0);
@@ -2089,12 +2455,27 @@ fn cue_score(
     } else {
         0.0
     };
+    // Two leads over each other is the worst remaining artefact once beat and
+    // EQ are right, so this penalty is weighted above the continuity terms. A
+    // candidate that hides both leads costs more than one that gives up a
+    // little energy continuity.
+    let clash = presence_clash(
+        out_spans,
+        out_at,
+        blend,
+        in_spans,
+        in_at,
+        blend * rate.max(0.1),
+        rate,
+    );
+    let clash_penalty = (clash / blend.max(0.5)).min(1.0) * 0.30;
     let score = energy_gap * 0.30
         + timbre_gap * 0.30
         + loud_gap * 0.10
         + skip_penalty
         + short_penalty
         + intro_penalty
+        + clash_penalty
         - drop * 0.20
         - proximity * 0.15
         + silence_penalty;
@@ -2106,6 +2487,10 @@ fn plan_transition(out: &TrackAnalysis, input: &TrackAnalysis) -> TransitionPlan
     let in_grid = head_grid(input);
     let musical_end = musical_end(out);
     let outro_start = detect_outro_start(out, musical_end);
+    // Presence-band spans drive the handoff, the entry choice and the clash
+    // penalty. Empty curves (old documents) simply disable all three.
+    let out_presence = presence_spans(&out.tail, out.tail_offset);
+    let in_presence = presence_spans(&input.head, 0.0);
 
     // `strict` means both windows carried real beat detections that fit the
     // lattice (or were too short to judge); `relaxed` means at least one grid
@@ -2141,6 +2526,10 @@ fn plan_transition(out: &TrackAnalysis, input: &TrackAnalysis) -> TransitionPlan
         .map(|grid| 60.0 / grid.period)
         .filter(|bpm| bpm.is_finite() && *bpm > 1.0)
         .unwrap_or_else(|| grid_bpm(input.head.bpm, input.bpm));
+    // The technique decides the rate, and the clash check needs the rate to map
+    // the incoming timeline onto the outgoing one. It is constant for the pair,
+    // so compute it once before scoring candidates.
+    let (technique, tempo_ratio) = transition_technique(fold_tempo_ratio(out_tempo, in_tempo));
 
     // Very short tracks have no room for a planned mix; fade quickly instead of
     // skipping most of either track.
@@ -2217,6 +2606,9 @@ fn plan_transition(out: &TrackAnalysis, input: &TrackAnalysis) -> TransitionPlan
                         candidate_blend,
                         musical_end,
                         outro_start,
+                        &out_presence,
+                        &in_presence,
+                        tempo_ratio,
                     );
                     if best
                         .as_ref()
@@ -2244,17 +2636,37 @@ fn plan_transition(out: &TrackAnalysis, input: &TrackAnalysis) -> TransitionPlan
         }
     }
 
-    let tempo_ratio = fold_tempo_ratio(out_tempo, in_tempo);
-    let (technique, tempo_ratio) = transition_technique(tempo_ratio);
+    // Let the incoming track's first lead land as the outgoing one leaves. This
+    // only moves the entry when the head has a long instrumental intro, so a
+    // normal Mix In is untouched.
+    if !short_track {
+        let entry = presence_entry(input, in_at, blend, tempo_ratio, in_grid.as_ref());
+        if entry > in_at + 0.5 {
+            in_at = entry;
+            in_db = input.head.loudness_between(in_at, blend);
+        }
+    }
+
     let tempo_ramp_secs = if technique == "beatMix" {
         tempo_ramp_secs(in_tempo)
     } else {
         0.0
     };
-    let handoff = handoff_position(out, out_at, blend);
+    let handoff = handoff_position(out, out_at, blend, &out_presence);
     let in_gain = loudness_gain(out_db, in_db);
 
-    let (cue, _, _) = cue_score(out, input, out_at, in_at, blend, musical_end, outro_start);
+    let (cue, _, _) = cue_score(
+        out,
+        input,
+        out_at,
+        in_at,
+        blend,
+        musical_end,
+        outro_start,
+        &out_presence,
+        &in_presence,
+        tempo_ratio,
+    );
     let mode_penalty = match mode {
         "strict" => 0.0,
         "relaxed" => 0.12,
@@ -2819,13 +3231,137 @@ mod tests {
 
         // Constant energy: hold the outgoing deck almost to the end, but keep
         // at least a real fade (30 % of a short overlap).
-        assert!((handoff_position(&out, 140.0, 20.0) - 0.85).abs() < 1e-3);
-        assert!((handoff_position(&out, 140.0, 4.0) - 0.70).abs() < 1e-3);
+        assert!((handoff_position(&out, 140.0, 20.0, &[]) - 0.85).abs() < 1e-3);
+        assert!((handoff_position(&out, 140.0, 4.0, &[]) - 0.70).abs() < 1e-3);
 
         // The section drops at 10 s of a 20 s overlap: hand over there instead
         // of waiting for the (already quiet) end.
         out.tail.energy_curve[20..].fill(0.05);
-        assert!((handoff_position(&out, 140.0, 20.0) - 0.5).abs() < 1e-3);
+        assert!((handoff_position(&out, 140.0, 20.0, &[]) - 0.5).abs() < 1e-3);
+    }
+
+    #[test]
+    fn handoff_follows_the_last_presence_burst() {
+        let mut out = track(120.0, "8A");
+        out.tail_offset = 140.0;
+        out.tail.energy_curve = vec![0.5; 40];
+        // The lead sings until 6 s into a 20 s overlap, then the tail is
+        // instrumental. The fade should start where the lead leaves.
+        out.tail.presence_curve = vec![0.0; 40];
+        out.tail.presence_curve[..12].fill(1.0);
+        let spans = presence_spans(&out.tail, out.tail_offset);
+        assert_eq!(spans.len(), 1);
+        assert!((spans[0].start - 140.0).abs() < 1e-3);
+        assert!((spans[0].end - 146.0).abs() < 1e-3);
+        assert!((handoff_position(&out, 140.0, 20.0, &spans) - 0.5).abs() < 1e-3);
+
+        // Presence past the end of the overlap clamps the handoff late, but
+        // still leaves the minimum fade.
+        out.tail.presence_curve[..].fill(1.0);
+        let spans = presence_spans(&out.tail, out.tail_offset);
+        assert!((handoff_position(&out, 140.0, 20.0, &spans) - 0.85).abs() < 1e-3);
+    }
+
+    #[test]
+    fn presence_curve_separates_the_vocal_band_from_bass_and_silence() {
+        let rate = 8_000;
+        let tone = |hz: f32| -> Vec<f32> {
+            (0..rate * 2)
+                .map(|i| (std::f32::consts::TAU * hz * i as f32 / rate as f32).sin() * 0.5)
+                .collect()
+        };
+        let vocal = presence_curve(&tone(1_000.0), rate, 1);
+        let bass = presence_curve(&tone(60.0), rate, 1);
+        let silence = presence_curve(&vec![0.0; rate as usize * 2], rate, 1);
+        assert_eq!(vocal.len(), 4);
+        assert!(vocal.iter().all(|value| *value > 0.9), "vocal {vocal:?}");
+        assert!(bass.iter().all(|value| *value < 0.1), "bass {bass:?}");
+        assert!(silence.iter().all(|value| *value == 0.0));
+
+        // A loud kick/bass with only a quiet mid part is a groovy drop, not a
+        // lead: the share stays under the active threshold.
+        let mixed: Vec<f32> = (0..rate * 2)
+            .map(|i| {
+                let t = i as f32 / rate as f32;
+                (std::f32::consts::TAU * 60.0 * t).sin() * 0.5
+                    + (std::f32::consts::TAU * 1_000.0 * t).sin() * 0.15
+            })
+            .collect();
+        let drop = presence_curve(&mixed, rate, 1);
+        assert!(
+            drop.iter().all(|value| *value < PRESENCE_ACTIVE),
+            "drop {drop:?}"
+        );
+    }
+
+    #[test]
+    fn presence_spans_bridge_breaths_but_split_real_silence() {
+        let mut edge = EdgeFeatures::default();
+        // 0.5 s blocks: on, on, off, on, on, then a long gap, then one block.
+        edge.presence_curve = vec![1.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        let spans = presence_spans(&edge, 10.0);
+        assert_eq!(spans.len(), 1, "{spans:?}");
+        assert!((spans[0].start - 10.0).abs() < 1e-3);
+        // The 1 s breath after the fourth block is bridged; the longer silence
+        // closes the phrase.
+        assert!((spans[0].end - 12.5).abs() < 1e-3);
+    }
+
+    #[test]
+    fn presence_entry_skips_a_long_instrumental_intro() {
+        let mut input = track(120.0, "8A");
+        input.duration = 200.0;
+        input.head.presence_curve = vec![0.0; 100];
+        // The first lead arrives at 40 s; a 16 s overlap should end right then.
+        input.head.presence_curve[80..].fill(1.0);
+        let grid = grid(120.0, 0.0);
+        let entry = presence_entry(&input, 8.0, 16.0, 1.0, Some(&grid));
+        assert!((entry - 24.0).abs() < 1e-3, "entry {entry}");
+
+        // With the lead already inside the overlap, keep the planned entry.
+        let mut early = track(120.0, "8A");
+        early.head.presence_curve = vec![1.0; 60];
+        assert!((presence_entry(&early, 8.0, 16.0, 1.0, Some(&grid)) - 8.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn clash_penalty_drops_when_the_leads_do_not_overlap() {
+        let out_spans = vec![PresenceSpan {
+            start: 100.0,
+            end: 110.0,
+        }];
+        let in_spans = vec![PresenceSpan {
+            start: 40.0,
+            end: 50.0,
+        }];
+        // Same window in both tracks: 10 s of simultaneous lead.
+        let clash = presence_clash(&out_spans, 100.0, 16.0, &in_spans, 40.0, 16.0, 1.0);
+        assert!((clash - 10.0).abs() < 1e-3, "clash {clash}");
+        // Incoming lead well after the overlap: no clash.
+        let clash = presence_clash(&out_spans, 100.0, 16.0, &in_spans, 60.0, 16.0, 1.0);
+        assert_eq!(clash, 0.0);
+    }
+
+    #[test]
+    fn plan_skips_a_long_instrumental_intro_in_the_incoming_track() {
+        let mut out = track(120.0, "8A");
+        out.key = "out".into();
+        out.tail.energy_curve = vec![0.4; 120];
+        let mut input = track(120.0, "8A");
+        input.key = "in".into();
+        input.head.energy_curve = vec![0.4; 120];
+        input.head.presence_curve = vec![0.0; 120];
+        // The incoming lead only enters at 40 s. The plan should not drop its
+        // playhead near the start and let the intro play under the outgoing
+        // track for the whole overlap.
+        input.head.presence_curve[80..].fill(1.0);
+        let plan = plan_transition(&out, &input);
+        assert!(
+            plan.in_at >= 20.0 && plan.in_at < 40.0,
+            "in_at {}",
+            plan.in_at
+        );
+        assert_eq!(plan.technique, "crossfade");
     }
 
     #[test]
