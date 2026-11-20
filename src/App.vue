@@ -9,7 +9,7 @@ import { useI18n } from "vue-i18n";
 import { describeError, invoke } from "./api";
 import { listen } from "@tauri-apps/api/event";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { initAudio, resumeAt } from "./lib/audio";
+import { initAudio, resumeAt, cancelResumeExcept } from "./lib/audio";
 import { accents } from "./lib/app";
 import type { Accent, Theme, View } from "./lib/app";
 import { albumKey, primaryArtist } from "./lib/grouping";
@@ -217,8 +217,9 @@ watch(
     }
     const position = playback.position;
     // Hand the saved position to `audio.ts`, which applies it once the load
-    // reports the real duration and clamps it into range.
-    resumeAt(position);
+    // reports the real duration and clamps it into range. The key pins it to
+    // this track so a later switch cannot inherit it.
+    resumeAt(position, stored);
     window.setTimeout(() => { restoringPlayback = false; }, 1200);
   },
 );
@@ -266,6 +267,9 @@ watch(() => trackKey(player.currentTrack), (key) => {
   if (!booted.value || restoringPlayback || !key) return;
   lastPositionSavedAt = Date.now();
   playback.record(key, 0);
+  // A track change invalidates a restore playhead that belongs to the previous
+  // track; the new track must start from the beginning.
+  cancelResumeExcept(key);
 });
 watch(() => player.position, (position, previous) => {
   if (!booted.value || restoringPlayback) return;

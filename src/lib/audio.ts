@@ -135,6 +135,13 @@ function playbackLog(message: string, details?: unknown): void {
  */
 let pendingResumeSecs = 0;
 /**
+ * Track key the pending playhead belongs to. The saved position is only valid
+ * for the track it was persisted with: if the user starts/switches playback
+ * before it is applied, the new track must start from zero instead of inheriting
+ * the previous track's playhead.
+ */
+let pendingResumeKey: string | null = null;
+/**
  * Position requested by the latest seek, held until the engine reports a nearby
  * playhead. While set, stale `audio:state` snapshots do not move the slider.
  */
@@ -145,11 +152,28 @@ let pendingSeekAt = 0;
 const PENDING_SEEK_TIMEOUT_MS = 12_000;
 
 /**
- * Queue a restored playhead. It is applied by {@link onState} once the engine
- * reports a duration, clamped into the track's bounds.
+ * Queue a restored playhead for `key`. It is applied by {@link onState} once the
+ * engine reports a duration, clamped into the track's bounds. A playhead that
+ * does not match the track being loaded is dropped, so switching tracks before
+ * the restore lands never carries the old position over to the new track.
  */
-export function resumeAt(seconds: number) {
-  pendingResumeSecs = Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
+export function resumeAt(seconds: number, key?: string | null) {
+  const value = Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
+  pendingResumeSecs = value;
+  pendingResumeKey = value > 0 ? (key ?? null) : null;
+}
+
+/**
+ * Drop a pending restore playhead that does not belong to `key`. Called when the
+ * current track changes: the saved position is only valid for its own track, so
+ * a switch must not let it leak onto the new one. A same-key event keeps it, so
+ * a late restore snapshot still resumes normally.
+ */
+export function cancelResumeExcept(key: string | null | undefined) {
+  if (pendingResumeSecs <= 0) return;
+  if (pendingResumeKey !== null && pendingResumeKey === key) return;
+  pendingResumeSecs = 0;
+  pendingResumeKey = null;
 }
 
 /** Playback rate used to advance the display clock between engine snapshots. */
@@ -231,8 +255,18 @@ function onState(payload: AudioStatePayload) {
     // The saved position belongs to a known track length; clamp so a stale
     // resume point can never seek past the end of a shorter track.
     const target = Math.min(pendingResumeSecs, Math.max(0, duration - 1));
+    const resumeKey = pendingResumeKey;
     pendingResumeSecs = 0;
-    if (target > 0.5) seekTo(target);
+    pendingResumeKey = null;
+    // The user started or switched playback before this restore was applied.
+    // Seeking now would hand the old track's playhead to the new one, so drop
+    // the resume point instead.
+    const currentKey = trackKey(player.currentTrack);
+    if (resumeKey && currentKey && resumeKey !== currentKey) {
+      playbackLog("resume skipped: track changed", { resumeKey, currentKey });
+    } else if (target > 0.5) {
+      seekTo(target);
+    }
   }
   reportStreamProgress(position, duration);
   maybePrefetchNext(position, duration);
@@ -454,6 +488,8 @@ function disposeAudio() {
   clockReady = false;
   clockMs = 0;
   clockSpeed = 1;
+  pendingResumeSecs = 0;
+  pendingResumeKey = null;
 }
 
 if (import.meta.hot) import.meta.hot.dispose(disposeAudio);
