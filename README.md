@@ -89,7 +89,7 @@ pnpm tauri android build --apk # 构建 Android APK
 ## 待办
 
 #### 播放
-- [ ] Equalizer: 均衡器
+- [x] Equalizer: 均衡器
 - [ ] 音量归一化
 - [ ] 混响 (Reverb)、延迟 (Delay)、回声 (Echo)、合唱 (Chorus)、镶边 (Flanger)
 
@@ -100,7 +100,7 @@ pnpm tauri android build --apk # 构建 Android APK
 
 #### 平台与开发
 
-- [ ] CI/CD: 为 Arch Linux 生成构建产物
+- [x] CI/CD: 为 Arch Linux 生成构建产物
 
 #### 扩展系统
 - [ ] 安装 .zip 的主题包
