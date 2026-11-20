@@ -82,10 +82,34 @@ let scope: EffectScope | null = null;
 let initPromise: Promise<void> | null = null;
 let unlisteners: UnlistenFn[] = [];
 let bufferedTimer = 0;
-/** Last reported playhead, extrapolated between events for smooth lyrics. */
-let lastPositionMs = 0;
-let lastPositionAt = 0;
 let enginePlaying = false;
+
+/**
+ * Smoothed display clock.
+ *
+ * `audio:state` arrives at ~4 Hz and reports the frames the output callback has
+ * consumed. A Bluetooth (A2DP) sink drains that buffer in large, irregular
+ * chunks and adds its own buffering, so a fresh snapshot regularly lands a
+ * little behind a playhead that was linearly extrapolated since the previous
+ * one. Snapping to every snapshot made the lyrics sweep and the progress bar
+ * visibly step backwards ("twitch") while Bluetooth headphones were connected.
+ *
+ * Instead, this clock always advances with wall time and is steered toward the
+ * engine by briefly stretching its rate, so it stays monotonic during playback.
+ * Only a real discontinuity — a seek, a track change or an engine restart —
+ * snaps it.
+ */
+let clockMs = 0;
+let clockAt = 0;
+let clockSpeed = 1;
+let clockReady = false;
+/** Drift beyond this is a real playhead discontinuity, not output jitter. */
+const CLOCK_SNAP_MS = 600;
+/** Time over which a small drift is absorbed by stretching the clock rate. */
+const CLOCK_CORRECTION_MS = 800;
+/** Bound on the temporary rate stretch, so corrections stay inaudible. */
+const CLOCK_MIN_SPEED = 0.6;
+const CLOCK_MAX_SPEED = 1.6;
 /** Guards the speculative next-track prefetch (one attempt per next track). */
 let prefetchedKey: string | null = null;
 /** Throttle cache-position IPC while keeping the downloader near the playhead. */
@@ -128,6 +152,51 @@ export function resumeAt(seconds: number) {
   pendingResumeSecs = Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
 }
 
+/** Playback rate used to advance the display clock between engine snapshots. */
+function clockRate(): number {
+  const rate = usePlayerStore().playbackRate;
+  return Number.isFinite(rate) && rate > 0 ? rate : 1;
+}
+
+/** The playhead the UI should show right now, in milliseconds. */
+function displayPositionMs(now = performance.now()): number {
+  if (!clockReady || !enginePlaying) return clockMs;
+  return clockMs + (now - clockAt) * clockSpeed * clockRate();
+}
+
+/** Hard-anchor the display clock: seek, pause, track load or engine restart. */
+function resetClock(positionMs: number) {
+  clockMs = Number.isFinite(positionMs) ? positionMs : 0;
+  clockAt = performance.now();
+  clockSpeed = 1;
+  clockReady = true;
+}
+
+/**
+ * Fold one engine snapshot into the display clock. The clock is never moved
+ * backwards while playing: small drift is absorbed by stretching its rate over
+ * the next few snapshots, and only a genuine discontinuity snaps it.
+ */
+function syncClock(positionMs: number) {
+  if (!enginePlaying || !clockReady) {
+    resetClock(positionMs);
+    return;
+  }
+  const now = performance.now();
+  const predicted = displayPositionMs(now);
+  const drift = positionMs - predicted;
+  if (Math.abs(drift) > CLOCK_SNAP_MS) {
+    resetClock(positionMs);
+    return;
+  }
+  // Re-anchor where the clock already is (no visible jump) and steer its rate
+  // so the drift is absorbed gradually instead of snapping.
+  clockMs = predicted;
+  clockAt = now;
+  const stretch = drift / CLOCK_CORRECTION_MS / clockRate();
+  clockSpeed = Math.min(CLOCK_MAX_SPEED, Math.max(CLOCK_MIN_SPEED, 1 + stretch));
+}
+
 function onState(payload: AudioStatePayload) {
   const player = usePlayerStore();
   const duration = payload.durationMs / 1000;
@@ -147,14 +216,15 @@ function onState(payload: AudioStatePayload) {
       enginePlaying = payload.playing;
       if (duration > 0) player.setDuration(duration);
       reportStreamProgress(pendingSeekSecs, duration);
-      lastPositionAt = performance.now();
       return;
     }
   }
-  lastPositionMs = position * 1000;
-  lastPositionAt = performance.now();
   enginePlaying = payload.playing;
-  player.setPosition(position);
+  syncClock(position * 1000);
+  // Drive the slider / elapsed-time labels from the same smoothed clock as the
+  // lyrics so both stay monotonic on Bluetooth output.
+  const display = displayPositionMs() / 1000;
+  player.setPosition(duration > 0 ? Math.min(display, duration) : display);
   if (duration > 0) player.setDuration(duration);
   player.setRates(payload.sampleRate ?? 0, payload.workRate ?? 0, payload.outputRate ?? 0);
   if (pendingResumeSecs > 0 && duration > 0) {
@@ -320,13 +390,9 @@ async function bootstrap(): Promise<void> {
   bufferedTimer = window.setInterval(syncBuffered, 1000);
 }
 
-/** Current playback position in seconds, extrapolated between state events. */
+/** Current playback position in seconds, on the smoothed display clock. */
 export function currentTime(): number {
-  if (!enginePlaying) return lastPositionMs / 1000;
-  const elapsed = lastPositionAt > 0 ? (performance.now() - lastPositionAt) / 1000 : 0;
-  // The source advances `rate` seconds per wall second, so scale the gap since
-  // the last event (state ticks arrive at ~4 Hz) by the playback rate.
-  return lastPositionMs / 1000 + elapsed * usePlayerStore().playbackRate;
+  return displayPositionMs() / 1000;
 }
 
 /** Seek to an absolute number of seconds. */
@@ -340,9 +406,8 @@ export function seekTo(seconds: number) {
   const target = duration > 0 ? Math.min(seconds, duration) : seconds;
   playbackLog("seekTo: sending audio_seek", { seconds: target, duration });
   pendingSeekSecs = target;
-  lastPositionMs = target * 1000;
-  lastPositionAt = performance.now();
-  pendingSeekAt = lastPositionAt;
+  pendingSeekAt = performance.now();
+  resetClock(target * 1000);
   usePlayerStore().setPosition(target);
   reportStreamProgress(target, duration, true);
   void invoke("audio_seek", { positionSecs: target }).catch(() => {});
@@ -360,8 +425,7 @@ export function seekPercent(value: number, commit = true) {
     // by subsequent engine state.
     pendingSeekSecs = null;
     playbackLog("seekPercent: input preview (no seek sent)", { value, seconds });
-    lastPositionMs = seconds * 1000;
-    lastPositionAt = performance.now();
+    resetClock(seconds * 1000);
     player.setPosition(seconds);
     return;
   }
@@ -387,6 +451,9 @@ function disposeAudio() {
   bufferedTimer = 0;
   initPromise = null;
   enginePlaying = false;
+  clockReady = false;
+  clockMs = 0;
+  clockSpeed = 1;
 }
 
 if (import.meta.hot) import.meta.hot.dispose(disposeAudio);
