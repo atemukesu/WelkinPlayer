@@ -317,6 +317,10 @@ pub fn run() {
             #[cfg(any(desktop, target_os = "android"))]
             playback::commands::audio_get_equalizer,
             #[cfg(any(desktop, target_os = "android"))]
+            playback::commands::audio_set_effects,
+            #[cfg(any(desktop, target_os = "android"))]
+            playback::commands::audio_get_effects,
+            #[cfg(any(desktop, target_os = "android"))]
             playback::commands::audio_stop,
             #[cfg(any(desktop, target_os = "android"))]
             playback::commands::audio_state,

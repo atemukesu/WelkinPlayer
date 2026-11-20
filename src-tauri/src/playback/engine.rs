@@ -28,6 +28,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::core::error::AppError;
+use crate::playback::effects::{Effects, EffectsSettings};
 use crate::playback::fade_eq::{FadeEq, BASS_CUT_DB, HIGH_CUT_DB, MID_CUT_DB};
 use crate::playback::graphic_eq::{
     EqualizerState, GraphicEq, BAND_COUNT, MAX_GAIN_DB, MAX_PREAMP_DB, MIN_PREAMP_DB,
@@ -649,6 +650,39 @@ fn default_output_rate() -> u32 {
         .unwrap_or(48_000)
 }
 
+/// Number of effect slots kept in [`Shared`], in processing order:
+/// delay, echo, chorus, flanger, reverb.
+const FX_SLOT_COUNT: usize = 5;
+
+/// One effect's parameters: an on/off flag plus three `f32` slots whose meaning
+/// depends on the effect. Grouping them keeps the shared state compact and lets
+/// the snapshot be read in one pass per block.
+#[derive(Default)]
+struct FxSlot {
+    enabled: AtomicBool,
+    a: AtomicU32,
+    b: AtomicU32,
+    c: AtomicU32,
+}
+
+impl FxSlot {
+    fn set(&self, enabled: bool, a: f32, b: f32, c: f32) {
+        self.a.store(a.to_bits(), Ordering::Relaxed);
+        self.b.store(b.to_bits(), Ordering::Relaxed);
+        self.c.store(c.to_bits(), Ordering::Relaxed);
+        self.enabled.store(enabled, Ordering::Relaxed);
+    }
+
+    fn read(&self) -> (bool, f32, f32, f32) {
+        (
+            self.enabled.load(Ordering::Relaxed),
+            f32::from_bits(self.a.load(Ordering::Relaxed)),
+            f32::from_bits(self.b.load(Ordering::Relaxed)),
+            f32::from_bits(self.c.load(Ordering::Relaxed)),
+        )
+    }
+}
+
 /// Lock-light state shared between the worker and the command/event threads.
 pub struct Shared {
     /// Bumped on every load/seek/stop; a stale `RingSource` ends itself.
@@ -678,6 +712,8 @@ pub struct Shared {
     eq_gains: [AtomicU32; BAND_COUNT],
     /// Pre-amp in dB as `f32` bits; negative values leave headroom for boosts.
     eq_preamp: AtomicU32,
+    /// Effect settings, snapshotted once per state block on the audio thread.
+    fx: [FxSlot; FX_SLOT_COUNT],
     /// Extra gain for the smart-transition envelope, as `f32` bits. It is
     /// multiplied with the user volume so a fade never mutates the saved volume.
     transition_gain: AtomicU32,
@@ -807,6 +843,7 @@ impl Shared {
             eq_enabled: AtomicBool::new(false),
             eq_gains: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
             eq_preamp: AtomicU32::new(0.0f32.to_bits()),
+            fx: std::array::from_fn(|_| FxSlot::default()),
             transition_gain: AtomicU32::new(1.0f32.to_bits()),
             fade_clock: AtomicU64::new(0),
             fade_start_frame: AtomicU64::new(0),
@@ -996,6 +1033,57 @@ impl Shared {
             gains,
             f32::from_bits(self.eq_preamp.load(Ordering::Relaxed)),
         )
+    }
+
+    /// Replace the effect settings. Values are clamped here so the atomics only
+    /// ever hold numbers the DSP can run stably.
+    pub fn set_effects(&self, settings: EffectsSettings) {
+        let settings = settings.sanitized();
+        let delay = settings.delay;
+        self.fx[0].set(delay.enabled, delay.time_ms, 0.0, delay.mix);
+        let echo = settings.echo;
+        self.fx[1].set(echo.enabled, echo.time_ms, echo.feedback, echo.mix);
+        let chorus = settings.chorus;
+        self.fx[2].set(chorus.enabled, chorus.depth, 0.0, chorus.mix);
+        let flanger = settings.flanger;
+        self.fx[3].set(
+            flanger.enabled,
+            flanger.depth,
+            flanger.feedback,
+            flanger.mix,
+        );
+        let reverb = settings.reverb;
+        self.fx[4].set(reverb.enabled, reverb.size, reverb.damping, reverb.mix);
+    }
+
+    /// Snapshot of the effects box, used to resync a reloaded webview and to
+    /// feed each state block on the audio thread.
+    pub fn effects(&self) -> EffectsSettings {
+        let mut settings = EffectsSettings::default();
+        let (enabled, a, _, mix) = self.fx[0].read();
+        settings.delay.enabled = enabled;
+        settings.delay.time_ms = a;
+        settings.delay.mix = mix;
+        let (enabled, a, b, mix) = self.fx[1].read();
+        settings.echo.enabled = enabled;
+        settings.echo.time_ms = a;
+        settings.echo.feedback = b;
+        settings.echo.mix = mix;
+        let (enabled, depth, _, mix) = self.fx[2].read();
+        settings.chorus.enabled = enabled;
+        settings.chorus.depth = depth;
+        settings.chorus.mix = mix;
+        let (enabled, depth, feedback, mix) = self.fx[3].read();
+        settings.flanger.enabled = enabled;
+        settings.flanger.depth = depth;
+        settings.flanger.feedback = feedback;
+        settings.flanger.mix = mix;
+        let (enabled, size, damping, mix) = self.fx[4].read();
+        settings.reverb.enabled = enabled;
+        settings.reverb.size = size;
+        settings.reverb.damping = damping;
+        settings.reverb.mix = mix;
+        settings
     }
 
     /// Set the smart-transition gain envelope (0.0–1.0).
@@ -1510,6 +1598,8 @@ struct RingSource {
     /// Twelve-band graphic EQ driven by the sound-settings window. It applies
     /// to every sample of both decks, fading or not.
     user_eq: GraphicEq,
+    /// Chorus, flanger, delay, echo and reverb, applied after the EQ.
+    effects: Effects,
     /// Low/mid/high band gains in dB for the current state block.
     eq_db: (f32, f32, f32),
     /// High-pass cutoff for the filter-cut technique (`20 Hz` bypasses it).
@@ -1614,6 +1704,8 @@ impl Iterator for RingSource {
             };
             let (eq_enabled, eq_gains, eq_preamp) = self.shared.equalizer_params();
             self.user_eq.configure(eq_enabled, &eq_gains, eq_preamp);
+            let fx = self.shared.effects();
+            self.effects.configure(&fx);
             self.state_left =
                 SOURCE_STATE_BLOCK.div_ceil(self.channels as usize) * self.channels as usize;
         }
@@ -1685,6 +1777,7 @@ impl Iterator for RingSource {
                     value
                 };
                 let sample = self.user_eq.process(sample, self.channel_cursor as usize);
+                let sample = self.effects.process(sample, self.channel_cursor as usize);
                 let output = sample * self.gain;
                 self.bus_power += output * output;
                 self.bus_samples += 1;
@@ -4234,6 +4327,7 @@ mod worker {
                 ramp_frames: 0,
                 bands: FadeEq::new(rate),
                 user_eq: GraphicEq::new(rate),
+                effects: Effects::new(rate, channels),
                 eq_db: (0.0, 0.0, 0.0),
                 hp_hz: 20.0,
                 bus_power: 0.0,
@@ -4300,6 +4394,7 @@ mod tests {
             ramp_frames: 0,
             bands: FadeEq::new(1000),
             user_eq: GraphicEq::new(1000),
+            effects: Effects::new(1000, 2),
             eq_db: (0.0, 0.0, 0.0),
             hp_hz: 20.0,
             bus_power: 0.0,

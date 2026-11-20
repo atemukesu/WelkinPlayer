@@ -9,6 +9,7 @@
 use tauri::State;
 
 use crate::core::error::AppError;
+use crate::playback::effects::EffectsSettings;
 use crate::playback::engine::{
     device_info, enumerate_devices, AudioState, Command, DeviceInfo, Engine,
 };
@@ -120,6 +121,19 @@ pub fn audio_set_equalizer(
 #[tauri::command]
 pub fn audio_get_equalizer(engine: State<Engine>) -> EqualizerState {
     engine.shared().equalizer()
+}
+
+/// Replace the effects box settings. Persistence stays device-local in the
+/// frontend; the engine only stores the clamped snapshot.
+#[tauri::command]
+pub fn audio_set_effects(engine: State<Engine>, effects: EffectsSettings) {
+    engine.shared().set_effects(effects);
+}
+
+/// Current effect settings, so a reloaded webview can resync.
+#[tauri::command]
+pub fn audio_get_effects(engine: State<Engine>) -> EffectsSettings {
+    engine.shared().effects()
 }
 
 /// Stop playback and clear the loaded track.

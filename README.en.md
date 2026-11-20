@@ -95,7 +95,7 @@ pnpm tauri android build --apk # Android APK
 
 - [x] Equalizer
 - [ ] Volume normalization
-- [ ] Reverb, delay, echo, chorus and flanger
+- [x] Reverb, delay, echo, chorus and flanger
 
 #### Smart transitions
 

@@ -91,7 +91,7 @@ pnpm tauri android build --apk # 构建 Android APK
 #### 播放
 - [x] Equalizer: 均衡器
 - [ ] 音量归一化
-- [ ] 混响 (Reverb)、延迟 (Delay)、回声 (Echo)、合唱 (Chorus)、镶边 (Flanger)
+- [x] 混响 (Reverb)、延迟 (Delay)、回声 (Echo)、合唱 (Chorus)、镶边 (Flanger)
 
 #### 智能过渡
 
