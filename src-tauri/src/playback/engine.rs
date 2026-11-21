@@ -33,6 +33,7 @@ use crate::playback::fade_eq::{FadeEq, BASS_CUT_DB, HIGH_CUT_DB, MID_CUT_DB};
 use crate::playback::graphic_eq::{
     EqualizerState, GraphicEq, BAND_COUNT, MAX_GAIN_DB, MAX_PREAMP_DB, MIN_PREAMP_DB,
 };
+use crate::playback::limiter::{Limiter, LimiterSettings};
 use crate::playback::source::{open_track, open_track_inactive, ReadSeek};
 use crate::streaming::manual_cache::ManualCache;
 use crate::streaming::stream_cache::StreamCache;
@@ -236,6 +237,18 @@ pub struct AudioState {
     /// The rate the output stream is currently opened at. This is what the
     /// quality picker controls, and it is valid even when nothing is loaded.
     pub output_rate: u32,
+}
+
+/// Limiter meter pushed on `audio:limiter` for the graph in sound settings.
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LimiterMeter {
+    /// Peak that reached the limiter since the previous tick (linear).
+    pub input_peak: f32,
+    /// Peak that left the limiter since the previous tick (linear).
+    pub output_peak: f32,
+    /// Gain reduction currently applied, in dB (0 when not limiting).
+    pub gain_reduction_db: f32,
 }
 
 /// Output device capabilities, for the audio-quality picker.
@@ -712,6 +725,22 @@ pub struct Shared {
     eq_gains: [AtomicU32; BAND_COUNT],
     /// Pre-amp in dB as `f32` bits; negative values leave headroom for boosts.
     eq_preamp: AtomicU32,
+    /// Look-ahead limiter master switch.
+    limiter_enabled: AtomicBool,
+    /// Limiter threshold in dBFS as `f32` bits.
+    limiter_threshold_db: AtomicU32,
+    /// Limiter release time in milliseconds as `f32` bits.
+    limiter_release_ms: AtomicU32,
+    /// Limiter look-ahead in milliseconds as `f32` bits.
+    limiter_lookahead_ms: AtomicU32,
+    /// Bumped on seek / track change / stream rebuild so every deck drops its
+    /// look-ahead buffer and gain envelope instead of replaying old audio.
+    limiter_epoch: AtomicU64,
+    /// Peak that reached / left the limiter since the event thread last read it.
+    limiter_input_peak: AtomicU32,
+    limiter_output_peak: AtomicU32,
+    /// Current gain reduction in dB as `f32` bits (0 or negative).
+    limiter_gain_db: AtomicU32,
     /// Effect settings, snapshotted once per state block on the audio thread.
     fx: [FxSlot; FX_SLOT_COUNT],
     /// Extra gain for the smart-transition envelope, as `f32` bits. It is
@@ -843,6 +872,14 @@ impl Shared {
             eq_enabled: AtomicBool::new(false),
             eq_gains: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
             eq_preamp: AtomicU32::new(0.0f32.to_bits()),
+            limiter_enabled: AtomicBool::new(true),
+            limiter_threshold_db: AtomicU32::new((-1.0f32).to_bits()),
+            limiter_release_ms: AtomicU32::new(80.0f32.to_bits()),
+            limiter_lookahead_ms: AtomicU32::new(5.0f32.to_bits()),
+            limiter_epoch: AtomicU64::new(0),
+            limiter_input_peak: AtomicU32::new(0),
+            limiter_output_peak: AtomicU32::new(0),
+            limiter_gain_db: AtomicU32::new(0.0f32.to_bits()),
             fx: std::array::from_fn(|_| FxSlot::default()),
             transition_gain: AtomicU32::new(1.0f32.to_bits()),
             fade_clock: AtomicU64::new(0),
@@ -1033,6 +1070,82 @@ impl Shared {
             gains,
             f32::from_bits(self.eq_preamp.load(Ordering::Relaxed)),
         )
+    }
+
+    /// Replace the look-ahead limiter settings. The DSP clamps again on the
+    /// audio thread, but values are sanitized here so the stored snapshot the
+    /// UI reads back is always valid too.
+    pub fn set_limiter(&self, settings: LimiterSettings) {
+        let settings = settings.sanitized();
+        self.limiter_threshold_db
+            .store(settings.threshold_db.to_bits(), Ordering::Relaxed);
+        self.limiter_release_ms
+            .store(settings.release_ms.to_bits(), Ordering::Relaxed);
+        self.limiter_lookahead_ms
+            .store(settings.lookahead_ms.to_bits(), Ordering::Relaxed);
+        self.limiter_enabled
+            .store(settings.enabled, Ordering::Relaxed);
+    }
+
+    /// Snapshot of the limiter, used to resync a reloaded webview.
+    pub fn limiter(&self) -> LimiterSettings {
+        LimiterSettings {
+            enabled: self.limiter_enabled.load(Ordering::Relaxed),
+            threshold_db: f32::from_bits(self.limiter_threshold_db.load(Ordering::Relaxed)),
+            release_ms: f32::from_bits(self.limiter_release_ms.load(Ordering::Relaxed)),
+            lookahead_ms: f32::from_bits(self.limiter_lookahead_ms.load(Ordering::Relaxed)),
+        }
+    }
+
+    /// Copy of the limiter parameters for the audio thread.
+    fn limiter_params(&self) -> LimiterSettings {
+        self.limiter()
+    }
+
+    /// Drop every deck's look-ahead buffer after a transport discontinuity.
+    pub fn bump_limiter_epoch(&self) {
+        self.limiter_epoch.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Publish the hottest limiter peak of either deck. `fetch_max` over the
+    /// bit patterns is a numeric max because IEEE-754 orders non-negative
+    /// floats that way.
+    fn publish_limiter_meter(&self, input: f32, output: f32, gain_db: f32) {
+        let input = if input.is_finite() {
+            input.max(0.0)
+        } else {
+            0.0
+        };
+        let output = if output.is_finite() {
+            output.max(0.0)
+        } else {
+            0.0
+        };
+        self.limiter_input_peak
+            .fetch_max(input.to_bits(), Ordering::Relaxed);
+        self.limiter_output_peak
+            .fetch_max(output.to_bits(), Ordering::Relaxed);
+        let gain_db = if gain_db.is_finite() {
+            gain_db.clamp(-60.0, 0.0)
+        } else {
+            0.0
+        };
+        self.limiter_gain_db
+            .store(gain_db.to_bits(), Ordering::Relaxed);
+    }
+
+    /// Consume the meter for one `audio:limiter` tick.
+    pub fn take_limiter_meter(&self) -> LimiterMeter {
+        LimiterMeter {
+            input_peak: f32::from_bits(self.limiter_input_peak.swap(0, Ordering::AcqRel)),
+            output_peak: f32::from_bits(self.limiter_output_peak.swap(0, Ordering::AcqRel)),
+            gain_reduction_db: f32::from_bits(self.limiter_gain_db.load(Ordering::Relaxed)),
+        }
+    }
+
+    /// Current limiter epoch; a deck resets when it differs from its snapshot.
+    fn limiter_epoch(&self) -> u64 {
+        self.limiter_epoch.load(Ordering::Acquire)
     }
 
     /// Replace the effect settings. Values are clamped here so the atomics only
@@ -1600,6 +1713,11 @@ struct RingSource {
     user_eq: GraphicEq,
     /// Chorus, flanger, delay, echo and reverb, applied after the EQ.
     effects: Effects,
+    /// Look-ahead peak limiter, the last stage before the mixer sums decks.
+    limiter: Limiter,
+    /// `Shared::limiter_epoch` this deck last observed; a mismatch clears the
+    /// look-ahead buffer after a seek or a track change.
+    limiter_epoch: u64,
     /// Low/mid/high band gains in dB for the current state block.
     eq_db: (f32, f32, f32),
     /// High-pass cutoff for the filter-cut technique (`20 Hz` bypasses it).
@@ -1677,6 +1795,14 @@ impl Iterator for RingSource {
             is_active
         };
         if self.state_left == 0 {
+            let (limiter_in, limiter_out) = self.limiter.take_meter();
+            let limiter_gain_db = if limiter_in <= 0.0 && limiter_out <= 0.0 {
+                0.0
+            } else {
+                self.limiter.gain_reduction_db()
+            };
+            self.shared
+                .publish_limiter_meter(limiter_in, limiter_out, limiter_gain_db);
             self.publish_bus_power(fading);
             self.update_bus_gain(fading);
             self.paused = self.shared.is_paused();
@@ -1706,6 +1832,14 @@ impl Iterator for RingSource {
             self.user_eq.configure(eq_enabled, &eq_gains, eq_preamp);
             let fx = self.shared.effects();
             self.effects.configure(&fx);
+            // A seek / track change bumps the epoch so no look-ahead tail or
+            // gain envelope from the previous position can leak into this one.
+            let epoch = self.shared.limiter_epoch();
+            if epoch != self.limiter_epoch {
+                self.limiter.reset();
+                self.limiter_epoch = epoch;
+            }
+            self.limiter.configure(self.shared.limiter_params());
             self.state_left =
                 SOURCE_STATE_BLOCK.div_ceil(self.channels as usize) * self.channels as usize;
         }
@@ -1760,6 +1894,7 @@ impl Iterator for RingSource {
                         self.gain = self.target_gain;
                     }
                 }
+                let frame_channel = self.channel_cursor as usize;
                 self.channel_cursor = (self.channel_cursor + 1) % self.channels;
                 if is_clock
                     && fading
@@ -1779,6 +1914,7 @@ impl Iterator for RingSource {
                 let sample = self.user_eq.process(sample, self.channel_cursor as usize);
                 let sample = self.effects.process(sample, self.channel_cursor as usize);
                 let output = sample * self.gain;
+                let output = self.limiter.process(frame_channel, output);
                 self.bus_power += output * output;
                 self.bus_samples += 1;
                 Some(output * self.bus_gain)
@@ -2021,6 +2157,10 @@ mod events {
                     shared.played(),
                 );
             }
+            // Limiter meter for the sound-settings graph. It is cheap, so it
+            // rides the 50 ms tick: the graph keeps scrolling while a track
+            // plays and simply flattens when the transport is idle.
+            let _ = app.emit("audio:limiter", shared.take_limiter_meter());
             let (waveform_sequence, waveform) = shared.waveform_samples();
             let should_emit_waveform = waveform_sequence != last_waveform_sequence;
             if should_emit_waveform {
@@ -3595,6 +3735,7 @@ mod worker {
             // track through `current`.
             self.cancel_crossfade();
             self.clear_tempo_ramp();
+            self.shared.bump_limiter_epoch();
             self.bump_generation();
             self.shared.set_paused(true);
             self.shared
@@ -3767,6 +3908,7 @@ mod worker {
             // the transport never leaves two positions live.
             self.cancel_crossfade();
             self.clear_tempo_ramp();
+            self.shared.bump_limiter_epoch();
             let tempo = self.shared.tempo();
             let Some(current) = self.current.as_mut() else {
                 log::warn!("playback: seek to {position_secs:.3}s ignored, no track loaded");
@@ -4328,6 +4470,8 @@ mod worker {
                 bands: FadeEq::new(rate),
                 user_eq: GraphicEq::new(rate),
                 effects: Effects::new(rate, channels),
+                limiter: Limiter::new(rate, channels),
+                limiter_epoch: self.shared.limiter_epoch(),
                 eq_db: (0.0, 0.0, 0.0),
                 hp_hz: 20.0,
                 bus_power: 0.0,
@@ -4377,6 +4521,7 @@ mod tests {
     use super::*;
 
     fn source(shared: Arc<Shared>, ring: &Ring, consumer: Consumer<f32>) -> RingSource {
+        let limiter_epoch = shared.limiter_epoch();
         RingSource {
             consumer,
             done: ring.done.clone(),
@@ -4395,6 +4540,8 @@ mod tests {
             bands: FadeEq::new(1000),
             user_eq: GraphicEq::new(1000),
             effects: Effects::new(1000, 2),
+            limiter: Limiter::new(1000, 2),
+            limiter_epoch,
             eq_db: (0.0, 0.0, 0.0),
             hp_hz: 20.0,
             bus_power: 0.0,
@@ -4548,6 +4695,12 @@ mod tests {
             .transport
             .store(Transport::Paused as u8, Ordering::Relaxed);
         shared.set_paused(false);
+        // This test isolates the pre-amp; the limiter would add its look-ahead
+        // latency and hide the steady-state value behind the warm-up.
+        shared.set_limiter(LimiterSettings {
+            enabled: false,
+            ..LimiterSettings::default()
+        });
         shared.set_equalizer(true, &[0.0; BAND_COUNT], -6.0);
         let (mut ring, consumer) = Ring::new(40);
         ring.push_slice(&[1.0; 40]);

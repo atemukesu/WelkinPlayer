@@ -14,6 +14,7 @@ use crate::playback::engine::{
     device_info, enumerate_devices, AudioState, Command, DeviceInfo, Engine,
 };
 use crate::playback::graphic_eq::EqualizerState;
+use crate::playback::limiter::LimiterSettings;
 
 /// Load a track with an explicit initial playback intent. Building the byte
 /// source happens on the worker, so this returns as soon as the command is
@@ -134,6 +135,19 @@ pub fn audio_set_effects(engine: State<Engine>, effects: EffectsSettings) {
 #[tauri::command]
 pub fn audio_get_effects(engine: State<Engine>) -> EffectsSettings {
     engine.shared().effects()
+}
+
+/// Replace the look-ahead limiter settings. Persistence stays device-local in
+/// the frontend; the engine only stores the clamped snapshot.
+#[tauri::command]
+pub fn audio_set_limiter(engine: State<Engine>, settings: LimiterSettings) {
+    engine.shared().set_limiter(settings);
+}
+
+/// Current limiter settings, so a reloaded webview can resync.
+#[tauri::command]
+pub fn audio_get_limiter(engine: State<Engine>) -> LimiterSettings {
+    engine.shared().limiter()
 }
 
 /// Stop playback and clear the loaded track.

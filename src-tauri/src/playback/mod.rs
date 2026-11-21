@@ -24,6 +24,7 @@ pub mod effects;
 pub mod engine;
 pub mod fade_eq;
 pub mod graphic_eq;
+pub mod limiter;
 pub mod mod_delay;
 pub mod reverb;
 pub mod source;

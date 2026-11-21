@@ -321,6 +321,10 @@ pub fn run() {
             #[cfg(any(desktop, target_os = "android"))]
             playback::commands::audio_get_effects,
             #[cfg(any(desktop, target_os = "android"))]
+            playback::commands::audio_set_limiter,
+            #[cfg(any(desktop, target_os = "android"))]
+            playback::commands::audio_get_limiter,
+            #[cfg(any(desktop, target_os = "android"))]
             playback::commands::audio_stop,
             #[cfg(any(desktop, target_os = "android"))]
             playback::commands::audio_state,

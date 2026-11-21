@@ -6,21 +6,23 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, reactive, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { ChevronDown, RotateCcw, SlidersHorizontal, Waves, X } from "@lucide/vue";
+import { ChevronDown, RotateCcw, SlidersHorizontal, Activity, Waves, X } from "@lucide/vue";
 import Knob from "./Knob.vue";
 import LayeredSelect from "./LayeredSelect.vue";
 import VerticalFader from "./VerticalFader.vue";
+import LimiterGraph from "./LimiterGraph.vue";
 import * as eq from "../lib/equalizer";
+import * as limiter from "../lib/limiter";
 import { DEFAULT_EFFECTS, commitEffects, fx, FX_LIMITS, resetEffects } from "../lib/effects";
 import type { FxKey } from "../lib/effects";
 
 const { t } = useI18n();
 
-/** Category tabs inside the modal, mirroring the settings page's tab bar.
- * Only the equalizer is implemented; the rest track the playback roadmap. */
+/** Category tabs inside the modal, mirroring the settings page's tab bar. */
 const tabItems = [
   { key: "equalizer", labelKey: "soundSettings.tabs.equalizer", icon: SlidersHorizontal },
   { key: "effects", labelKey: "soundSettings.tabs.effects", icon: Waves },
+  { key: "limiter", labelKey: "soundSettings.tabs.limiter", icon: Activity },
 ] as const;
 type SoundTab = (typeof tabItems)[number]["key"];
 const activeTab = ref<SoundTab>("equalizer");
@@ -168,6 +170,39 @@ function preampFill(value: number): string {
   return `${((value - eq.MIN_PREAMP) / span) * 100}%`;
 }
 
+/** Protection strength; dragging the advanced knobs flips this to `custom`. */
+const limiterMode = computed<limiter.LimiterMode | "custom">({
+  get: () => limiter.activeLimiterMode.value,
+  set: (value) => {
+    if (value !== "custom") limiter.applyLimiterMode(value);
+  },
+});
+
+const limiterModeOptions = computed(() => [
+  ...limiter.MODE_ORDER.map((mode) => ({
+    value: mode as limiter.LimiterMode | "custom",
+    label: t(`soundSettings.limiter.modes.${mode}`),
+  })),
+  { value: "custom" as const, label: t("soundSettings.custom") },
+]);
+
+/** The built-in parameters stay collapsed so the three presets lead the UI. */
+const limiterAdvancedOpen = ref(false);
+
+/** Toggle the limiter; no confirmation, but the panel shows a warning when off. */
+function onToggleLimiter(event: Event) {
+  limiter.limiterEnabled.value = (event.target as HTMLInputElement).checked;
+  limiter.commitLimiter();
+}
+
+function formatDb(value: number): string {
+  return `${value.toFixed(1)} dB`;
+}
+
+function formatMs(value: number): string {
+  return `${Math.round(value)} ms`;
+}
+
 /** Toggle the EQ and apply it at once (single action, no drag to wait for). */
 function onToggle(event: Event) {
   eq.eqEnabled.value = (event.target as HTMLInputElement).checked;
@@ -241,7 +276,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
               role="tablist"
               :aria-label="t('soundSettings.tabs.label')"
             >
-              <div class="grid grid-cols-2 gap-1">
+              <div class="grid grid-cols-3 gap-1">
                 <button
                   v-for="(item, index) in tabItems"
                   :id="`sound-tab-${item.key}`"
@@ -458,6 +493,137 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
                           />
                         </div>
                       </article>
+                    </div>
+                  </section>
+                </div>
+              </div>
+
+              <div
+                v-show="activeTab === 'limiter'"
+                id="sound-panel-limiter"
+                role="tabpanel"
+                aria-labelledby="sound-tab-limiter"
+                class="w-full self-start"
+              >
+                <div class="grid gap-3">
+                  <div class="flex items-center justify-between gap-3">
+                    <span class="text-[13px] font-semibold uppercase tracking-[0.2em] text-dim">
+                      {{ t("soundSettings.limiter.enable") }}
+                    </span>
+                    <input
+                      :checked="limiter.limiterEnabled.value"
+                      class="ak-switch shrink-0"
+                      type="checkbox"
+                      :aria-label="t('soundSettings.limiter.enable')"
+                      @change="onToggleLimiter"
+                    />
+                  </div>
+
+                  <LimiterGraph />
+
+                  <div class="mt-1 flex items-center gap-2">
+                    <LayeredSelect
+                      v-model="limiterMode"
+                      :options="limiterModeOptions"
+                      :label="t('soundSettings.limiter.strength')"
+                      class="min-w-0 flex-1"
+                    />
+                    <button
+                      type="button"
+                      class="flex h-10 shrink-0 items-center gap-1.5 border border-line px-3 text-[12px] font-semibold text-muted transition-colors hover:border-accent hover:text-fg"
+                      @click="limiter.resetLimiter()"
+                    >
+                      <RotateCcw :size="14" :stroke-width="1.8" />
+                      {{ t("soundSettings.reset") }}
+                    </button>
+                  </div>
+
+                  <section class="mt-1 border-t border-line pt-3">
+                    <button
+                      type="button"
+                      class="flex w-full items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.2em] text-muted transition-colors hover:text-fg"
+                      :aria-expanded="limiterAdvancedOpen"
+                      @click="limiterAdvancedOpen = !limiterAdvancedOpen"
+                    >
+                      <ChevronDown
+                        :size="13"
+                        :stroke-width="2"
+                        class="shrink-0 text-dim transition-transform"
+                        :class="limiterAdvancedOpen ? 'rotate-180' : ''"
+                      />
+                      {{ t("soundSettings.limiter.advanced") }}
+                    </button>
+
+                    <div v-show="limiterAdvancedOpen" class="mt-3 grid gap-4">
+                      <div
+                        class="flex flex-wrap items-start gap-x-5 gap-y-3 border border-line bg-bg/40 px-3 py-4"
+                        :class="limiter.limiterEnabled.value ? '' : 'opacity-45'"
+                      >
+                        <Knob
+                          :model-value="limiter.limiterThreshold.value"
+                          :min="limiter.LIMITER_LIMITS.thresholdDb.min"
+                          :max="limiter.LIMITER_LIMITS.thresholdDb.max"
+                          :step="limiter.LIMITER_LIMITS.thresholdDb.step"
+                          :origin="limiter.LIMITER_MODES.standard.thresholdDb"
+                          :format="formatDb"
+                          :label="t('soundSettings.limiter.threshold')"
+                          :hint="t('soundSettings.effects.homeHint')"
+                          :disabled="!limiter.limiterEnabled.value"
+                          @update:model-value="limiter.limiterThreshold.value = $event"
+                          @commit="limiter.commitLimiter()"
+                        />
+                        <Knob
+                          :model-value="limiter.limiterRelease.value"
+                          :min="limiter.LIMITER_LIMITS.releaseMs.min"
+                          :max="limiter.LIMITER_LIMITS.releaseMs.max"
+                          :step="limiter.LIMITER_LIMITS.releaseMs.step"
+                          :origin="limiter.LIMITER_MODES.standard.releaseMs"
+                          :format="formatMs"
+                          :label="t('soundSettings.limiter.release')"
+                          :hint="t('soundSettings.effects.homeHint')"
+                          :disabled="!limiter.limiterEnabled.value"
+                          @update:model-value="limiter.limiterRelease.value = $event"
+                          @commit="limiter.commitLimiter()"
+                        />
+                        <Knob
+                          :model-value="limiter.limiterLookahead.value"
+                          :min="limiter.LIMITER_LIMITS.lookaheadMs.min"
+                          :max="limiter.LIMITER_LIMITS.lookaheadMs.max"
+                          :step="limiter.LIMITER_LIMITS.lookaheadMs.step"
+                          :origin="limiter.LIMITER_MODES.standard.lookaheadMs"
+                          :format="formatMs"
+                          :label="t('soundSettings.limiter.lookahead')"
+                          :hint="t('soundSettings.effects.homeHint')"
+                          :disabled="!limiter.limiterEnabled.value"
+                          @update:model-value="limiter.limiterLookahead.value = $event"
+                          @commit="limiter.commitLimiter()"
+                        />
+                      </div>
+
+                      <dl class="grid grid-cols-2 gap-x-4 gap-y-2 text-[10px] uppercase tracking-[0.14em]">
+                        <div class="flex items-baseline justify-between gap-2 border-b border-line pb-1">
+                          <dt class="text-dim">{{ t("soundSettings.limiter.ceiling") }}</dt>
+                          <dd class="font-mono tabular-nums text-muted">
+                            {{ formatDb(limiter.limiterThreshold.value) }}
+                          </dd>
+                        </div>
+                        <div class="flex items-baseline justify-between gap-2 border-b border-line pb-1">
+                          <dt class="text-dim">{{ t("soundSettings.limiter.attack") }}</dt>
+                          <dd class="font-mono tabular-nums text-muted">
+                            {{ formatMs(limiter.limiterAttackMs.value) }}
+                          </dd>
+                        </div>
+                        <div class="flex items-baseline justify-between gap-2 border-b border-line pb-1">
+                          <dt class="text-dim">{{ t("soundSettings.limiter.stereoLink") }}</dt>
+                          <dd class="font-mono tabular-nums text-muted">100%</dd>
+                        </div>
+                        <div class="flex items-baseline justify-between gap-2 border-b border-line pb-1">
+                          <dt class="text-dim">{{ t("soundSettings.limiter.truePeak") }}</dt>
+                          <dd class="font-mono tabular-nums text-dim">
+                            {{ t("soundSettings.limiter.truePeakOff") }}
+                          </dd>
+                        </div>
+                      </dl>
                     </div>
                   </section>
                 </div>

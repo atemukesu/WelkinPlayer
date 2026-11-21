@@ -27,8 +27,10 @@ const props = withDefaults(
     label?: string;
     hint?: string;
     disabled?: boolean;
+    /** Optional value formatter, e.g. one decimal for a dB threshold. */
+    format?: (value: number) => string;
   }>(),
-  { step: 1, origin: Number.NaN, unit: "", label: "", hint: "", disabled: false },
+  { step: 1, origin: Number.NaN, unit: "", label: "", hint: "", disabled: false, format: undefined },
 );
 
 const emit = defineEmits<{
@@ -62,7 +64,9 @@ const originRatio = computed(() =>
     : null,
 );
 
-const display = computed(() => `${Math.round(props.modelValue)}${props.unit}`);
+const display = computed(() =>
+  props.format ? props.format(props.modelValue) : `${Math.round(props.modelValue)}${props.unit}`,
+);
 
 function polar(angle: number, radius: number): [number, number] {
   const radians = (angle * Math.PI) / 180;
