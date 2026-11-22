@@ -18,6 +18,8 @@ export interface RemoteEntry {
   isDir: boolean;
   size: number | null;
   modified: string | null;
+  /** WebDAV `creationdate` (ISO 8601), the closest thing to "added at". */
+  created: string | null;
   contentType: string | null;
 }
 
@@ -69,6 +71,7 @@ export function trackFromEntry(entry: RemoteEntry, index: number, source?: Track
     color: colorFor(`${source?.id ?? ""}:${entry.path || entry.name}`),
     path: entry.path,
     modified: entry.modified,
+    created: entry.created,
     sourceId: source?.id,
     sourceName: source?.name,
     folder: folderOfEntry(entry),

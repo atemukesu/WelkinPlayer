@@ -104,6 +104,11 @@ export interface Track {
   sourceName?: string;
   /** Source last-modified timestamp, used to bust the cover image cache. */
   modified?: string | null;
+  /**
+   * Source creation time (WebDAV `creationdate`), when the server reports it.
+   * Used for date-added sorting; falls back to `modified`.
+   */
+  created?: string | null;
   /** Cover thumbnail URL (asset protocol), once resolved. */
   cover?: string;
   /** Hex cache id of the cover thumbnail, for native media controls. */

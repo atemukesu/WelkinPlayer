@@ -185,6 +185,7 @@ fn listing_hash(entries: &[RemoteEntry]) -> String {
         entry.path.hash(&mut hasher);
         entry.size.hash(&mut hasher);
         entry.modified.hash(&mut hasher);
+        entry.created.hash(&mut hasher);
     }
     format!("{:016x}", hasher.finish())
 }
@@ -892,6 +893,7 @@ mod tests {
             is_dir: false,
             size: Some(size),
             modified: None,
+            created: None,
             content_type: None,
             type_unknown: false,
         }

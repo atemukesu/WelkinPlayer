@@ -78,6 +78,25 @@ export function parseDuration(value: string): number {
   return text.split(":").reduce((total, part) => total * 60 + Number(part), 0);
 }
 
+/**
+ * When a track was added to its source, in epoch milliseconds.
+ *
+ * WebDAV exposes `creationdate` (ISO 8601) and `getlastmodified` (RFC 1123);
+ * either can identify when a file landed on the server, so creation time is
+ * preferred and modification time is the fallback. Local sources store the
+ * modification time as plain epoch seconds, which is handled too.
+ */
+export function sourceAddedAt(track: Track): number | undefined {
+  for (const raw of [track.created, track.modified]) {
+    if (!raw) continue;
+    const text = raw.trim();
+    if (/^\d+$/.test(text)) return Number(text) * 1000;
+    const value = Date.parse(text);
+    if (!Number.isNaN(value)) return value;
+  }
+  return undefined;
+}
+
 function compare(a: Track, b: Track, key: Exclude<TrackSortKey, "default" | "added">): number {
   if (key === "duration") {
     const left = parseDuration(a.duration);

@@ -26,8 +26,9 @@ const options = computed<{ value: TrackSortKey; labelKey: string }[]>(() => {
     { value: "album", labelKey: "library.sortAlbum" },
     { value: "duration", labelKey: "library.sortDuration" },
   ];
-  // Playlists record real timestamps; favorites keep their add order in the profile.
-  if (props.context === "playlist" || props.context === "favorites") base.splice(1, 0, { value: "added", labelKey: "library.sortAdded" });
+  // Playlists record real timestamps; favorites keep their add order in the
+  // profile; the library pages use the WebDAV creation/modification time.
+  if (props.context !== "downloaded") base.splice(1, 0, { value: "added", labelKey: "library.sortAdded" });
   return base;
 });
 

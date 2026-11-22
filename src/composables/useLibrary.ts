@@ -113,6 +113,10 @@ export function useLibrary() {
         track.sourceId = source.id;
         track.sourceName = source.name;
         track.folder = folderOfEntry(entry);
+        // Keep the timestamps in sync with the fresh listing even when the
+        // track object (and its loaded metadata) is reused from the cache.
+        track.modified = entry.modified;
+        track.created = entry.created;
         const duplicateOf = duplicateKey(entry);
         const others = duplicateOf
           ? [...new Set((copies.get(duplicateOf) ?? [])

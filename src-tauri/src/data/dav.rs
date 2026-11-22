@@ -123,6 +123,10 @@ pub struct RemoteEntry {
     pub size: Option<u64>,
     /// `getlastmodified` as returned by the server (RFC 1123 string).
     pub modified: Option<String>,
+    /// `creationdate` as returned by the server (ISO 8601), when provided.
+    /// This is the closest the protocol offers to "when it was added", so the
+    /// UI uses it (falling back to `modified`) for date-added sorting.
+    pub created: Option<String>,
     /// `getcontenttype`, when provided.
     pub content_type: Option<String>,
     /// Internal hint: the server did not report a usable `resourcetype`, so a
@@ -141,6 +145,7 @@ impl RemoteEntry {
             is_dir: raw.is_dir,
             size: raw.size,
             modified: raw.modified,
+            created: raw.created,
             content_type: raw.content_type,
             type_unknown: raw.type_unknown,
         }
@@ -172,6 +177,7 @@ struct RawEntry {
     is_dir: bool,
     size: Option<u64>,
     modified: Option<String>,
+    created: Option<String>,
     content_type: Option<String>,
     /// A successful `propstat` reported a `resourcetype` element. An empty
     /// element means "ordinary file"; `<collection/>` means directory.
@@ -203,6 +209,7 @@ struct PropValues {
     name: Option<String>,
     size: Option<u64>,
     modified: Option<String>,
+    created: Option<String>,
     content_type: Option<String>,
     is_dir: bool,
     /// The propstat contained a `resourcetype` element, even if empty.
@@ -274,7 +281,7 @@ impl WebDavClient {
         let body = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\
             <d:propfind xmlns:d=\"DAV:\"><d:prop>\
             <d:displayname/><d:getcontentlength/><d:getlastmodified/>\
-            <d:getcontenttype/><d:resourcetype/>\
+            <d:creationdate/><d:getcontenttype/><d:resourcetype/>\
             </d:prop></d:propfind>";
 
         let response = self
@@ -1096,6 +1103,7 @@ fn record_value(
         "displayname" => pending.name = Some(value),
         "getcontentlength" => pending.size = value.trim().parse().ok(),
         "getlastmodified" => pending.modified = Some(value),
+        "creationdate" => pending.created = Some(value),
         "getcontenttype" => pending.content_type = Some(value),
         _ => {}
     }
@@ -1111,6 +1119,9 @@ fn apply_props(entry: &mut RawEntry, props: PropValues) {
     }
     if let Some(modified) = props.modified {
         entry.modified = Some(modified);
+    }
+    if let Some(created) = props.created {
+        entry.created = Some(created);
     }
     if let Some(content_type) = props.content_type {
         entry.content_type = Some(content_type);
@@ -1159,6 +1170,7 @@ mod tests {
         <D:displayname>Song.mp3</D:displayname>
         <D:getcontentlength>4096</D:getcontentlength>
         <D:getlastmodified>Mon, 01 Jan 2024 00:00:00 GMT</D:getlastmodified>
+        <D:creationdate>2023-12-31T20:00:00Z</D:creationdate>
         <D:getcontenttype>audio/mpeg</D:getcontenttype>
       </D:prop>
       <D:status>HTTP/1.1 200 OK</D:status>
@@ -1180,6 +1192,10 @@ mod tests {
 
         assert_eq!(entries[2].local_path, "Artist Name/Song.mp3");
         assert_eq!(entries[2].size, Some(4096));
+        assert_eq!(
+            entries[2].created.as_deref(),
+            Some("2023-12-31T20:00:00Z")
+        );
         assert_eq!(entries[2].content_type.as_deref(), Some("audio/mpeg"));
         assert!(!entries[2].is_dir);
     }

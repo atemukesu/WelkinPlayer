@@ -367,6 +367,7 @@ fn list_local_audio(root: &Path) -> Result<Vec<RemoteEntry>, AppError> {
                 is_dir: false,
                 size,
                 modified,
+                created: None,
                 content_type: content_type_for(&name),
                 type_unknown: false,
             });
@@ -416,6 +417,7 @@ fn list_local_directory(root: &Path, path: &str) -> Result<Vec<RemoteEntry>, App
                 is_dir: true,
                 size: None,
                 modified: None,
+                created: None,
                 content_type: None,
                 type_unknown: false,
             });
@@ -447,6 +449,7 @@ fn list_local_directory(root: &Path, path: &str) -> Result<Vec<RemoteEntry>, App
             is_dir: false,
             size,
             modified,
+            created: None,
             content_type: content_type_for(&name),
             type_unknown: false,
         });
@@ -517,6 +520,7 @@ fn list_local_audio_under(root: &Path, path: &str) -> Result<Vec<RemoteEntry>, A
                 is_dir: false,
                 size,
                 modified,
+                created: None,
                 content_type: content_type_for(&name),
                 type_unknown: false,
             });

@@ -16,7 +16,7 @@ import { useSourcesStore } from "../stores/sources";
 import { trackKey } from "../lib/sources";
 import { pushToast } from "../lib/toast";
 import { groupKeys, isUnknownGroup, type GroupKind } from "../lib/grouping";
-import { sortTracks, titleLetterIndex, useTrackSort, type TrackSortContext } from "../lib/sort";
+import { sortTracks, sourceAddedAt, titleLetterIndex, useTrackSort, type TrackSortContext } from "../lib/sort";
 import TrackList from "../components/TrackList.vue";
 import TrackContextMenu from "../components/TrackContextMenu.vue";
 import TrackSortMenu from "../components/TrackSortMenu.vue";
@@ -86,6 +86,14 @@ const playlistAddedAt = computed<((track: Track) => number | undefined) | undefi
     return key ? times[key] : undefined;
   };
 });
+/**
+ * Timestamp lookup for the "added" sort key. Playlists keep their own
+ * per-entry timestamps; every other page (the full library, sources, artist
+ * and album collections) uses when the file was added to the WebDAV server.
+ */
+const addedAtLookup = computed<((track: Track) => number | undefined) | undefined>(() =>
+  activePlaylist.value ? playlistAddedAt.value : sourceAddedAt,
+);
 const smartEnabled = computed(() => (activePlaylist.value ? smart.isEnabled(activePlaylist.value.id) : false));
 const smartReady = computed(() => activePlaylist.value?.smartTransition?.status === "ready");
 const smartBusy = computed(() => (activePlaylist.value ? smart.isBusy(activePlaylist.value.id) : false));
@@ -126,7 +134,7 @@ const smartOrderTracks = computed<Track[] | null>(() => {
  */
 const sourceTracks = computed(() => (smartLocked.value ? (smartOrderTracks.value ?? playlistTracks.value) : playlistTracks.value));
 /** Source order with the chosen sort applied; the play queue follows this so "next" matches the screen. */
-const orderedTracks = computed(() => sortTracks(sourceTracks.value, sortKey.value, sortDir.value, { addedAt: playlistAddedAt.value }));
+const orderedTracks = computed(() => sortTracks(sourceTracks.value, sortKey.value, sortDir.value, { addedAt: addedAtLookup.value }));
 const tracks = computed(() => {
   const value = query.value.trim().toLocaleLowerCase();
   return value ? orderedTracks.value.filter((track) => `${track.title} ${track.artist} ${track.album}`.toLocaleLowerCase().includes(value)) : orderedTracks.value;
