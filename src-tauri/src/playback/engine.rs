@@ -979,6 +979,13 @@ impl Shared {
         self.position_secs() * 1000.0
     }
 
+    /// Source playback rate (the user's speed setting). Consumers that
+    /// extrapolate the playhead between engine snapshots use this so the
+    /// displayed position advances at the same rate as the audio.
+    pub fn playback_rate(&self) -> f64 {
+        self.tempo() as f64
+    }
+
     /// Live output stream rate, for the quality UI.
     pub fn device_rate(&self) -> u32 {
         self.device_rate.load(Ordering::Relaxed)

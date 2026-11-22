@@ -56,6 +56,9 @@ export interface DesktopLyricLoadPayload {
 export interface DesktopLyricTickPayload {
   positionMs: number;
   playing: boolean;
+  /** Source playback rate (the user's speed setting), so the renderer's
+   * display clock advances at the same rate as the engine between ticks. */
+  playbackRate: number;
   /** Primary line index, or -1. */
   activeIndex: number;
   /** Every line whose window overlaps the playhead (BG vocals + duet lines). */

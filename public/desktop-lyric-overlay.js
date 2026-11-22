@@ -26,13 +26,29 @@
   // user chose, so they are neither restored nor persisted.
   var MIN_BASE_HEIGHT = 72;
 
+  // Smoothed display clock, mirroring the main window's playback client.
+  // Ticks arrive every ~80 ms with the engine's raw playhead; a Bluetooth sink
+  // drains the output buffer in large, irregular chunks, so a fresh tick often
+  // lands behind the linearly extrapolated playhead. Snapping to every tick
+  // made the karaoke sweep visibly step backwards ("twitch"). Instead the clock
+  // advances with wall time and is steered toward the engine by briefly
+  // stretching its rate; only a real discontinuity snaps it.
+  var CLOCK_SNAP_MS = 600;
+  var CLOCK_CORRECTION_MS = 800;
+  var CLOCK_MIN_SPEED = 0.6;
+  var CLOCK_MAX_SPEED = 1.6;
+
   var state = {
     settings: null,
     lines: [],
     positionMs: 0,
     playing: false,
+    playbackRate: 1,
     visible: true,
-    lastTickAt: 0,
+    clockMs: 0,
+    clockAt: 0,
+    clockSpeed: 1,
+    clockReady: false,
     activeIndex: -1,
     activeIndices: [],
     activeSig: "",
@@ -114,7 +130,7 @@
       if (typeof win.setAlwaysOnTop === "function") win.setAlwaysOnTop(true).catch(function () {});
       if (typeof win.setSkipTaskbar === "function") win.setSkipTaskbar(!!settings.skipTaskbar).catch(function () {});
     }
-    if (state.currentNode) updateProgress(state.positionMs);
+    if (state.currentNode) updateProgress(nowMs());
   }
 
   function applyLocked(locked) {
@@ -425,7 +441,7 @@
     }
 
     state.lastBlockCount = block.length;
-    updateProgress(state.positionMs);
+    updateProgress(nowMs());
     remeasure();
     signalAndroidVisible();
   }
@@ -472,8 +488,45 @@
     } catch (error) {}
   }
 
+  /** The playhead the overlay should paint right now. */
+  function displayPositionMs(now) {
+    if (!state.clockReady || !state.playing) return state.clockMs;
+    return state.clockMs + (now - state.clockAt) * state.clockSpeed * state.playbackRate;
+  }
+
+  /** Hard-anchor the display clock: seek, pause, track load or engine restart. */
+  function resetDisplayClock(positionMs) {
+    state.clockMs = Number.isFinite(positionMs) ? positionMs : 0;
+    state.clockAt = performance.now();
+    state.clockSpeed = 1;
+    state.clockReady = true;
+  }
+
+  /**
+   * Fold one engine snapshot into the display clock. The clock never moves
+   * backwards while playing: small drift is absorbed by stretching its rate
+   * over the next few ticks, and only a genuine discontinuity snaps it.
+   */
+  function syncDisplayClock(positionMs) {
+    if (!state.playing || !state.clockReady) {
+      resetDisplayClock(positionMs);
+      return;
+    }
+    var now = performance.now();
+    var predicted = displayPositionMs(now);
+    var drift = positionMs - predicted;
+    if (Math.abs(drift) > CLOCK_SNAP_MS) {
+      resetDisplayClock(positionMs);
+      return;
+    }
+    state.clockMs = predicted;
+    state.clockAt = now;
+    var stretch = drift / CLOCK_CORRECTION_MS / state.playbackRate;
+    state.clockSpeed = Math.min(CLOCK_MAX_SPEED, Math.max(CLOCK_MIN_SPEED, 1 + stretch));
+  }
+
   function nowMs() {
-    return state.playing ? state.positionMs + (performance.now() - state.lastTickAt) : state.positionMs;
+    return displayPositionMs(performance.now());
   }
 
   function lineProgress(line, position) {
@@ -536,13 +589,18 @@
 
   function tick(payload) {
     if (!payload) return;
+    var wasPlaying = state.playing;
     state.positionMs = payload.positionMs || 0;
-    state.lastTickAt = performance.now();
+    var rate = Number(payload.playbackRate);
+    state.playbackRate = Number.isFinite(rate) && rate > 0 ? rate : 1;
     var playing = !!payload.playing;
     if (playing !== state.playing) {
       state.playing = playing;
       updatePlayButton();
     }
+    // Resuming starts a fresh clock instead of inheriting the pause gap.
+    if (playing && !wasPlaying) resetDisplayClock(state.positionMs);
+    else syncDisplayClock(state.positionMs);
     state.activeIndex = Number.isFinite(payload.activeIndex) ? payload.activeIndex : -1;
     state.activeIndices = Array.isArray(payload.activeIndices) ? payload.activeIndices : [];
     var visible = payload.visible !== false;
@@ -553,7 +611,7 @@
       renderCurrent(true);
     }
     if (state.playing && state.settings && state.settings.karaoke && state.visible) ensureRaf();
-    else { stopRaf(); updateProgress(state.positionMs); }
+    else { stopRaf(); updateProgress(nowMs()); }
   }
 
   if (tauri && tauri.event) {

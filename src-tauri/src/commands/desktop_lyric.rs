@@ -103,6 +103,9 @@ pub struct DesktopLyricLoadPayload {
 pub struct DesktopLyricTickPayload {
     pub position_ms: f64,
     pub playing: bool,
+    /// Source playback rate (the user's speed setting), so the overlay's display
+    /// clock advances at the same rate as the engine between ticks.
+    pub playback_rate: f64,
     pub active_index: i64,
     pub active_indices: Vec<i64>,
     pub visible: bool,
@@ -199,6 +202,7 @@ fn emit_tick(
     app: &AppHandle,
     position_ms: f64,
     playing: bool,
+    playback_rate: f64,
     active_index: i64,
     active_indices: Vec<i64>,
     visible: bool,
@@ -206,6 +210,7 @@ fn emit_tick(
     let payload = DesktopLyricTickPayload {
         position_ms,
         playing,
+        playback_rate,
         active_index,
         active_indices,
         visible,
@@ -259,6 +264,7 @@ pub fn start_ticker(app: AppHandle) {
             let shared = engine.shared();
             let position_ms = shared.position_ms();
             let playing = shared.is_playing();
+            let playback_rate = shared.playback_rate();
             let lines: Vec<ActiveLine> = load
                 .lines
                 .iter()
@@ -270,7 +276,15 @@ pub fn start_ticker(app: AppHandle) {
                 .collect();
             let primary = pick_primary_index(&lines, position_ms);
             let indices = find_active_indices(&lines, position_ms);
-            emit_tick(&app, position_ms, playing, primary, indices, visible);
+            emit_tick(
+                &app,
+                position_ms,
+                playing,
+                playback_rate,
+                primary,
+                indices,
+                visible,
+            );
         })
         .expect("failed to start desktop lyric tick thread");
 }
